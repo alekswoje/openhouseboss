@@ -10,6 +10,17 @@ const SessionDetail = () => {
   const [activeVisitorKey, setActiveVisitorKey] = React.useState(null);
   const [sending, setSending] = React.useState(false);
   const [savedDraftKey, setSavedDraftKey] = React.useState(null);
+  // Visitor-swap crossfade. Mirrors the route-frame transition in index.html
+  // so clicking a different lead in the rail doesn't snap-cut the detail
+  // pane. Local because session-detail handles its own intra-page nav.
+  const [visitorPhase, setVisitorPhase] = React.useState('idle');
+  const [shownVisitorKey, setShownVisitorKey] = React.useState(null);
+
+  // Audio playback
+  const audioRef = React.useRef(null);
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const [audioTime, setAudioTime] = React.useState(0);
+  const [audioDuration, setAudioDuration] = React.useState(0);
 
   // Pick which session to show. Set by the dashboard via window.foyerActiveSessionId
   // (set right before navigating). Falls back to the most recent ready session.
@@ -31,8 +42,27 @@ const SessionDetail = () => {
       (b.analysis?.score || 0) - (a.analysis?.score || 0)
     )[0];
     setActiveVisitorKey(keyOf(initial));
+    setShownVisitorKey(keyOf(initial));
     setDraft(initial?.analysis?.followUpDraft || initial?.analysis?.follow_up_draft || '');
   }, [result]);
+
+  // Crossfade when activeVisitorKey changes: fade out the current detail
+  // pane, swap to the new visitor, fade back in. ~380ms total.
+  React.useEffect(() => {
+    if (!activeVisitorKey) return;
+    if (activeVisitorKey === shownVisitorKey) return;
+    setVisitorPhase('out');
+    const t1 = setTimeout(() => {
+      setShownVisitorKey(activeVisitorKey);
+      requestAnimationFrame(() => setVisitorPhase('in'));
+    }, 180);
+    return () => clearTimeout(t1);
+  }, [activeVisitorKey]);
+  React.useEffect(() => {
+    if (visitorPhase !== 'in') return;
+    const t = setTimeout(() => setVisitorPhase('idle'), 220);
+    return () => clearTimeout(t);
+  }, [visitorPhase]);
 
   // Search / tag-filter narrows the left rail.
   const filteredVisitors = allVisitors.filter(v => {
@@ -42,7 +72,11 @@ const SessionDetail = () => {
     return true;
   });
 
-  const v = allVisitors.find(x => keyOf(x) === activeVisitorKey);
+  // For the left rail we want immediate feedback (highlight tracks the
+  // clicked row right away). For the detail pane we render `shown` so the
+  // fade-out shows the previous visitor's content until the swap.
+  const v = allVisitors.find(x => keyOf(x) === shownVisitorKey)
+         || allVisitors.find(x => keyOf(x) === activeVisitorKey);
 
   if (loading) {
     return <Centered>LOADING SESSION…</Centered>;
@@ -175,8 +209,20 @@ const SessionDetail = () => {
       </section>
 
       {/* DETAIL PANE */}
-      <section style={{ overflowY: 'auto' }}>
-        <div style={{ padding: '32px 48px 60px' }}>
+      <section style={{ overflowY: 'auto', position: 'relative' }}>
+        {session.kind !== 'manual' && (
+          <AudioBar
+            sessionId={session.id}
+            audioRef={audioRef}
+            isPlaying={isPlaying}
+            setIsPlaying={setIsPlaying}
+            time={audioTime}
+            setTime={setAudioTime}
+            duration={audioDuration}
+            setDuration={setAudioDuration}
+          />
+        )}
+        <div className="visitor-frame" data-phase={visitorPhase} style={{ padding: '32px 48px 60px' }}>
 
           {/* header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -231,9 +277,24 @@ const SessionDetail = () => {
               <div style={{ marginTop: 20 }}>
                 {visitorTurns.map((line, i) => {
                   const isAgent = line.speaker === agentSpeaker;
+                  const playheadMs = audioTime * 1000;
+                  const isActive = isPlaying
+                    && line.start_ms != null && line.end_ms != null
+                    && playheadMs >= line.start_ms && playheadMs <= line.end_ms;
                   return (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '60px 1fr', gap: 16, padding: '12px 0' }}>
-                      <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.1em', paddingTop: 4 }}>
+                    <div
+                      key={i}
+                      className={'turn-row' + (isActive ? ' is-active' : '')}
+                      onClick={() => {
+                        const a = audioRef.current;
+                        if (a) {
+                          a.currentTime = Math.max(0, (line.start_ms || 0) / 1000);
+                          if (!isPlaying) a.play().catch(() => {});
+                        }
+                      }}
+                      style={{ display: 'grid', gridTemplateColumns: '60px 1fr', gap: 16, padding: '12px 0', cursor: 'pointer' }}
+                    >
+                      <div className="mono" style={{ fontSize: 10, color: isActive ? 'var(--gold)' : 'var(--text-muted)', letterSpacing: '0.1em', paddingTop: 4 }}>
                         {fmtTimestamp(line.start_ms || 0)}
                       </div>
                       <div>
@@ -400,6 +461,77 @@ function Centered({ children }) {
       {children}
     </div>
   );
+}
+
+// Sticky audio bar pinned to the top of the detail pane. Streams from
+// /sessions/{id}/audio — the same-origin <audio> element automatically
+// sends the fb_session cookie so it's allowed past the auth gate.
+function AudioBar({ sessionId, audioRef, isPlaying, setIsPlaying, time, setTime, duration, setDuration }) {
+  const trackRef = React.useRef(null);
+  const [available, setAvailable] = React.useState(true);
+
+  // Reset on session change so we don't carry one recording's playhead
+  // into a different session.
+  React.useEffect(() => {
+    setIsPlaying(false);
+    setTime(0);
+    setDuration(0);
+    setAvailable(true);
+  }, [sessionId]);
+
+  const onPlayPause = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) a.play().catch(() => {});
+    else a.pause();
+  };
+
+  const onSeek = (e) => {
+    const a = audioRef.current;
+    const track = trackRef.current;
+    if (!a || !track || !duration) return;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    a.currentTime = ratio * duration;
+    setTime(ratio * duration);
+  };
+
+  const pct = duration > 0 ? Math.min(100, (time / duration) * 100) : 0;
+
+  return (
+    <div className="audio-bar">
+      <button className="audio-play" onClick={onPlayPause} disabled={!available} title={isPlaying ? 'Pause' : 'Play'}>
+        {isPlaying ? '❚❚' : '▶'}
+      </button>
+      <span className="audio-time">{fmtClockSecs(time)}</span>
+      <div className="audio-track" ref={trackRef} onClick={onSeek}>
+        <div className="audio-track-bg"></div>
+        <div className="audio-track-fill" style={{ width: pct + '%' }}></div>
+        <div className="audio-track-knob" style={{ left: pct + '%', top: '50%', marginTop: -5 }}></div>
+      </div>
+      <span className="audio-time" style={{ color: 'var(--text-muted)' }}>
+        {available ? fmtClockSecs(duration) : '—'}
+      </span>
+      <audio
+        ref={audioRef}
+        src={`/sessions/${sessionId}/audio`}
+        preload="metadata"
+        onLoadedMetadata={(e) => setDuration(e.target.duration || 0)}
+        onTimeUpdate={(e) => setTime(e.target.currentTime || 0)}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onError={() => setAvailable(false)}
+        style={{ display: 'none' }}
+      />
+    </div>
+  );
+}
+
+function fmtClockSecs(secs) {
+  if (!Number.isFinite(secs) || secs < 0) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 Object.assign(window, { SessionDetail });

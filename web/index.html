@@ -16,8 +16,124 @@
       font-family: 'Geist', -apple-system, system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
+      scroll-behavior: smooth;
     }
     #root { min-height: 100vh; }
+
+    /* Page-transition wrapper. App.js sets data-phase to drive the fade. */
+    .route-frame {
+      transition: opacity 220ms ease, transform 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .route-frame[data-phase="out"]   { opacity: 0; transform: translateY(6px); }
+    .route-frame[data-phase="in"]    { opacity: 1; transform: translateY(0); }
+    .route-frame[data-phase="idle"]  { opacity: 1; transform: translateY(0); }
+
+    /* Same idea, but for swapping the active visitor inside session-detail. */
+    .visitor-frame {
+      transition: opacity 180ms ease, transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .visitor-frame[data-phase="out"]  { opacity: 0; transform: translateY(4px); }
+    .visitor-frame[data-phase="in"]   { opacity: 1; transform: translateY(0); }
+    .visitor-frame[data-phase="idle"] { opacity: 1; transform: translateY(0); }
+
+    /* Make every button + clickable row breathe a little — the snap into
+       :hover used to feel like a hard cut. */
+    .btn,
+    button,
+    a,
+    .lead-row,
+    .stat-card,
+    .nav-item {
+      transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
+                  transform 160ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 200ms ease;
+    }
+    .btn:hover,
+    .lead-row:hover,
+    .stat-card:hover {
+      transform: translateY(-1px);
+    }
+    .lead-row:active,
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    /* Audio player — sticky bar pinned above the scroll area on session
+       detail. Brand-styled play button + brass progress bar. */
+    .audio-bar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      background: rgba(15, 15, 18, 0.86);
+      border-bottom: 1px solid var(--hairline);
+      padding: 14px 48px;
+      display: grid;
+      grid-template-columns: 38px auto 1fr auto;
+      gap: 16px;
+      align-items: center;
+    }
+    .audio-play {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      background: var(--gold);
+      color: var(--ink-on-gold, #1a1610);
+      border: 0;
+      cursor: pointer;
+      font-size: 14px;
+      display: grid; place-items: center;
+      box-shadow: 0 8px 24px -10px rgba(196, 162, 82, 0.6);
+      transition: transform 140ms ease, box-shadow 200ms ease;
+    }
+    .audio-play:hover { transform: scale(1.05); }
+    .audio-play:active { transform: scale(0.97); }
+    .audio-play[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+    .audio-time {
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      color: var(--cream);
+      letter-spacing: 0.06em;
+      min-width: 44px;
+      text-align: center;
+    }
+    .audio-track {
+      position: relative;
+      height: 24px;
+      cursor: pointer;
+      display: flex; align-items: center;
+    }
+    .audio-track-bg {
+      position: absolute; left: 0; right: 0; height: 3px;
+      background: var(--hairline);
+      border-radius: 2px;
+    }
+    .audio-track-fill {
+      position: absolute; left: 0; height: 3px;
+      background: linear-gradient(90deg, var(--gold-deep, #8a7138) 0%, var(--gold) 100%);
+      border-radius: 2px;
+      box-shadow: 0 0 10px rgba(196, 162, 82, 0.45);
+      transition: width 60ms linear;
+    }
+    .audio-track-knob {
+      position: absolute;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--gold);
+      box-shadow: 0 0 0 3px rgba(196, 162, 82, 0.18);
+      transform: translate(-50%, 0);
+      transition: width 60ms linear, left 60ms linear;
+    }
+
+    /* Visitor turn highlight while audio is playing inside that turn. */
+    .turn-row.is-active {
+      background: var(--gold-soft);
+      border-radius: 6px;
+      padding-left: 12px;
+      padding-right: 12px;
+      margin-left: -12px;
+      margin-right: -12px;
+      transition: background 200ms ease;
+    }
 
     /* Floating demo-route switcher — bottom-right, low-key, doesn't fight editorial content. */
     .route-nav {
@@ -139,8 +255,34 @@
       );
     }
 
+    // Crossfade between routes: when the hash changes, start a brief fade-out
+    // on the currently-rendered screen, swap, then fade back in. Keeps the
+    // user oriented instead of snap-cutting the whole page.
+    function useRouteTransition(targetHash) {
+      const [shownHash, setShownHash] = useState(targetHash);
+      const [phase, setPhase] = useState('idle');
+      useEffect(() => {
+        if (targetHash === shownHash) return;
+        setPhase('out');
+        const t1 = setTimeout(() => {
+          setShownHash(targetHash);
+          // Force-reset the transform before the in animation so we get a
+          // visible enter rather than rendering at the destination instantly.
+          requestAnimationFrame(() => setPhase('in'));
+        }, 200);
+        return () => clearTimeout(t1);
+      }, [targetHash]);
+      useEffect(() => {
+        if (phase !== 'in') return;
+        const t = setTimeout(() => setPhase('idle'), 260);
+        return () => clearTimeout(t);
+      }, [phase]);
+      return { shownHash, phase };
+    }
+
     function App() {
       const hash = useHashRoute();
+      const { shownHash, phase } = useRouteTransition(hash);
       const [toasts, setToasts] = useState([]);
 
       useEffect(() => {
@@ -168,12 +310,14 @@
         };
       }, []);
 
-      const route = ROUTES.find(r => r.hash === hash) || ROUTES[0];
+      const route = ROUTES.find(r => r.hash === shownHash) || ROUTES[0];
       const Screen = route.El;
 
       return (
         <>
-          <Screen />
+          <div className="route-frame" data-phase={phase} key={shownHash}>
+            <Screen />
+          </div>
           <ToastHost toasts={toasts} />
           <nav className="route-nav" aria-label="Foyer demo routes">
             {ROUTES.map(r => (
