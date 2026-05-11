@@ -1,11 +1,11 @@
 import SwiftUI
 
-// Single visitor — signals chips + summary + tag + score. Driven by a real
-// VisitorResult from the backend analysis.
+// Visitor detail — v2 editorial. Breadcrumb back row, large serif name +
+// italic gold accents, signal chips in brass, glass cards for transcript
+// snippets, gold + ghost CTAs at the bottom.
 struct VisitorDetailView: View {
     let visitor: VisitorResult
-    @State private var goFollowup = false
-    @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router
 
     private var v: VisitorInfo { visitor.visitor }
     private var a: AnalysisResult { visitor.analysis }
@@ -13,65 +13,81 @@ struct VisitorDetailView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
+            WarmBg(tone: .gold)
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    headerRow
-                    Text(v.name).foyerDisplay(30).foregroundStyle(FoyerTheme.cream)
-                        .padding(.horizontal, 20).padding(.top, 14)
-                    Text("\(a.tag.uppercased()) · SPOKE \(a.wordsSpoken) WORDS")
-                        .font(.system(size: 10, design: .monospaced)).tracking(1.4)
-                        .foregroundStyle(FoyerTheme.textMuted)
-                        .padding(.horizontal, 20).padding(.top, 4)
-
+                    BackBar(crumbs: ["Session", v.name], onBack: { router.pop() }) {
+                        if let kind = TagPill.Kind(a.tagToken) {
+                            TagPill(kind: kind, text: "\(a.score)")
+                        }
+                    }
+                    nameBlock
                     signalsSection
                     summarySection
                     reasonSection
-                    Spacer().frame(height: 140)
+                    Spacer().frame(height: 160)
                 }
+                .padding(.top, 8)
             }
 
             actionsBar
         }
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(isPresented: $goFollowup) { FollowupView(visitor: visitor) }
     }
 
-    private var headerRow: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Text("← Session")
-                    .font(.system(size: 11, design: .monospaced)).tracking(1.4)
-                    .foregroundStyle(FoyerTheme.gold)
+    private var nameBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            let parts = v.name.split(separator: " ", maxSplits: 1).map(String.init)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if parts.count == 2 {
+                    Text(parts[0] + " ")
+                        .foyerDisplay(32)
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text(parts[1])
+                        .font(.system(size: 32, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                } else {
+                    Text(v.name)
+                        .foyerDisplay(32)
+                        .foregroundStyle(FoyerTheme.cream)
+                }
             }
-            Spacer()
-            if let kind = TagPill.Kind(a.tagToken) {
-                TagPill(kind: kind, text: "\(a.score)")
-            }
+            Text("\(a.tag.uppercased()) · SPOKE \(a.wordsSpoken) WORDS")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textMuted)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.top, 12)
     }
 
     private var signalsSection: some View {
         Group {
             if !a.signals.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     Eyebrow(text: "Signals")
                     FlowLayout(spacing: 6) {
                         ForEach(a.signals, id: \.self) { s in
                             HStack(spacing: 6) {
-                                Image(systemName: "sparkles").font(.system(size: 9))
-                                Text(s).font(.system(size: 11))
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 9))
+                                Text(s)
+                                    .font(.system(size: 11))
                             }
                             .foregroundStyle(FoyerTheme.gold)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(FoyerTheme.gold.opacity(0.30), lineWidth: 0.5)
+                            )
                         }
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 20)
+                .padding(.top, 22)
             }
         }
     }
@@ -81,7 +97,7 @@ struct VisitorDetailView: View {
             Eyebrow(text: "Summary")
             Text(a.summary)
                 .font(.system(size: 13))
-                .foregroundStyle(FoyerTheme.cream)
+                .foregroundStyle(FoyerTheme.creamDim)
                 .lineSpacing(4)
         }
         .padding(.horizontal, 20)
@@ -93,7 +109,7 @@ struct VisitorDetailView: View {
             Eyebrow(text: "Why \(a.tag)")
             Text(a.tagReason)
                 .font(.system(size: 12))
-                .foregroundStyle(FoyerTheme.creamDim)
+                .foregroundStyle(FoyerTheme.textDim)
                 .lineSpacing(3)
         }
         .padding(.horizontal, 20)
@@ -102,11 +118,20 @@ struct VisitorDetailView: View {
 
     private var actionsBar: some View {
         HStack(spacing: 10) {
-            Button {} label: { Text("Call") }
-                .buttonStyle(FoyerGhostButton())
-                .frame(maxWidth: .infinity)
-            Button { goFollowup = true } label: { Text("Review follow-up →") }
-                .buttonStyle(FoyerPrimaryButton())
+            Button {} label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "phone.fill").font(.system(size: 12))
+                    Text("Call")
+                }
+            }
+            .buttonStyle(FoyerGhostButton())
+            .frame(maxWidth: .infinity)
+
+            Button { router.push(.followup(visitor)) } label: {
+                Text("Review follow-up →")
+            }
+            .buttonStyle(FoyerPrimaryButton())
+            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 36)
@@ -115,7 +140,6 @@ struct VisitorDetailView: View {
 
 #Preview {
     NavigationStack {
-        // Preview-only stub.
         VisitorDetailView(visitor: VisitorResult(
             visitor: VisitorInfo(name: "Sarah Chen", email: "", phone: "", speaker: "B"),
             analysis: AnalysisResult(

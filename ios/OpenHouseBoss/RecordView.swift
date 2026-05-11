@@ -1,126 +1,173 @@
 import SwiftUI
 
-// Pre-session setup — type the property address, then start recording.
-// The address is stashed in SessionStore so the upload call carries it.
+// Pre-session setup — breadcrumb back, address field, expected-guests
+// picker (drives AssemblyAI diarization), capture sources, gold CTA.
 struct SetupView: View {
+    @Environment(AppRouter.self) private var router
     @State private var address: String = ""
-    @State private var goLive = false
     @FocusState private var focused: Bool
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
+            WarmBg(tone: .gold)
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    backRow
-                    header
-                    addressField
-                    helper
-                    Spacer().frame(height: 160)
+                    BackBar(crumbs: ["Sessions", "New open house"], onBack: { router.pop() }) {
+                        StatusPill(text: "Draft", tone: .gold)
+                    }
+                    title
+                    propertyCard
+                    sourcesSection
+                    Spacer().frame(height: 200)
                 }
+                .padding(.top, 8)
             }
 
             beginButton
         }
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(isPresented: $goLive) { LiveView() }
         .onAppear { focused = true }
     }
 
-    private var backRow: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Text("← Sessions")
-                    .font(.system(size: 11, design: .monospaced)).tracking(1.4)
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Where are you")
+                .foyerDisplay(32)
+                .foregroundStyle(FoyerTheme.cream)
+            HStack(spacing: 0) {
+                Text("hosting ")
+                    .foyerDisplay(32)
+                    .foregroundStyle(FoyerTheme.cream)
+                Text("today?")
+                    .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(FoyerTheme.gold)
             }
-            Spacer()
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 24)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(text: "New session")
-            Text("Where are you hosting?")
-                .foyerDisplay(30)
-                .foregroundStyle(FoyerTheme.cream)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 28)
-    }
-
-    private var addressField: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(text: "Address")
-            TextField("", text: $address,
-                      prompt: Text("412 W 78th St · Apt 4-A").foregroundStyle(FoyerTheme.textMuted))
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(FoyerTheme.cream)
-                .textInputAutocapitalization(.words)
-                .autocorrectionDisabled()
-                .focused($focused)
-                .padding(.bottom, 10)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(FoyerTheme.borderStrong).frame(height: 1)
+    private var propertyCard: some View {
+        GlassSurface(cornerRadius: 20, strong: true) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    Eyebrow(text: "Property", color: FoyerTheme.gold)
+                    Spacer()
+                    Text("Optional")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.textMuted)
                 }
-            Text("Optional — used to label this session in your history.")
-                .font(.system(size: 12))
-                .foregroundStyle(FoyerTheme.textDim)
-                .padding(.top, 4)
+                TextField("", text: $address,
+                          prompt: Text("412 W 78th · Apt 4-A").foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .focused($focused)
+                Rectangle().fill(FoyerTheme.borderStrong).frame(height: 0.5)
+                Text("Used to label this session in your history.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            .padding(18)
         }
         .padding(.horizontal, 20)
     }
 
-    private var helper: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(text: "How it works")
-            VStack(alignment: .leading, spacing: 8) {
-                helperRow("01", "Begin recording — keep your phone in pocket.")
-                helperRow("02", "Talk naturally with each guest who walks in.")
-                helperRow("03", "End session — we transcribe, identify each speaker, and draft a personalized follow-up.")
+    private var sourcesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Eyebrow(text: "Capture sources")
+                .padding(.horizontal, 20)
+                .padding(.top, 24)
+                .padding(.bottom, 4)
+            GlassSurface(cornerRadius: 14) {
+                HStack(spacing: 12) {
+                    iconBadge(systemName: "mic.fill")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("iPhone microphone")
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text("KEEPS RUNNING IF YOU LOCK THE PHONE")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    Spacer()
+                    StatusPill(text: "On", tone: .sage)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
             }
+            .padding(.horizontal, 20)
+
+            helperRow("01", "Begin recording — phone can stay in your pocket or lock screen.")
+            helperRow("02", "Talk naturally with each guest who walks in.")
+            helperRow("03", "End session — we transcribe, identify each guest, and draft a follow-up.")
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 32)
+    }
+
+    private func iconBadge(systemName: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(FoyerTheme.goldSoft)
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.gold)
+        }
+        .frame(width: 30, height: 30)
     }
 
     private func helperRow(_ num: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 14) {
             Text(num)
-                .font(.system(size: 11, design: .monospaced)).tracking(1.4)
+                .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 22, alignment: .leading)
+                .frame(width: 24, alignment: .leading)
             Text(text)
                 .font(.system(size: 13))
                 .foregroundStyle(FoyerTheme.cream)
                 .lineSpacing(2)
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Hairline().padding(.horizontal, 20) }
     }
 
     private var beginButton: some View {
-        Button {
-            let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
-            SessionStore.shared.pendingAddress = trimmed.isEmpty ? nil : trimmed
-            goLive = true
-        } label: {
-            HStack(spacing: 10) {
-                Circle().fill(Color.black).frame(width: 10, height: 10)
-                Text("Begin recording")
+        VStack(spacing: 10) {
+            Button {
+                let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+                SessionStore.shared.pendingAddress = trimmed.isEmpty ? nil : trimmed
+                // No guest-count hint up front — open-house traffic is
+                // unpredictable. If diarization undercounts, re-run from the
+                // Summary screen with a corrected count.
+                SessionStore.shared.pendingSpeakersExpected = nil
+                router.push(.live)
+            } label: {
+                HStack(spacing: 10) {
+                    Circle().fill(FoyerTheme.inkOnGold).frame(width: 10, height: 10)
+                    Text("Begin recording")
+                }
             }
+            .buttonStyle(FoyerPrimaryButton())
+
+            Text("RECORDINGS SAVED TO FILES APP · OPENHOUSEBOSS / RECORDINGS")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(FoyerTheme.textMuted)
         }
-        .buttonStyle(FoyerPrimaryButton())
         .padding(.horizontal, 20)
         .padding(.bottom, 36)
     }
 }
 
-// Flow layout — wraps children left-to-right onto multiple lines. Used for
-// signal-chip rows where the count varies.
+// Flow layout — wraps children left-to-right onto multiple lines.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
 
@@ -154,5 +201,3 @@ struct FlowLayout: Layout {
         return (y + rowHeight, placements)
     }
 }
-
-#Preview { NavigationStack { SetupView() } }

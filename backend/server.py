@@ -54,13 +54,13 @@ def _update(session_id: str, **updates) -> None:
         _persist(session_id)
 
 
-def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path]) -> None:
+def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None) -> None:
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
         else:
             assert audio_path is not None
-            transcript = transcribe_with_speakers(audio_path)
+            transcript = transcribe_with_speakers(audio_path, speakers_expected=speakers_expected)
 
         identification = identify_agent_and_visitors(transcript, visitors_path)
         visitors_out = []
@@ -97,6 +97,7 @@ async def create_session(
     visitors: Optional[UploadFile] = File(None),
     mock_transcript: Optional[UploadFile] = File(None),
     address: Optional[str] = Form(None),
+    speakers_expected: Optional[int] = Form(None),
 ):
     if not audio and not mock_transcript:
         raise HTTPException(400, "Provide audio or mock_transcript")
@@ -138,7 +139,47 @@ async def create_session(
 
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, mock_path, visitors_path),
+        args=(session_id, audio_path, mock_path, visitors_path, speakers_expected),
+        daemon=True,
+    ).start()
+    return {"id": session_id, "status": "processing"}
+
+
+@app.post("/sessions/{session_id}/reprocess")
+async def reprocess_session(session_id: str, speakers_expected: Optional[int] = Form(None)):
+    """Re-run the pipeline on a saved audio file with a (usually different)
+    speakers_expected hint. Lets the agent fix a diarization undercount
+    without re-recording the session."""
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, f"Session {session_id} not found")
+
+    # Find the audio file in the session dir (filename was preserved at
+    # upload time — could be recording.m4a or similar).
+    audio_path: Optional[Path] = None
+    for candidate in session_dir.iterdir():
+        if candidate.suffix.lower() in {".m4a", ".mp4", ".wav", ".mp3", ".aac"}:
+            audio_path = candidate
+            break
+    if audio_path is None:
+        raise HTTPException(400, "No audio file saved for this session")
+
+    with _sessions_lock:
+        if session_id not in _sessions:
+            path = session_dir / "session.json"
+            if path.exists():
+                _sessions[session_id] = json.loads(path.read_text())
+        _sessions[session_id].update({
+            "status": "processing",
+            "completed_at": None,
+            "error": None,
+            "speakers_expected": speakers_expected,
+        })
+        _persist(session_id)
+
+    threading.Thread(
+        target=_process,
+        args=(session_id, audio_path, None, None, speakers_expected),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}

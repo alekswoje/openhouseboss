@@ -24,6 +24,14 @@ final class SessionStore {
     var listError: String?
     // Address typed in SetupView, used by uploadAndProcess.
     var pendingAddress: String?
+    // Expected-guest-count hint typed in SetupView. Forwarded to AssemblyAI
+    // as `speakers_expected` — significantly improves diarization when the
+    // model would otherwise collapse similar voices into one speaker.
+    var pendingSpeakersExpected: Int?
+    // Guests checked in via the phone kiosk (KioskSignInView) before
+    // recording. Bumps the default speakers_expected and is shown in the
+    // Setup screen as a confirmation.
+    var pendingKioskGuests: [VisitorInput] = []
     // Local m4a from the last recording — kept so SummaryView can offer
     // playback for QA-ing mic placement. Cleared on reset.
     var lastRecordedAudioURL: URL?
@@ -38,12 +46,14 @@ final class SessionStore {
         session = nil
         lastRecordedAudioURL = audioURL
         let address = pendingAddress
+        let expected = pendingSpeakersExpected
         pendingAddress = nil
-        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>")")
+        pendingSpeakersExpected = nil
+        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>"), speakers=\(expected.map(String.init) ?? "<auto>")")
         pollTask = Task { [weak self] in
             do {
                 let initial = try await APIClient.shared.createSession(
-                    audioURL: audioURL, address: address)
+                    audioURL: audioURL, address: address, speakersExpected: expected)
                 Log.net("createSession ← id=\(initial.id) status=\(initial.status)")
                 await MainActor.run {
                     self?.session = initial
@@ -129,6 +139,33 @@ final class SessionStore {
         }
     }
 
+    // Re-run analysis on the current session's saved audio with a different
+    // speakers_expected hint. The Summary screen uses this when diarization
+    // undercounts (e.g. one person doing impressions → AAI collapsed them).
+    func reanalyze(speakersExpected: Int) {
+        guard let sessionId = session?.id else { return }
+        cancel()
+        phase = .processing
+        Log.net("reanalyze → \(sessionId) speakers=\(speakersExpected)")
+        pollTask = Task { [weak self] in
+            do {
+                try await APIClient.shared.reprocessSession(id: sessionId, speakersExpected: speakersExpected)
+                let final = try await APIClient.shared.pollUntilDone(id: sessionId)
+                await MainActor.run {
+                    self?.session = final
+                    self?.phase = (final.status == "error")
+                        ? .failed(final.error ?? "Unknown error")
+                        : .ready
+                }
+                await self?.refreshSessions()
+            } catch {
+                await MainActor.run {
+                    self?.phase = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
     func cancel() {
         pollTask?.cancel()
         pollTask = nil
@@ -139,6 +176,7 @@ final class SessionStore {
         session = nil
         phase = .idle
         pendingAddress = nil
+        pendingSpeakersExpected = nil
         lastRecordedAudioURL = nil
     }
 }
