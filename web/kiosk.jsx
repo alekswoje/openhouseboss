@@ -176,12 +176,15 @@ const KioskLive = () => {
 
   return (
     <div data-screen-label="Kiosk live" style={{
-      position: 'fixed', inset: 0,
+      // Regular block, not fixed — the .route-frame wrapper above has
+      // `transform`, which would otherwise become our containing block and
+      // collapse `inset: 0` to a 0-tall frame.
+      position: 'relative',
+      minHeight: '100vh', width: '100%',
       background: 'var(--bg-deep)',
       color: 'var(--cream)',
       display: 'grid', placeItems: 'center',
       overflow: 'hidden',
-      zIndex: 999,
     }}>
       {/* Decorative gold radial behind the form. */}
       <div aria-hidden="true" style={{
