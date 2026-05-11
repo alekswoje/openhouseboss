@@ -211,6 +211,10 @@ struct SummaryView: View {
     private var visitorList: some View {
         let visitors = store.session?.result?.visitors ?? []
         return VStack(alignment: .leading, spacing: 0) {
+            if let coverage = store.session?.result?.scriptCoverage {
+                scriptCoverageSection(coverage)
+                Spacer().frame(height: 20)
+            }
             if visitors.isEmpty {
                 Text("No guests detected. The recording might have been too short or only contained your voice.")
                     .font(.system(size: 13))
@@ -269,7 +273,7 @@ struct SummaryView: View {
 
             if reanalyzeExpanded {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Tell the diarizer exactly how many distinct voices are in the recording, then re-run. Useful when one person voices multiple guests, or when guests have similar voices.")
+                    Text("How many distinct guests are in the recording (not counting you)? We'll tell the diarizer exactly that count and re-run.")
                         .font(.system(size: 12))
                         .foregroundStyle(FoyerTheme.textDim)
                         .lineSpacing(2)
@@ -284,7 +288,7 @@ struct SummaryView: View {
                             Text("\(reanalyzeCount)")
                                 .font(.system(size: 32, weight: .medium))
                                 .foregroundStyle(FoyerTheme.gold)
-                            Text("EXPECTED VOICES")
+                            Text("GUESTS (NOT YOU)")
                                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                                 .tracking(1.4)
                                 .foregroundStyle(FoyerTheme.textMuted)
@@ -297,8 +301,8 @@ struct SummaryView: View {
                         .buttonStyle(.plain)
                     }
 
-                    Button { store.reanalyze(speakersExpected: reanalyzeCount) } label: {
-                        Text("Re-analyze with \(reanalyzeCount)")
+                    Button { store.reanalyze(guestsExpected: reanalyzeCount) } label: {
+                        Text("Re-analyze with \(reanalyzeCount) guest\(reanalyzeCount == 1 ? "" : "s")")
                     }
                     .buttonStyle(FoyerPrimaryButton())
                 }
@@ -447,6 +451,173 @@ struct SummaryView: View {
         default:
             return "Just a moment."
         }
+    }
+}
+
+// MARK: – Script coverage
+
+extension SummaryView {
+    @ViewBuilder
+    func scriptCoverageSection(_ coverage: ScriptCoverage) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Eyebrow(text: "Script coverage", color: FoyerTheme.gold)
+                Spacer()
+                if let score = coverage.score {
+                    Text("\(score)")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(coverageScoreColor(score))
+                    Text("/100")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+            }
+            .padding(.horizontal, 20)
+
+            if let err = coverage.error {
+                GlassSurface(cornerRadius: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Eyebrow(text: "Couldn't grade", color: FoyerTheme.terracotta)
+                        Text(err)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 20)
+            } else {
+                Text(coverage.scriptName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(.horizontal, 20)
+                if let s = coverage.overallSummary, !s.isEmpty {
+                    Text(s)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 20)
+                }
+                if let steps = coverage.steps {
+                    coverageRows(steps)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func coverageRows(_ steps: [StepCoverage]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(steps) { step in
+                CoverageRow(step: step)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+    }
+
+    private func coverageScoreColor(_ score: Int) -> Color {
+        switch score {
+        case 75...:    return FoyerTheme.sage
+        case 40..<75:  return FoyerTheme.gold
+        default:       return FoyerTheme.terracotta
+        }
+    }
+}
+
+// One row in the coverage list — tap to expand the suggestion + evidence.
+struct CoverageRow: View {
+    let step: StepCoverage
+    @State private var expanded = false
+
+    var body: some View {
+        Button { withAnimation { expanded.toggle() } } label: {
+            GlassSurface(cornerRadius: 12) {
+                VStack(alignment: .leading, spacing: expanded ? 10 : 0) {
+                    HStack(spacing: 10) {
+                        statusPill
+                        Text(stepLabel)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .lineLimit(1)
+                        Spacer()
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    if expanded {
+                        if !step.evidence.isEmpty {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("YOU SAID")
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .tracking(1.4)
+                                    .foregroundStyle(FoyerTheme.textMuted)
+                                Text("\"\(step.evidence)\"")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(FoyerTheme.cream)
+                                    .lineSpacing(2)
+                            }
+                        }
+                        if !step.suggestion.isEmpty {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("SUGGESTION")
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .tracking(1.4)
+                                    .foregroundStyle(FoyerTheme.gold)
+                                Text(step.suggestion)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(FoyerTheme.creamDim)
+                                    .lineSpacing(2)
+                            }
+                        }
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // Pretty label from step id. For known Aleks-script ids we use human
+    // labels; unknown ids fall back to the raw id (with underscores → spaces).
+    private var stepLabel: String {
+        ScriptStepLookup.label(for: step.stepId)
+    }
+
+    @ViewBuilder
+    private var statusPill: some View {
+        switch step.status.lowercased() {
+        case "hit":     StatusPill(text: "Hit",     tone: .sage)
+        case "partial": StatusPill(text: "Partial", tone: .gold)
+        case "missed":  StatusPill(text: "Missed",  tone: .live)
+        default:        StatusPill(text: step.status, tone: .glass)
+        }
+    }
+}
+
+// Lookup for known preset script step ids → human labels. Mirrors the
+// labels in pipeline/scripts.py.
+enum ScriptStepLookup {
+    static let labels: [String: String] = [
+        "opener":              "The Opener",
+        "buyer_timeline":      "Step 1 — Timeline",
+        "buyer_search_history":"Step 2 — Search History",
+        "buyer_pain":          "Step 3 — Uncover Pain",
+        "buyer_offer_check":   "Step 4 — Offer Check",
+        "buyer_lender":        "Step 5 — Lender",
+        "buyer_release":       "Step 6 — Release + Hook",
+        "buyer_reengage":      "Step 7 — Re-Engage",
+        "buyer_close_rebate":  "Step 8 — Close + Rebate",
+        "seller_pricing":      "Seller — Pricing Pivot",
+        "seller_curiosity":    "Seller — Curiosity Test",
+        "seller_marketing":    "Seller — Marketing Pitch",
+        "seller_comp":         "Seller — Comp Offer",
+    ]
+
+    static func label(for id: String) -> String {
+        labels[id] ?? id.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 

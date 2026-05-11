@@ -46,13 +46,71 @@ struct SessionResult: Codable, Hashable {
     let unmatchedSpeakers: [String]
     let visitors: [VisitorResult]
     let fullTranscript: String
+    var scriptCoverage: ScriptCoverage?
 
     enum CodingKeys: String, CodingKey {
         case visitors
         case agentSpeaker = "agent_speaker"
         case unmatchedSpeakers = "unmatched_speakers"
         case fullTranscript = "full_transcript"
+        case scriptCoverage = "script_coverage"
     }
+}
+
+// MARK: – Script + script coverage
+
+// A preset (or eventually uploaded) script attached to a session. The
+// Setup screen lets the agent pick one before recording, and the backend
+// grades the agent's transcript against it.
+struct ScriptSummary: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let description: String
+    let stepCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case stepCount = "step_count"
+    }
+}
+
+struct StepCoverage: Codable, Hashable, Identifiable {
+    let stepId: String
+    let status: String          // "hit" | "partial" | "missed"
+    let evidence: String        // verbatim quote from agent transcript or ""
+    let suggestion: String
+
+    var id: String { stepId }
+
+    enum CodingKeys: String, CodingKey {
+        case status, evidence, suggestion
+        case stepId = "step_id"
+    }
+}
+
+struct ScriptCoverage: Codable, Hashable {
+    let scriptId: String
+    let scriptName: String
+    let overallSummary: String?
+    let score: Int?
+    let steps: [StepCoverage]?
+    let error: String?          // present when coverage grading failed
+
+    enum CodingKeys: String, CodingKey {
+        case score, steps, error
+        case scriptId = "script_id"
+        case scriptName = "script_name"
+        case overallSummary = "overall_summary"
+    }
+}
+
+// We also expose step labels client-side so Summary can show readable
+// names instead of bare step_id strings. Mirrors the backend's preset list.
+struct ScriptStepInfo: Hashable, Identifiable {
+    let id: String
+    let section: String
+    let label: String
+    let quote: String
 }
 
 struct VisitorResult: Codable, Hashable, Identifiable {

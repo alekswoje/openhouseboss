@@ -4,7 +4,9 @@ import SwiftUI
 // picker (drives AssemblyAI diarization), capture sources, gold CTA.
 struct SetupView: View {
     @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
     @State private var address: String = ""
+    @State private var scriptId: String? = nil
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -19,6 +21,7 @@ struct SetupView: View {
                     }
                     title
                     propertyCard
+                    scriptPicker
                     sourcesSection
                     Spacer().frame(height: 200)
                 }
@@ -29,6 +32,7 @@ struct SetupView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .onAppear { focused = true }
+        .task { await store.refreshScripts() }
     }
 
     private var title: some View {
@@ -77,6 +81,65 @@ struct SetupView: View {
             .padding(18)
         }
         .padding(.horizontal, 20)
+    }
+
+    // Script picker — agents attach a script and we'll grade their actual
+    // conversation against it after the session. "None" leaves coverage off.
+    private var scriptPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Eyebrow(text: "Script (optional)", color: FoyerTheme.gold)
+                Spacer()
+                Text("COACHING AFTER RECORDING")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            scriptRow(id: nil, name: "No script", subtitle: "SKIP COVERAGE GRADING")
+            ForEach(store.availableScripts) { s in
+                scriptRow(id: s.id, name: s.name, subtitle: "\(s.stepCount) STEPS · \(s.description.uppercased())")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 22)
+    }
+
+    private func scriptRow(id: String?, name: String, subtitle: String) -> some View {
+        let active = scriptId == id
+        return Button { scriptId = id } label: {
+            GlassSurface(cornerRadius: 12, strong: active) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .stroke(active ? FoyerTheme.gold : FoyerTheme.borderStrong, lineWidth: 1)
+                        if active {
+                            Circle()
+                                .fill(FoyerTheme.gold)
+                                .frame(width: 10, height: 10)
+                        }
+                    }
+                    .frame(width: 18, height: 18)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name)
+                            .font(.system(size: 14, weight: active ? .semibold : .medium))
+                            .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.cream)
+                        Text(subtitle)
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(active ? FoyerTheme.gold.opacity(0.4) : .clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var sourcesSection: some View {
@@ -148,6 +211,7 @@ struct SetupView: View {
                 // unpredictable. If diarization undercounts, re-run from the
                 // Summary screen with a corrected count.
                 SessionStore.shared.pendingSpeakersExpected = nil
+                SessionStore.shared.pendingScriptId = scriptId
                 router.push(.live)
             } label: {
                 HStack(spacing: 10) {

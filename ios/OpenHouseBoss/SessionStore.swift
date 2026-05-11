@@ -32,6 +32,11 @@ final class SessionStore {
     // recording. Bumps the default speakers_expected and is shown in the
     // Setup screen as a confirmation.
     var pendingKioskGuests: [VisitorInput] = []
+    // Script the agent picked on the Setup screen — drives post-session
+    // coverage grading. nil = no coverage analysis.
+    var pendingScriptId: String?
+    // Preset scripts pulled from /scripts. Refreshed lazily.
+    var availableScripts: [ScriptSummary] = []
     // Local m4a from the last recording — kept so SummaryView can offer
     // playback for QA-ing mic placement. Cleared on reset.
     var lastRecordedAudioURL: URL?
@@ -47,13 +52,15 @@ final class SessionStore {
         lastRecordedAudioURL = audioURL
         let address = pendingAddress
         let expected = pendingSpeakersExpected
+        let scriptId = pendingScriptId
         pendingAddress = nil
         pendingSpeakersExpected = nil
-        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>"), speakers=\(expected.map(String.init) ?? "<auto>")")
+        pendingScriptId = nil
+        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>"), speakers=\(expected.map(String.init) ?? "<auto>"), script=\(scriptId ?? "<none>")")
         pollTask = Task { [weak self] in
             do {
                 let initial = try await APIClient.shared.createSession(
-                    audioURL: audioURL, address: address, speakersExpected: expected)
+                    audioURL: audioURL, address: address, speakersExpected: expected, scriptId: scriptId)
                 Log.net("createSession ← id=\(initial.id) status=\(initial.status)")
                 await MainActor.run {
                     self?.session = initial
@@ -142,14 +149,20 @@ final class SessionStore {
     // Re-run analysis on the current session's saved audio with a different
     // speakers_expected hint. The Summary screen uses this when diarization
     // undercounts (e.g. one person doing impressions → AAI collapsed them).
-    func reanalyze(speakersExpected: Int) {
+    //
+    // `guestsExpected` is what the agent thinks in (number of OTHER people
+    // in the room). AssemblyAI's API counts the agent too, so we add 1 on
+    // the way out — set guestsExpected=2 → speakers_expected=3 → AAI looks
+    // for agent + 2 guests.
+    func reanalyze(guestsExpected: Int) {
         guard let sessionId = session?.id else { return }
         cancel()
         phase = .processing
-        Log.net("reanalyze → \(sessionId) speakers=\(speakersExpected)")
+        let totalSpeakers = guestsExpected + 1
+        Log.net("reanalyze → \(sessionId) guests=\(guestsExpected) (total speakers=\(totalSpeakers))")
         pollTask = Task { [weak self] in
             do {
-                try await APIClient.shared.reprocessSession(id: sessionId, speakersExpected: speakersExpected)
+                try await APIClient.shared.reprocessSession(id: sessionId, speakersExpected: totalSpeakers)
                 let final = try await APIClient.shared.pollUntilDone(id: sessionId)
                 await MainActor.run {
                     self?.session = final
@@ -177,6 +190,17 @@ final class SessionStore {
         phase = .idle
         pendingAddress = nil
         pendingSpeakersExpected = nil
+        pendingScriptId = nil
         lastRecordedAudioURL = nil
+    }
+
+    // Fetch the preset script list once per app launch (cheap, ~1 round-trip).
+    func refreshScripts() async {
+        do {
+            let items = try await APIClient.shared.listScripts()
+            await MainActor.run { self.availableScripts = items }
+        } catch {
+            Log.warn("refreshScripts failed: \(error.localizedDescription)")
+        }
     }
 }

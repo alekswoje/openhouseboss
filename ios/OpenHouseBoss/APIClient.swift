@@ -27,19 +27,20 @@ actor APIClient {
     // iOS-only path: upload audio, let the backend synthesize visitors from
     // diarized speakers. Returns the freshly-created session (status=processing).
     // `speakersExpected` is forwarded to AssemblyAI as a diarization hint.
-    func createSession(audioURL: URL, address: String? = nil, speakersExpected: Int? = nil) async throws -> Session {
-        try await createSession(audioURL: audioURL, address: address, visitorsCSV: nil, speakersExpected: speakersExpected)
+    // `scriptId` attaches a preset script for post-session coverage grading.
+    func createSession(audioURL: URL, address: String? = nil, speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
+        try await createSession(audioURL: audioURL, address: address, visitorsCSV: nil, speakersExpected: speakersExpected, scriptId: scriptId)
     }
 
     // Kiosk path: upload audio plus a sign-in CSV so the backend can match
     // named visitors to speakers.
-    func createSession(audioURL: URL, address: String?, visitors: [VisitorInput], speakersExpected: Int? = nil) async throws -> Session {
+    func createSession(audioURL: URL, address: String?, visitors: [VisitorInput], speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
         let csv = (["name,email,phone,signed_in_at"]
             + visitors.map { "\($0.name),\($0.email),\($0.phone)," }).joined(separator: "\n")
-        return try await createSession(audioURL: audioURL, address: address, visitorsCSV: Data(csv.utf8), speakersExpected: speakersExpected)
+        return try await createSession(audioURL: audioURL, address: address, visitorsCSV: Data(csv.utf8), speakersExpected: speakersExpected, scriptId: scriptId)
     }
 
-    private func createSession(audioURL: URL, address: String?, visitorsCSV: Data?, speakersExpected: Int?) async throws -> Session {
+    private func createSession(audioURL: URL, address: String?, visitorsCSV: Data?, speakersExpected: Int?, scriptId: String?) async throws -> Session {
         let boundary = "Boundary-\(UUID().uuidString)"
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
         req.httpMethod = "POST"
@@ -51,6 +52,9 @@ actor APIClient {
         }
         if let n = speakersExpected, n > 0 {
             body.appendField(boundary: boundary, name: "speakers_expected", value: String(n))
+        }
+        if let sid = scriptId, !sid.isEmpty {
+            body.appendField(boundary: boundary, name: "script_id", value: sid)
         }
         if let csv = visitorsCSV {
             body.appendForm(boundary: boundary, name: "visitors", filename: "visitors.csv",
@@ -64,6 +68,15 @@ actor APIClient {
         let (data, response) = try await self.session.upload(for: req, from: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
+    }
+
+    // GET /scripts — list of preset scripts the agent can attach.
+    func listScripts() async throws -> [ScriptSummary] {
+        let url = Config.backendURL.appendingPathComponent("scripts")
+        let (data, response) = try await self.session.data(from: url)
+        try validate(response: response, data: data)
+        struct Wrapper: Codable { let scripts: [ScriptSummary] }
+        return try JSONDecoder().decode(Wrapper.self, from: data).scripts
     }
 
     // GET /sessions — compact list for the home screen.

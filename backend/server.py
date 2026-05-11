@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pipeline.analyze import analyze_visitor
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
+from pipeline.script_coverage import grade_against_script
+from pipeline.scripts import get_script, list_scripts_summary
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
 
@@ -54,7 +56,7 @@ def _update(session_id: str, **updates) -> None:
         _persist(session_id)
 
 
-def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None) -> None:
+def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None) -> None:
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
@@ -71,6 +73,25 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                 "analysis": analysis.model_dump(),
             })
 
+        # Script coverage — only runs if the agent attached a script to this
+        # session. Grades the agent's utterances against the script steps.
+        script_coverage_out = None
+        script = get_script(script_id)
+        if script is not None:
+            try:
+                coverage = grade_against_script(
+                    transcript, script, identification.agent_speaker
+                )
+                script_coverage_out = coverage.model_dump()
+            except Exception as ce:
+                # Don't fail the whole session if coverage grading errors —
+                # surface the error inline so the UI can show it.
+                script_coverage_out = {
+                    "script_id": script.id,
+                    "script_name": script.name,
+                    "error": str(ce),
+                }
+
         _update(
             session_id,
             status="ready",
@@ -80,6 +101,7 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                 "unmatched_speakers": identification.unmatched_speakers,
                 "visitors": visitors_out,
                 "full_transcript": transcript.text,
+                "script_coverage": script_coverage_out,
             },
         )
     except Exception as e:
@@ -98,6 +120,7 @@ async def create_session(
     mock_transcript: Optional[UploadFile] = File(None),
     address: Optional[str] = Form(None),
     speakers_expected: Optional[int] = Form(None),
+    script_id: Optional[str] = Form(None),
 ):
     if not audio and not mock_transcript:
         raise HTTPException(400, "Provide audio or mock_transcript")
@@ -128,6 +151,7 @@ async def create_session(
         "id": session_id,
         "status": "processing",
         "address": (address or "").strip() or None,
+        "script_id": script_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": None,
         "result": None,
@@ -139,10 +163,26 @@ async def create_session(
 
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, mock_path, visitors_path, speakers_expected),
+        args=(session_id, audio_path, mock_path, visitors_path, speakers_expected, script_id),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
+
+
+@app.get("/scripts")
+def list_scripts():
+    """Compact list of available preset scripts for the iOS Setup picker."""
+    return {"scripts": list_scripts_summary()}
+
+
+@app.get("/scripts/{script_id}")
+def get_script_detail(script_id: str):
+    """Full script with all steps — used by the Setup screen to preview
+    what the agent is about to attach."""
+    s = get_script(script_id)
+    if s is None:
+        raise HTTPException(404, f"Script {script_id} not found")
+    return s.model_dump()
 
 
 @app.post("/sessions/{session_id}/reprocess")
@@ -169,6 +209,7 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
             path = session_dir / "session.json"
             if path.exists():
                 _sessions[session_id] = json.loads(path.read_text())
+        existing_script_id = _sessions[session_id].get("script_id")
         _sessions[session_id].update({
             "status": "processing",
             "completed_at": None,
@@ -177,9 +218,11 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
         })
         _persist(session_id)
 
+    # Re-run uses the same script the session was originally created with —
+    # the agent can't switch scripts mid-flight, that would be confusing.
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, None, None, speakers_expected),
+        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
