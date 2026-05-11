@@ -39,13 +39,15 @@ const Dashboard = () => {
             { label: 'Needs action', sub: `${needs.length} open` },
             { label: 'Done',      sub: `${done.length} archived/replied` },
           ].map(item => (
-            <div key={item.label} onClick={item.go || (() => {})} style={{
+            <div key={item.label}
+                 className={'nav-item' + (item.active ? ' is-active' : '')}
+                 onClick={item.go || (() => {})} style={{
               padding: '12px 24px',
               borderLeft: item.active ? '2px solid var(--gold)' : '2px solid transparent',
               background: item.active ? 'var(--gold-soft)' : 'transparent',
               cursor: item.go ? 'pointer' : 'default',
             }}>
-              <div style={{ fontSize: 14, color: item.active ? 'var(--gold)' : 'var(--cream)', fontWeight: item.active ? 500 : 400 }}>{item.label}</div>
+              <div className="nav-item-label" style={{ fontSize: 14, color: item.active ? 'var(--gold)' : 'var(--cream)', fontWeight: item.active ? 500 : 400 }}>{item.label}</div>
               <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.1em' }}>{item.sub}</div>
             </div>
           ))}
@@ -53,7 +55,7 @@ const Dashboard = () => {
 
         {/* User card pinned to bottom */}
         <div style={{ padding: '20px 24px', borderTop: '1px solid var(--hairline)', position: 'absolute', bottom: 24, width: 240 }}>
-          <div onClick={() => setMenuOpen(o => !o)} style={{
+          <div className="user-card" onClick={() => setMenuOpen(o => !o)} style={{
             display: 'flex', alignItems: 'center', gap: 12,
             padding: 10, borderRadius: 12,
             background: 'var(--bg-card)', border: '1px solid var(--hairline)', cursor: 'pointer',
@@ -125,7 +127,7 @@ const Dashboard = () => {
                 { v: needs.length, label: 'Needs action', sub: 'in the inbox' },
                 { v: visitors.length, label: 'Leads captured', sub: `${recordedSummaries.length} open houses` },
               ].map(stat => (
-                <div key={stat.label} style={{ background: 'var(--bg-card)', border: '1px solid var(--hairline)', borderRadius: 14, padding: '28px 24px' }}>
+                <div key={stat.label} className="stat-card" style={{ background: 'var(--bg-card)', borderRadius: 14, padding: '28px 24px' }}>
                   <div className="eyebrow">{stat.label}</div>
                   <div style={{ marginTop: 14, fontFamily: 'var(--serif)', fontSize: 48, lineHeight: 1, color: 'var(--cream)' }}>
                     {stat.v}
@@ -166,13 +168,13 @@ const Dashboard = () => {
                         return (
                           <div
                             key={v.visitor.name + ':' + (v.visitor.speaker || '')}
+                            className="lead-row"
                             onClick={() => goToSession(featured.id, v.visitor.name)}
                             style={{
-                              padding: '22px 0',
+                              padding: '22px 4px',
                               borderTop: '1px solid var(--hairline)',
                               borderBottom: i === featuredVisitors.length - 1 ? '1px solid var(--hairline)' : 'none',
                               display: 'grid', gridTemplateColumns: '40px 1fr auto', gap: 20, alignItems: 'start',
-                              cursor: 'pointer',
                             }}>
                             <div className="mono" style={{ fontSize: 12, color: 'var(--gold)', letterSpacing: '0.1em' }}>{String(i + 1).padStart(2, '0')}</div>
                             <div>
@@ -191,7 +193,7 @@ const Dashboard = () => {
                             </div>
                             <div style={{ textAlign: 'right' }}>
                               <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>{leadStateLabel(v.lead_state)}</div>
-                              <div className="serif-it" style={{ fontSize: 13, color: 'var(--gold)', marginTop: 18 }}>Review →</div>
+                              <div className="serif-it lead-row-review" style={{ fontSize: 13, color: 'var(--gold)', marginTop: 18 }}>Review →</div>
                             </div>
                           </div>
                         );
@@ -217,8 +219,9 @@ const Dashboard = () => {
                     const tagToken = (v.analysis?.tag || '').toLowerCase();
                     return (
                       <div key={v._session.id + ':' + v._id}
+                           className="queue-row"
                            onClick={() => goToSession(v._session.id, v.visitor.name)}
-                           style={{ padding: '16px 0', borderBottom: '1px solid var(--hairline)', cursor: 'pointer' }}>
+                           style={{ padding: '16px 6px', borderBottom: '1px solid var(--hairline)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: 14, color: 'var(--cream)' }}>{v.visitor.name}</span>
                           <Tag kind={tagToken} />

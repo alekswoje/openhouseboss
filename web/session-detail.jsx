@@ -121,8 +121,9 @@ const SessionDetail = () => {
               const isActive = s.id === session.id;
               return (
                 <div key={s.id}
+                     className="session-row"
                      onClick={() => { window.foyerActiveSessionId = s.id; setActiveVisitorKey(null); setEditing(false); }}
-                     style={{ padding: '10px 0', borderBottom: '1px solid var(--hairline)', cursor: 'pointer' }}>
+                     style={{ padding: '10px 6px', borderBottom: '1px solid var(--hairline)' }}>
                   <div style={{ fontSize: 13, color: isActive ? 'var(--gold)' : 'var(--cream)' }}>{s.address || 'Untitled'}</div>
                   <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: 3 }}>
                     {fmtRelative(s.created_at)}
@@ -165,7 +166,10 @@ const SessionDetail = () => {
           {/* filter chips */}
           <div style={{ marginTop: 18, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {['all', 'buyer', 'seller', 'browser'].map(t => (
-              <button key={t} onClick={() => setFilter(t)} className="mono" style={{
+              <button key={t}
+                      onClick={() => setFilter(t)}
+                      className={'mono chip' + (filter === t ? ' is-active' : '')}
+                      style={{
                 padding: '4px 12px',
                 background: filter === t ? 'var(--gold-soft)' : 'transparent',
                 color: filter === t ? 'var(--gold)' : 'var(--text-dim)',
@@ -184,13 +188,15 @@ const SessionDetail = () => {
             const visDraft = vis.analysis?.followUpDraft || vis.analysis?.follow_up_draft || '';
             return (
               <div key={keyOf(vis)}
+                   className={'session-row' + (isActive ? ' is-active' : '')}
                    onClick={() => { setActiveVisitorKey(keyOf(vis)); setDraft(visDraft); setEditing(false); }}
                    style={{
                      padding: '16px 28px',
                      borderLeft: isActive ? '2px solid var(--gold)' : '2px solid transparent',
                      background: isActive ? 'var(--gold-soft)' : 'transparent',
-                     cursor: 'pointer',
                      borderBottom: '1px solid var(--hairline)',
+                     borderRadius: 0,
+                     margin: 0,
                    }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span className="serif" style={{ fontSize: 18, color: isActive ? 'var(--gold)' : 'var(--cream)' }}>{vis.visitor.name}</span>

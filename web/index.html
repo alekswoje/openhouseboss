@@ -43,18 +43,121 @@
     a,
     .lead-row,
     .stat-card,
-    .nav-item {
+    .nav-item,
+    .queue-row,
+    .chip,
+    .turn-row,
+    .user-card,
+    .session-row {
       transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
-                  transform 160ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 200ms ease;
+                  transform 160ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 220ms ease, opacity 160ms ease;
     }
     .btn:hover,
     .lead-row:hover,
-    .stat-card:hover {
+    .stat-card:hover,
+    .queue-row:hover,
+    .session-row:hover {
       transform: translateY(-1px);
     }
     .lead-row:active,
-    .btn:active {
+    .btn:active,
+    .queue-row:active,
+    .session-row:active {
       transform: translateY(0);
+    }
+
+    /* Cards: gold border + soft brass glow lift on hover.  */
+    .stat-card {
+      cursor: default;
+      border: 1px solid var(--hairline);
+    }
+    .stat-card:hover {
+      border-color: rgba(196, 162, 82, 0.45);
+      box-shadow: 0 14px 36px -22px rgba(196, 162, 82, 0.55);
+    }
+
+    /* Lead rows in the "most recent session" feature list. */
+    .lead-row {
+      cursor: pointer;
+      padding-left: 4px;
+      padding-right: 4px;
+      margin-left: -4px;
+      margin-right: -4px;
+      border-radius: 6px;
+    }
+    .lead-row:hover {
+      background: rgba(196, 162, 82, 0.06);
+    }
+    .lead-row:hover .lead-row-review {
+      color: var(--gold);
+      transform: translateX(2px);
+    }
+    .lead-row-review {
+      transition: transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1), color 200ms ease;
+      display: inline-block;
+    }
+
+    /* Right-rail follow-up queue rows. */
+    .queue-row {
+      cursor: pointer;
+      padding-left: 6px;
+      padding-right: 6px;
+      margin-left: -6px;
+      margin-right: -6px;
+      border-radius: 6px;
+    }
+    .queue-row:hover {
+      background: rgba(196, 162, 82, 0.06);
+    }
+
+    /* Sidebar nav items. */
+    .nav-item {
+      cursor: pointer;
+    }
+    .nav-item:hover:not(.is-active) {
+      background: rgba(196, 162, 82, 0.05);
+    }
+    .nav-item:hover:not(.is-active) .nav-item-label {
+      color: var(--cream);
+    }
+
+    /* User card / dropdown in the sidebar foot. */
+    .user-card { cursor: pointer; }
+    .user-card:hover {
+      border-color: rgba(196, 162, 82, 0.4);
+      background: rgba(196, 162, 82, 0.04);
+    }
+
+    /* Recent-session list in session-detail's left rail. */
+    .session-row {
+      cursor: pointer;
+      padding-left: 6px; padding-right: 6px;
+      margin-left: -6px; margin-right: -6px;
+      border-radius: 6px;
+    }
+    .session-row:hover { background: rgba(196, 162, 82, 0.06); }
+
+    /* Filter chips (All / Buyer / Seller / Browser). */
+    .chip { cursor: pointer; }
+    .chip:hover:not(.is-active) {
+      background: rgba(196, 162, 82, 0.06);
+      border-color: rgba(196, 162, 82, 0.4) !important;
+      color: var(--gold) !important;
+    }
+
+    /* Hover state on transcript turn rows. */
+    .turn-row { cursor: pointer; border-radius: 6px; padding-left: 8px; padding-right: 8px; margin-left: -8px; margin-right: -8px; }
+    .turn-row:hover { background: rgba(196, 162, 82, 0.04); }
+
+    /* Generic <a> hover for inline links that fall through to anchor styling. */
+    a { transition: color 160ms ease, opacity 160ms ease, transform 160ms ease; }
+
+    /* Buttons get a subtle glow on hover. */
+    .btn:hover {
+      border-color: rgba(196, 162, 82, 0.45);
+    }
+    .btn.btn-primary:hover {
+      box-shadow: 0 14px 32px -18px rgba(196, 162, 82, 0.6);
     }
 
     /* Audio player — sticky bar pinned above the scroll area on session
