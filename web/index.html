@@ -327,16 +327,19 @@
     // Marketing routes ('home', 'sign in') are demo helpers visible to anyone.
     // App routes (everything else) sit behind the AppShell sidebar and assume
     // /auth/me succeeds — useFoyerData kicks unauthed users back to '#/'.
+    // `kiosk: true` is a separate flag: those routes hide the route-nav and
+    // any other agent-facing chrome so a walk-in guest can't escape.
     const ROUTES = [
-      { hash: '#/',         label: 'Home',     El: () => <Landing />,     marketing: true },
-      { hash: '#/login',    label: 'Sign in',  El: () => <Login />,       marketing: true },
-      { hash: '#/app',      label: 'Today',    El: () => <Dashboard /> },
-      { hash: '#/sessions', label: 'Sessions', El: () => <SessionsList /> },
-      { hash: '#/session',  label: 'Detail',   El: () => <SessionDetail /> },
-      { hash: '#/kiosk',    label: 'Kiosk',    El: () => <KioskForm /> },
+      { hash: '#/',           label: 'Home',     El: () => <Landing />,     marketing: true },
+      { hash: '#/login',      label: 'Sign in',  El: () => <Login />,       marketing: true },
+      { hash: '#/app',        label: 'Today',    El: () => <Dashboard /> },
+      { hash: '#/sessions',   label: 'Sessions', El: () => <SessionsList /> },
+      { hash: '#/session',    label: 'Detail',   El: () => <SessionDetail /> },
+      { hash: '#/kiosk',      label: 'Kiosk',    El: () => <KioskForm /> },
+      { hash: '#/kiosk-live', label: 'Live',     El: () => <KioskLive />,   kiosk: true },
       // Aliases so the sidebar's "Leads" entry has a destination that
       // re-uses the existing inbox surface in SessionsList for now.
-      { hash: '#/leads',    label: 'Leads',    El: () => <SessionsList /> },
+      { hash: '#/leads',      label: 'Leads',    El: () => <SessionsList /> },
     ];
 
     function useHashRoute() {
@@ -425,6 +428,7 @@
 
       const route = ROUTES.find(r => r.hash === shownHash) || ROUTES[0];
       const Screen = route.El;
+      const isKiosk = !!route.kiosk;
 
       return (
         <>
@@ -432,13 +436,15 @@
             <Screen />
           </div>
           <ToastHost toasts={toasts} />
-          <nav className="route-nav" aria-label="Foyer demo routes">
-            {ROUTES.map(r => (
-              <a key={r.hash} href={r.hash} className={r.hash === hash ? 'is-active' : ''}>
-                {r.label}
-              </a>
-            ))}
-          </nav>
+          {!isKiosk && (
+            <nav className="route-nav" aria-label="Foyer demo routes">
+              {ROUTES.filter(r => !r.kiosk).map(r => (
+                <a key={r.hash} href={r.hash} className={r.hash === hash ? 'is-active' : ''}>
+                  {r.label}
+                </a>
+              ))}
+            </nav>
+          )}
         </>
       );
     }
