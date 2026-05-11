@@ -39,7 +39,7 @@
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
-		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFE577A9E7DBCF6DCC8F6928 /* OpenHouseBossApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHouseBossApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -230,6 +230,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YJ85MR8WLM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "OpenHouseBoss/Generated-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -305,6 +306,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YJ85MR8WLM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "OpenHouseBoss/Generated-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (

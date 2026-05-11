@@ -14,6 +14,16 @@ enum APIError: Error, LocalizedError {
 actor APIClient {
     static let shared = APIClient()
 
+    // Snappy timeouts so a missing/unreachable backend surfaces as an error
+    // card in seconds, not a frozen UI for the URLSession default minute.
+    private let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 8
+        cfg.timeoutIntervalForResource = 120
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
+
     // iOS-only path: upload audio, let the backend synthesize visitors from
     // diarized speakers. Returns the freshly-created session (status=processing).
     func createSession(audioURL: URL, address: String? = nil) async throws -> Session {
@@ -47,7 +57,7 @@ actor APIClient {
                         contentType: "audio/m4a", data: audioData)
         body.append("--\(boundary)--\r\n")
 
-        let (data, response) = try await URLSession.shared.upload(for: req, from: body)
+        let (data, response) = try await self.session.upload(for: req, from: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
     }
@@ -55,7 +65,7 @@ actor APIClient {
     // GET /sessions — compact list for the home screen.
     func listSessions() async throws -> [SessionSummary] {
         let url = Config.backendURL.appendingPathComponent("sessions")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await self.session.data(from: url)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let sessions: [SessionSummary] }
         return try JSONDecoder().decode(Wrapper.self, from: data).sessions
@@ -63,7 +73,7 @@ actor APIClient {
 
     func getSession(id: String) async throws -> Session {
         let url = Config.backendURL.appendingPathComponent("sessions/\(id)")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await self.session.data(from: url)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
     }
