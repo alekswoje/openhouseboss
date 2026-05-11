@@ -113,6 +113,38 @@ struct ScriptStepInfo: Hashable, Identifiable {
     let quote: String
 }
 
+// MARK: – Listings
+
+// A property the agent is hosting an open house at. Persisted on-device in
+// UserDefaults — no backend yet. The list shows on the new-session screen
+// where the agent taps a card to immediately start recording for that home.
+struct Listing: Codable, Hashable, Identifiable {
+    var id: String                // UUID string
+    var address: String           // "1936 17th Ave NE"
+    var neighborhood: String      // "Issaquah Highlands"
+    var price: Int                // dollars; 0 = unset
+    var beds: Int
+    var baths: Double
+    var sqft: Int
+    var photoData: Data?          // optional inline photo (small JPEG)
+
+    var displayPrice: String {
+        guard price > 0 else { return "" }
+        if price >= 1_000_000 {
+            let m = Double(price) / 1_000_000
+            return String(format: "$%.2fM", m).replacingOccurrences(of: ".00M", with: "M")
+        }
+        return "$\(price.formatted())"
+    }
+
+    var displaySpecs: String {
+        let bathLabel = baths.truncatingRemainder(dividingBy: 1) == 0
+            ? "\(Int(baths))"
+            : String(format: "%.1f", baths)
+        return "\(beds) Beds · \(bathLabel) Baths · \(sqft.formatted()) SF"
+    }
+}
+
 struct VisitorResult: Codable, Hashable, Identifiable {
     let visitor: VisitorInfo
     let analysis: AnalysisResult

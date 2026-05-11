@@ -1,163 +1,157 @@
 import SwiftUI
 
-// HomeShell — the root tabbed shell for the iPhone flow. Holds the tab bar
-// + FAB at the bottom; the body swaps between Sessions / Visitors / Kiosk /
-// Profile content. Pushing destinations is routed through the AppRouter
-// (NavigationPath-based) so we can collapse the stack after end-session.
+// MARK: – HomeShell — TabView-driven with a custom animated tab bar
+
+// Swipeable tab container. Uses TabView under the hood so iOS handles the
+// horizontal drag + paged transition for free. We hide the system bar and
+// draw our own at the bottom, with a cyan underline that animates between
+// the active tab using matchedGeometryEffect.
 struct HomeShell: View {
     @Environment(AppRouter.self) private var router
+    @Namespace private var tabIndicator
 
     var body: some View {
+        @Bindable var router = router
+
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
-            WarmBg(tone: backgroundTone)
 
-            content
+            TabView(selection: $router.tab) {
+                SessionsTabContent()
+                    .tag(HomeTab.sessions)
+                VisitorsTabContent()
+                    .tag(HomeTab.visitors)
+                ScriptsTabContent()
+                    .tag(HomeTab.scripts)
+                ProfileTabContent()
+                    .tag(HomeTab.profile)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea(edges: .bottom)
+            .animation(.easeInOut(duration: 0.28), value: router.tab)
 
-            tabBar
+            customTabBar
         }
         .toolbar(.hidden, for: .navigationBar)
     }
 
-    private var backgroundTone: WarmBg.Tone {
-        switch router.tab {
-        case .sessions: return .gold
-        case .visitors: return .gold
-        case .kiosk:    return .auth
-        case .profile:  return .cool
-        }
-    }
+    private var customTabBar: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(FoyerTheme.border)
+                .frame(height: 0.5)
 
-    @ViewBuilder
-    private var content: some View {
-        switch router.tab {
-        case .sessions: SessionsTabContent()
-        case .visitors: VisitorsTabContent()
-        case .kiosk:    KioskTabContent()
-        case .profile:  ProfileTabContent()
-        }
-    }
-
-    // Floating tab bar + cyan FAB. FAB action depends on the active tab:
-    // Sessions → start a new session; Kiosk → launch the sign-in flow; etc.
-    private var tabBar: some View {
-        HStack(spacing: 10) {
-            GlassSurface(cornerRadius: 14, strong: true) {
-                HStack(spacing: 0) {
-                    ForEach(HomeTab.allCases, id: \.self) { t in
-                        tabItem(t)
-                    }
+            HStack(spacing: 0) {
+                ForEach(HomeTab.allCases, id: \.self) { t in
+                    tabButton(t)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 6)
-                .frame(height: 60)
             }
-
-            Button(action: handleFAB) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(FoyerTheme.gold)
-                    Image(systemName: fabIcon)
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.inkOnGold)
-                }
-                .frame(width: 60, height: 60)
-                .shadow(color: FoyerTheme.gold.opacity(0.30), radius: 14, x: 0, y: 8)
-            }
-            .buttonStyle(.plain)
+            .padding(.top, 10)
+            .padding(.bottom, 24)
+            .padding(.horizontal, 4)
+            .background(FoyerTheme.bg)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 28)
     }
 
-    private func tabItem(_ t: HomeTab) -> some View {
+    private func tabButton(_ t: HomeTab) -> some View {
+        @Bindable var router = router
         let active = router.tab == t
         return Button {
-            router.tab = t
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                router.tab = t
+            }
         } label: {
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
                 Image(systemName: t.icon)
-                    .font(.system(size: 17, weight: .medium))
-                Text(t.label.uppercased())
-                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                    .tracking(1.4)
+                    .font(.system(size: 18, weight: active ? .semibold : .regular))
+                Text(t.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(0.3)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
             .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.textMuted)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(active ? FoyerTheme.goldSoft : .clear)
-            )
+            .overlay(alignment: .top) {
+                if active {
+                    Capsule()
+                        .fill(FoyerTheme.gold)
+                        .frame(width: 28, height: 2.5)
+                        .offset(y: -10)
+                        .matchedGeometryEffect(id: "tabIndicator", in: tabIndicator)
+                }
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
-
-    private var fabIcon: String {
-        switch router.tab {
-        case .sessions: return "plus"
-        case .visitors: return "magnifyingglass"
-        case .kiosk:    return "qrcode"
-        case .profile:  return "gearshape"
-        }
-    }
-
-    private func handleFAB() {
-        switch router.tab {
-        case .sessions:
-            SessionStore.shared.reset()
-            router.push(.setup)
-        case .visitors:
-            router.push(.visitorsAll)
-        case .kiosk:
-            router.push(.kiosk)
-        case .profile:
-            break
-        }
-    }
 }
 
-// MARK: – Sessions tab content (the previous home body)
+// MARK: – Sessions tab content
 
 struct SessionsTabContent: View {
     @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                statsCard
-                sessionsList
-                Spacer().frame(height: 160)
+        ZStack(alignment: .topTrailing) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    statsCard
+                    sessionsList
+                    Spacer().frame(height: 120)
+                }
+                .padding(.top, 8)
             }
-            .padding(.top, 8)
+            .background(FoyerTheme.bgDeep)
+            .refreshable { await store.refreshSessions() }
+
+            addButton
         }
         .onAppear { Log.ui("SessionsTabContent appeared") }
         .task {
-            Log.ui("SessionsTabContent.task fired refreshSessions")
             await store.refreshSessions()
+            await store.refreshScripts()
         }
-        .refreshable { await store.refreshSessions() }
     }
 
     private var header: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                Eyebrow(text: todayLabel, color: FoyerTheme.gold)
-                Text("Sessions")
-                    .foyerDisplay(38)
-                    .foregroundStyle(FoyerTheme.cream)
-            }
-            Spacer()
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: todayLabel, color: FoyerTheme.gold)
+            Text("Sessions")
+                .foyerDisplay(38)
+                .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 16)
+        .padding(.top, 56)
         .padding(.bottom, 18)
     }
 
+    // Top-right "NEW" action — replaces the floating FAB. Opens the
+    // listings picker (the new entry into the recording flow).
+    private var addButton: some View {
+        Button {
+            store.reset()
+            router.push(.picker)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("NEW")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .foregroundStyle(FoyerTheme.inkOnGold)
+            .background(FoyerTheme.gold, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 20)
+        .padding(.top, 60)
+    }
+
     private var statsCard: some View {
-        GlassSurface(cornerRadius: 18) {
+        GlassSurface(cornerRadius: 12) {
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 10) {
                     Eyebrow(text: "This month")
@@ -174,10 +168,10 @@ struct SessionsTabContent: View {
                     Eyebrow(text: "Drafts ready", color: FoyerTheme.gold)
                 }
             }
-            .padding(18)
+            .padding(16)
         }
         .padding(.horizontal, 20)
-        .padding(.bottom, 16)
+        .padding(.bottom, 14)
     }
 
     private func statBlock(value: String, label: String) -> some View {
@@ -203,7 +197,7 @@ struct SessionsTabContent: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow(text: "No sessions yet", color: FoyerTheme.gold)
-            Text("Tap the cyan + button to start your first open house.")
+            Text("Tap NEW at the top to start your first open house.")
                 .font(.system(size: 13))
                 .foregroundStyle(FoyerTheme.textDim)
                 .lineSpacing(3)
@@ -213,7 +207,7 @@ struct SessionsTabContent: View {
     }
 
     private func errorState(_ message: String) -> some View {
-        GlassSurface(cornerRadius: 14) {
+        GlassSurface(cornerRadius: 12) {
             VStack(alignment: .leading, spacing: 8) {
                 Eyebrow(text: "Can't reach the backend", color: FoyerTheme.terracotta)
                 Text(message)
@@ -374,11 +368,8 @@ struct VisitorsTabContent: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                Eyebrow(text: "Pull all guests across every session.")
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
                 Button { router.push(.visitorsAll) } label: {
-                    GlassSurface(cornerRadius: 18, strong: true) {
+                    GlassSurface(cornerRadius: 12, strong: true) {
                         HStack(spacing: 14) {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 8)
@@ -407,10 +398,11 @@ struct VisitorsTabContent: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 20)
-                Spacer().frame(height: 160)
+                Spacer().frame(height: 120)
             }
             .padding(.top, 8)
         }
+        .background(FoyerTheme.bgDeep)
     }
 
     private var header: some View {
@@ -421,110 +413,719 @@ struct VisitorsTabContent: View {
                 .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 16)
+        .padding(.top, 56)
         .padding(.bottom, 18)
     }
 }
 
-// MARK: – Kiosk tab content
+// MARK: – Scripts tab content
 
-struct KioskTabContent: View {
+struct ScriptsTabContent: View {
     @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                explainer
-                launchCard
-                Spacer().frame(height: 160)
+                if store.availableScripts.isEmpty {
+                    emptyHint
+                } else {
+                    Eyebrow(text: "Available")
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 6)
+                    VStack(spacing: 10) {
+                        ForEach(store.availableScripts) { s in
+                            scriptCard(s)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+                Spacer().frame(height: 120)
             }
             .padding(.top, 8)
         }
+        .background(FoyerTheme.bgDeep)
+        .task { await store.refreshScripts() }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Eyebrow(text: "Guest check-in", color: FoyerTheme.gold)
-            Text("Sign-in")
+            Eyebrow(text: "Open-house coaching", color: FoyerTheme.gold)
+            Text("Scripts")
+                .foyerDisplay(38)
+                .foregroundStyle(FoyerTheme.cream)
+            Text("Pick one as your default — we'll grade every session against it.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.textDim)
+                .padding(.top, 4)
+                .lineSpacing(2)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 56)
+        .padding(.bottom, 18)
+    }
+
+    private var emptyHint: some View {
+        Text("Loading scripts…")
+            .font(.system(size: 13))
+            .foregroundStyle(FoyerTheme.textDim)
+            .padding(.horizontal, 20)
+    }
+
+    private func scriptCard(_ s: ScriptSummary) -> some View {
+        let isDefault = store.defaultScriptId == s.id
+        return Button { router.push(.scriptDetail(scriptId: s.id)) } label: {
+            GlassSurface(cornerRadius: 12, strong: isDefault) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(s.name)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.cream)
+                            Text("\(s.stepCount) STEPS")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                        Spacer()
+                        if isDefault {
+                            StatusPill(text: "Default", tone: .sage)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    Text(s.description)
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineSpacing(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(16)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isDefault ? FoyerTheme.gold.opacity(0.4) : .clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: – Profile tab content
+
+struct ProfileTabContent: View {
+    @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+    @State private var defaultScriptSheet = false
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                statsCard
+                defaultScriptRow
+                kioskRow
+                versionLabel
+                Spacer().frame(height: 120)
+            }
+            .padding(.top, 8)
+        }
+        .background(FoyerTheme.bgDeep)
+        .sheet(isPresented: $defaultScriptSheet) { defaultScriptPicker }
+        .task { await store.refreshScripts() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "Account", color: FoyerTheme.gold)
+            Text("Profile")
                 .foyerDisplay(38)
                 .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
+        .padding(.top, 56)
+        .padding(.bottom, 18)
     }
 
-    private var explainer: some View {
-        Text("Hand the phone to a guest. They'll add their name, email, and phone before the open house starts.")
-            .font(.system(size: 13))
-            .foregroundStyle(FoyerTheme.textDim)
-            .lineSpacing(3)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 18)
-    }
-
-    private var launchCard: some View {
-        Button { router.push(.kiosk) } label: {
-            GlassSurface(cornerRadius: 18, strong: true) {
-                HStack(spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(FoyerTheme.goldSoft)
-                        Image(systemName: "person.crop.rectangle")
-                            .font(.system(size: 18))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    .frame(width: 44, height: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Launch sign-in page")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream)
-                        Text("FULL-SCREEN · NAME, EMAIL, PHONE")
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                            .tracking(1.4)
-                            .foregroundStyle(FoyerTheme.textMuted)
-                    }
+    private var statsCard: some View {
+        GlassSurface(cornerRadius: 12, strong: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                Eyebrow(text: "This month", color: FoyerTheme.gold)
+                HStack {
+                    statBlock(value: "\(store.pastSessions.count)", label: "Houses")
                     Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(FoyerTheme.textMuted)
+                    statBlock(value: "\(store.pastSessions.reduce(0) { $0 + $1.visitorCount })", label: "Guests")
+                    Spacer()
+                    statBlock(value: "\(store.pastSessions.filter { $0.status == "ready" }.count)", label: "Drafts")
                 }
-                .padding(16)
             }
+            .padding(16)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
+    }
+
+    private func statBlock(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+            Eyebrow(text: label)
+        }
+    }
+
+    private var defaultScriptRow: some View {
+        Button { defaultScriptSheet = true } label: {
+            settingsRow(
+                icon: "doc.text",
+                label: "Default script",
+                value: defaultScriptName ?? "None"
+            )
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 20)
+        .padding(.top, 6)
+    }
+
+    private var kioskRow: some View {
+        Button { router.push(.kiosk) } label: {
+            settingsRow(
+                icon: "person.crop.rectangle",
+                label: "Guest sign-in kiosk",
+                value: "Hand to a guest"
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+    }
+
+    private func settingsRow(icon: String, label: String, value: String) -> some View {
+        GlassSurface(cornerRadius: 12) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(FoyerTheme.goldSoft)
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+                .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(label)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text(value)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            .padding(14)
+        }
+    }
+
+    private var versionLabel: some View {
+        Text("OPENHOUSEBOSS · v2.0")
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .tracking(1.6)
+            .foregroundStyle(FoyerTheme.textMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 28)
+    }
+
+    private var defaultScriptName: String? {
+        guard let id = store.defaultScriptId else { return nil }
+        return store.availableScripts.first(where: { $0.id == id })?.name ?? id
+    }
+
+    private var defaultScriptPicker: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        store.defaultScriptId = nil
+                        defaultScriptSheet = false
+                    } label: {
+                        HStack {
+                            Text("No default script")
+                            Spacer()
+                            if store.defaultScriptId == nil {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(FoyerTheme.gold)
+                            }
+                        }
+                    }
+                    .foregroundStyle(FoyerTheme.cream)
+                    ForEach(store.availableScripts) { s in
+                        Button {
+                            store.defaultScriptId = s.id
+                            defaultScriptSheet = false
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(s.name)
+                                    Text(s.description)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(FoyerTheme.textMuted)
+                                }
+                                Spacer()
+                                if store.defaultScriptId == s.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(FoyerTheme.gold)
+                                }
+                            }
+                        }
+                        .foregroundStyle(FoyerTheme.cream)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(FoyerTheme.bgDeep)
+            .navigationTitle("Default script")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { defaultScriptSheet = false }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
-// MARK: – Profile tab content (stub)
+// MARK: – Listings picker (Compass-style cards, entry to recording)
 
-struct ProfileTabContent: View {
+struct ListingsPickerView: View {
+    @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Eyebrow(text: "Account", color: FoyerTheme.gold)
-                Text("Profile")
-                    .foyerDisplay(38)
-                    .foregroundStyle(FoyerTheme.cream)
-                Text("Settings, integrations and AI behavior live here. Not yet wired up.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .padding(.top, 6)
-                Spacer().frame(height: 160)
+        ZStack(alignment: .bottom) {
+            FoyerTheme.bgDeep.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    BackBar(crumbs: ["Sessions", "Start session"], onBack: { router.pop() }) {
+                        Button { router.push(.editListing(id: nil)) } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("ADD")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .tracking(1.4)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .foregroundStyle(FoyerTheme.gold)
+                            .background(FoyerTheme.goldSoft, in: Capsule())
+                            .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    header
+                    listingsList
+                    Spacer().frame(height: 120)
+                }
+                .padding(.top, 8)
+            }
+
+            blankRecordButton
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Open Houses")
+                .foyerDisplay(34)
+                .foregroundStyle(FoyerTheme.cream)
+            Text("\(store.listings.count) listing\(store.listings.count == 1 ? "" : "s")")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textDim)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 16)
+    }
+
+    @ViewBuilder
+    private var listingsList: some View {
+        if store.listings.isEmpty {
+            emptyListings
+        } else {
+            VStack(spacing: 10) {
+                ForEach(store.listings) { l in
+                    listingCard(l)
+                }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 16)
         }
+    }
+
+    private var emptyListings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("No listings yet.")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("Tap ADD up top to save your first one, or record without a listing below.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.textDim)
+                .lineSpacing(3)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+    }
+
+    private func listingCard(_ l: Listing) -> some View {
+        Button { startRecording(with: l) } label: {
+            HStack(spacing: 14) {
+                listingPhoto(l)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(l.address)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(1)
+                    Text(l.neighborhood)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    Spacer().frame(height: 2)
+                    if !l.displayPrice.isEmpty {
+                        Text(l.displayPrice)
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(l.displaySpecs)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .tracking(0.5)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(FoyerTheme.border, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button { router.push(.editListing(id: l.id)) } label: {
+                Label("Edit listing", systemImage: "pencil")
+            }
+            Button(role: .destructive) { store.deleteListing(id: l.id) } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func listingPhoto(_ l: Listing) -> some View {
+        if let data = l.photoData, let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 110, height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(FoyerTheme.bgElev)
+                Image(systemName: "house.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            .frame(width: 110, height: 96)
+        }
+    }
+
+    private var blankRecordButton: some View {
+        Button { startRecording(with: nil) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Record without a listing")
+            }
+        }
+        .buttonStyle(FoyerGhostButton())
+        .padding(.horizontal, 20)
+        .padding(.bottom, 32)
+    }
+
+    private func startRecording(with listing: Listing?) {
+        @Bindable var router = router
+        SessionStore.shared.reset()
+        SessionStore.shared.pendingAddress = listing.map { "\($0.address) · \($0.neighborhood)" }
+        // pendingScriptId stays nil → defaultScriptId picks it up automatically.
+        router.path = [.live]
+    }
+}
+
+// MARK: – Listing edit (create / edit a saved listing)
+
+struct ListingEditView: View {
+    let listingId: String?
+    @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+    @State private var address: String = ""
+    @State private var neighborhood: String = ""
+    @State private var price: String = ""
+    @State private var beds: Int = 3
+    @State private var baths: Double = 2
+    @State private var sqft: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            FoyerTheme.bgDeep.ignoresSafeArea()
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    BackBar(crumbs: ["Listings", listingId == nil ? "New" : "Edit"], onBack: { router.pop() })
+                    title
+                    form
+                    Spacer().frame(height: 140)
+                }
+                .padding(.top, 8)
+            }
+            saveButton
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            focused = true
+            if let id = listingId, let l = store.listings.first(where: { $0.id == id }) {
+                address = l.address
+                neighborhood = l.neighborhood
+                price = l.price > 0 ? String(l.price) : ""
+                beds = l.beds
+                baths = l.baths
+                sqft = l.sqft > 0 ? String(l.sqft) : ""
+            }
+        }
+    }
+
+    private var title: some View {
+        Text(listingId == nil ? "New listing" : "Edit listing")
+            .foyerDisplay(28)
+            .foregroundStyle(FoyerTheme.cream)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 18)
+    }
+
+    private var form: some View {
+        VStack(spacing: 10) {
+            textField("Address", text: $address, placeholder: "1936 17th Ave NE")
+                .focused($focused)
+            textField("Neighborhood", text: $neighborhood, placeholder: "Issaquah Highlands")
+            numericField("Price ($)", text: $price, placeholder: "850000")
+            HStack(spacing: 10) {
+                stepperField("Beds", value: $beds, range: 0...10)
+                stepperField("Baths", value: $baths, range: 0...10, step: 0.5)
+            }
+            numericField("Square feet", text: $sqft, placeholder: "1510")
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func textField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                TextField("", text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .autocorrectionDisabled()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func numericField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                TextField("", text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .keyboardType(.numberPad)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func stepperField(_ label: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                Stepper(value: value, in: range) {
+                    Text("\(value.wrappedValue)")
+                        .font(.system(size: 15))
+                        .foregroundStyle(FoyerTheme.cream)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private func stepperField(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                Stepper(value: value, in: range, step: step) {
+                    Text(value.wrappedValue.truncatingRemainder(dividingBy: 1) == 0
+                         ? "\(Int(value.wrappedValue))"
+                         : String(format: "%.1f", value.wrappedValue))
+                        .font(.system(size: 15))
+                        .foregroundStyle(FoyerTheme.cream)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private var saveButton: some View {
+        Button(action: save) {
+            Text(listingId == nil ? "Save listing" : "Save changes")
+        }
+        .buttonStyle(FoyerPrimaryButton())
+        .padding(.horizontal, 20)
+        .padding(.bottom, 36)
+        .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
+        .opacity(address.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
+    }
+
+    private func save() {
+        let listing = Listing(
+            id: listingId ?? UUID().uuidString,
+            address: address.trimmingCharacters(in: .whitespaces),
+            neighborhood: neighborhood.trimmingCharacters(in: .whitespaces),
+            price: Int(price) ?? 0,
+            beds: beds,
+            baths: baths,
+            sqft: Int(sqft) ?? 0,
+            photoData: nil
+        )
+        if listingId == nil {
+            store.addListing(listing)
+        } else {
+            store.updateListing(listing)
+        }
+        router.pop()
+    }
+}
+
+// MARK: – Script detail (view + set as default)
+
+struct ScriptDetailView: View {
+    let scriptId: String
+    @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+
+    var body: some View {
+        let script = store.availableScripts.first(where: { $0.id == scriptId })
+        ZStack(alignment: .bottom) {
+            FoyerTheme.bgDeep.ignoresSafeArea()
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    BackBar(crumbs: ["Scripts", script?.name ?? "Script"], onBack: { router.pop() })
+                    if let s = script {
+                        scriptHeader(s)
+                        stepsList
+                    }
+                    Spacer().frame(height: 140)
+                }
+                .padding(.top, 8)
+            }
+            defaultToggle
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func scriptHeader(_ s: ScriptSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "\(s.stepCount) steps", color: FoyerTheme.gold)
+            Text(s.name)
+                .foyerDisplay(28)
+                .foregroundStyle(FoyerTheme.cream)
+            Text(s.description)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.textDim)
+                .lineSpacing(2)
+                .padding(.top, 4)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+    }
+
+    private var stepsList: some View {
+        // Step labels live in ScriptStepLookup (mirror of pipeline/scripts.py).
+        // We only know labels client-side; verbatim quotes live in the
+        // backend and can be fetched via /scripts/{id} when we want a
+        // richer preview here.
+        let ordered: [String] = [
+            "opener", "buyer_timeline", "buyer_search_history",
+            "buyer_pain", "buyer_offer_check", "buyer_lender",
+            "buyer_release", "buyer_reengage", "buyer_close_rebate",
+            "seller_pricing", "seller_curiosity", "seller_marketing",
+            "seller_comp",
+        ]
+        return VStack(spacing: 8) {
+            ForEach(ordered, id: \.self) { id in
+                HStack {
+                    Text(ScriptStepLookup.label(for: id))
+                        .font(.system(size: 14))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.border, lineWidth: 0.5))
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private var defaultToggle: some View {
+        let isDefault = store.defaultScriptId == scriptId
+        return Button {
+            store.defaultScriptId = isDefault ? nil : scriptId
+        } label: {
+            Text(isDefault ? "Remove as default" : "Set as default")
+        }
+        .buttonStyle(isDefault ? AnyButtonStyle(FoyerGhostButton()) : AnyButtonStyle(FoyerPrimaryButton()))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 36)
+    }
+}
+
+// Helper — wrap two ButtonStyles so we can conditionally apply one.
+struct AnyButtonStyle: ButtonStyle {
+    private let _makeBody: (ButtonStyleConfiguration) -> AnyView
+    init<S: ButtonStyle>(_ style: S) {
+        _makeBody = { config in AnyView(style.makeBody(configuration: config)) }
+    }
+    func makeBody(configuration: Configuration) -> some View {
+        _makeBody(configuration)
     }
 }
 
 // MARK: – All visitors (across sessions)
 
-// Fans out to each past session and collects all visitors into a flat list.
-// Concurrency-friendly via TaskGroup; the home tab refreshes the session
-// list, so by the time this view appears `store.pastSessions` is populated.
 struct AllVisitorsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppRouter.self) private var router
@@ -533,7 +1134,7 @@ struct AllVisitorsView: View {
     @State private var loading = true
     @State private var error: String?
     @State private var query: String = ""
-    @State private var tagFilter: String = "all"   // all / buyer / seller / browser
+    @State private var tagFilter: String = "all"
 
     struct VisitorRow: Identifiable {
         let id: String
@@ -546,8 +1147,6 @@ struct AllVisitorsView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
-            WarmBg(tone: .gold)
-
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     BackBar(crumbs: ["Visitors"], onBack: { dismiss() }) {
@@ -583,7 +1182,7 @@ struct AllVisitorsView: View {
     }
 
     private var searchField: some View {
-        GlassSurface(cornerRadius: 12, strong: true) {
+        GlassSurface(cornerRadius: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 14))
@@ -668,7 +1267,7 @@ struct AllVisitorsView: View {
     }
 
     private func rowView(_ r: VisitorRow) -> some View {
-        GlassSurface(cornerRadius: 12) {
+        GlassSurface(cornerRadius: 10) {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
@@ -727,7 +1326,6 @@ struct AllVisitorsView: View {
                 }
             }
         }
-        // Most recent first, hottest first within a session.
         collected.sort { a, b in
             if a.sessionDate != b.sessionDate { return a.sessionDate > b.sessionDate }
             return a.visitor.analysis.score > b.visitor.analysis.score
@@ -744,25 +1342,19 @@ struct AllVisitorsView: View {
     }
 }
 
-// MARK: – Kiosk sign-in (phone-mode kiosk)
+// MARK: – Kiosk sign-in
 
-// A simplified version of the iPad kiosk: full-screen, single-shot guest
-// form. Used when the agent doesn't have an iPad — they hand the phone over,
-// the guest types their info, then the agent gets the phone back to record.
 struct KioskSignInView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name: String = ""
     @State private var email: String = ""
     @State private var phone: String = ""
-    @State private var saved: Bool = false
     @State private var pendingGuests: [VisitorInput] = []
 
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
-            WarmBg(tone: .auth)
-
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     BackBar(crumbs: ["Sign-in"], onBack: { dismiss() }) {
@@ -775,7 +1367,6 @@ struct KioskSignInView: View {
                 }
                 .padding(.top, 8)
             }
-
             actionBar
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -806,7 +1397,7 @@ struct KioskSignInView: View {
     }
 
     private func field(label: String, value: Binding<String>, placeholder: String, contentType: UITextContentType, keyboard: UIKeyboardType = .default) -> some View {
-        GlassSurface(cornerRadius: 12) {
+        GlassSurface(cornerRadius: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Eyebrow(text: label, color: FoyerTheme.gold)
                 TextField("", text: value,
@@ -870,8 +1461,6 @@ struct KioskSignInView: View {
         if !trimmed.isEmpty {
             pendingGuests.append(VisitorInput(name: trimmed, email: email, phone: phone))
         }
-        // For now: store as pendingGuests on the session store. The recording
-        // flow will pick them up when the agent starts a session.
         SessionStore.shared.pendingKioskGuests = pendingGuests
         dismiss()
     }

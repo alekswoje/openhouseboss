@@ -16,6 +16,37 @@ final class SessionStore {
 
     static let shared = SessionStore()
 
+    private init() {
+        self.defaultScriptId = UserDefaults.standard.string(forKey: "defaultScriptId")
+        if let data = UserDefaults.standard.data(forKey: "listings"),
+           let decoded = try? JSONDecoder().decode([Listing].self, from: data) {
+            self.listings = decoded
+        }
+    }
+
+    private func persistListings() {
+        if let data = try? JSONEncoder().encode(listings) {
+            UserDefaults.standard.set(data, forKey: "listings")
+        }
+    }
+
+    func addListing(_ listing: Listing) {
+        listings.insert(listing, at: 0)
+        persistListings()
+    }
+
+    func updateListing(_ listing: Listing) {
+        if let idx = listings.firstIndex(where: { $0.id == listing.id }) {
+            listings[idx] = listing
+            persistListings()
+        }
+    }
+
+    func deleteListing(id: String) {
+        listings.removeAll { $0.id == id }
+        persistListings()
+    }
+
     var phase: Phase = .idle
     var session: Session?
     // Compact list shown on the home screen. Refreshed lazily.
@@ -37,6 +68,16 @@ final class SessionStore {
     var pendingScriptId: String?
     // Preset scripts pulled from /scripts. Refreshed lazily.
     var availableScripts: [ScriptSummary] = []
+    // Default script applied to every session unless the agent overrides it.
+    // Persisted in UserDefaults so it survives launches.
+    var defaultScriptId: String? {
+        didSet {
+            UserDefaults.standard.set(defaultScriptId, forKey: "defaultScriptId")
+        }
+    }
+    // Agent-curated open-house listings. Tapping one starts a new session
+    // with that property's address pre-filled.
+    var listings: [Listing] = []
     // Local m4a from the last recording — kept so SummaryView can offer
     // playback for QA-ing mic placement. Cleared on reset.
     var lastRecordedAudioURL: URL?
@@ -52,7 +93,9 @@ final class SessionStore {
         lastRecordedAudioURL = audioURL
         let address = pendingAddress
         let expected = pendingSpeakersExpected
-        let scriptId = pendingScriptId
+        // Use the session-specific override if set, otherwise fall back to
+        // the agent's persisted default. nil = no coverage analysis.
+        let scriptId = pendingScriptId ?? defaultScriptId
         pendingAddress = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil

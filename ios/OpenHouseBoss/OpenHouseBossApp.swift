@@ -15,7 +15,8 @@ struct OpenHouseBossApp: App {
 // can mutate the path imperatively (e.g. "after End session, replace the
 // stack with just Summary so Back goes straight home").
 enum AppRoute: Hashable {
-    case setup
+    case picker                               // listings picker — entry to recording
+    case editListing(id: String?)             // nil = create new
     case live
     case summary                              // fresh in-flight session
     case pastSession(id: String)              // pulled from /sessions list
@@ -23,16 +24,17 @@ enum AppRoute: Hashable {
     case followup(VisitorResult)
     case visitorsAll
     case kiosk
+    case scriptDetail(scriptId: String)
 }
 
 enum HomeTab: Hashable, CaseIterable {
-    case sessions, visitors, kiosk, profile
+    case sessions, visitors, scripts, profile
 
     var label: String {
         switch self {
         case .sessions: return "Sessions"
         case .visitors: return "Visitors"
-        case .kiosk:    return "Sign-in"
+        case .scripts:  return "Scripts"
         case .profile:  return "Profile"
         }
     }
@@ -40,7 +42,7 @@ enum HomeTab: Hashable, CaseIterable {
         switch self {
         case .sessions: return "house"
         case .visitors: return "person.2"
-        case .kiosk:    return "ipad.and.iphone"
+        case .scripts:  return "doc.text"
         case .profile:  return "gearshape"
         }
     }
@@ -92,7 +94,8 @@ struct RootView: View {
     @ViewBuilder
     private func destination(for route: AppRoute) -> some View {
         switch route {
-        case .setup:                       SetupView()
+        case .picker:                      ListingsPickerView()
+        case .editListing(let id):         ListingEditView(listingId: id)
         case .live:                        LiveView()
         case .summary:                     SummaryView()
         case .pastSession(let id):         SummaryView(pastSessionId: id)
@@ -100,6 +103,7 @@ struct RootView: View {
         case .followup(let v):             FollowupView(visitor: v)
         case .visitorsAll:                 AllVisitorsView()
         case .kiosk:                       KioskSignInView()
+        case .scriptDetail(let id):        ScriptDetailView(scriptId: id)
         }
     }
 }
