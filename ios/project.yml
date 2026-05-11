@@ -1,0 +1,37 @@
+name: OpenHouseBoss
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+targets:
+  OpenHouseBoss:
+    type: application
+    platform: iOS
+    sources:
+      - path: OpenHouseBoss
+        excludes:
+          - "Generated-Info.plist"
+    info:
+      path: OpenHouseBoss/Generated-Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSMicrophoneUsageDescription: "Record audio during open houses to identify speakers and generate follow-ups"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UILaunchScreen:
+          UIColorName: ""
+          UIImageName: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openhouseboss.app
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO

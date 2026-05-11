@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" class="style-ai theme-dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foyer — every open house, quietly remembered.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="brand.css" />
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg-deep);
+      color: var(--cream);
+      font-family: 'Geist', -apple-system, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    #root { min-height: 100vh; }
+
+    /* Floating demo-route switcher — bottom-right, low-key, doesn't fight editorial content. */
+    .route-nav {
+      position: fixed; bottom: 18px; right: 18px; z-index: 1000;
+      display: inline-flex; gap: 2px;
+      padding: 3px;
+      background: rgba(10, 10, 12, 0.78);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      box-shadow: 0 8px 24px -8px rgba(0,0,0,0.6);
+    }
+    .route-nav a {
+      padding: 6px 11px;
+      border-radius: 999px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color .18s, background .18s;
+    }
+    .route-nav a:hover { color: var(--cream); }
+    .route-nav a.is-active { color: #000; background: var(--cream); }
+
+    /* Toast stack — fixed bottom-left so it doesn't collide with the route nav. */
+    .toast-host {
+      position: fixed; bottom: 18px; left: 18px; z-index: 1100;
+      display: flex; flex-direction: column; gap: 8px;
+      pointer-events: none;
+      max-width: 360px;
+    }
+    .toast {
+      background: rgba(15, 15, 18, 0.92);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 12px 16px 12px 14px;
+      color: var(--cream);
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      display: flex; align-items: center; gap: 12px;
+      animation: toastIn .28s ease both;
+      box-shadow: 0 20px 50px -20px rgba(0,0,0,0.7);
+    }
+    .toast.leaving { animation: toastOut .28s ease both; }
+    .toast-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .toast-dot.success { background: var(--sage); box-shadow: 0 0 8px var(--sage); }
+    .toast-dot.info { background: var(--cream); }
+    .toast-dot.warn { background: var(--terracotta); }
+    @keyframes toastIn {
+      from { transform: translateY(20px) scale(0.96); opacity: 0; }
+      to   { transform: translateY(0) scale(1); opacity: 1; }
+    }
+    @keyframes toastOut {
+      from { transform: translateY(0); opacity: 1; }
+      to   { transform: translateY(-8px); opacity: 0; }
+    }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" src="shared.jsx"></script>
+  <script type="text/babel" src="hero-devices.jsx"></script>
+  <script type="text/babel" src="landing.jsx"></script>
+  <script type="text/babel" src="login.jsx"></script>
+  <script type="text/babel" src="dashboard.jsx"></script>
+  <script type="text/babel" src="session-detail.jsx"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect } = React;
+
+    const ROUTES = [
+      { hash: '#/',         label: 'Home',     El: () => <Landing /> },
+      { hash: '#/login',    label: 'Sign in',  El: () => <Login /> },
+      { hash: '#/app',      label: 'App',      El: () => <Dashboard /> },
+      { hash: '#/session',  label: 'Session',  El: () => <SessionDetail /> },
+    ];
+
+    function useHashRoute() {
+      const [hash, setHash] = useState(() => window.location.hash || '#/');
+      useEffect(() => {
+        const onHash = () => {
+          setHash(window.location.hash || '#/');
+          // Scroll to top on route change so the next screen starts fresh.
+          window.scrollTo({ top: 0, behavior: 'instant' });
+        };
+        window.addEventListener('hashchange', onHash);
+        return () => window.removeEventListener('hashchange', onHash);
+      }, []);
+      return hash;
+    }
+
+    // Toast bus. Any component can fire `window.foyerToast('Saved')` or
+    // `window.foyerToast({ message: 'Saved', kind: 'success' })`.
+    function ToastHost({ toasts }) {
+      return (
+        <div className="toast-host">
+          {toasts.map(t => (
+            <div key={t.id} className={'toast' + (t.leaving ? ' leaving' : '')}>
+              <span className={'toast-dot ' + (t.kind || 'info')} />
+              <span>{t.message}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function App() {
+      const hash = useHashRoute();
+      const [toasts, setToasts] = useState([]);
+
+      useEffect(() => {
+        window.foyerToast = (arg) => {
+          const t = typeof arg === 'string' ? { message: arg } : arg;
+          const id = Date.now() + Math.random();
+          const entry = { id, message: t.message, kind: t.kind || 'success' };
+          setToasts(curr => [...curr, entry]);
+          setTimeout(() => setToasts(curr => curr.filter(x => x.id !== id)), 2600);
+        };
+        // Convenience navigator for JSX callsites that don't want to deal with hashes.
+        window.foyerGo = (hash) => { window.location.hash = hash; };
+      }, []);
+
+      const route = ROUTES.find(r => r.hash === hash) || ROUTES[0];
+      const Screen = route.El;
+
+      return (
+        <>
+          <Screen />
+          <ToastHost toasts={toasts} />
+          <nav className="route-nav" aria-label="Foyer demo routes">
+            {ROUTES.map(r => (
+              <a key={r.hash} href={r.hash} className={r.hash === hash ? 'is-active' : ''}>
+                {r.label}
+              </a>
+            ))}
+          </nav>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

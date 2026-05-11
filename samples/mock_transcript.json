@@ -1,0 +1,33 @@
+{
+  "utterances": [
+    {"speaker": "A", "text": "Welcome in, glad you stopped by! I'm John, I'm hosting today for the seller. What's your name?", "start": 0, "end": 6000},
+    {"speaker": "B", "text": "Hi, I'm Sarah. My husband Tom couldn't make it today, but I wanted to come check it out.", "start": 6500, "end": 11500},
+    {"speaker": "A", "text": "Nice to meet you Sarah. Have you been looking long?", "start": 12000, "end": 14500},
+    {"speaker": "B", "text": "About six months actually. We've been all over the West Side. We sold our place in Queens last year and we've been renting until we find the right thing.", "start": 15000, "end": 24000},
+    {"speaker": "A", "text": "Got it. What drew you to this one?", "start": 24500, "end": 26500},
+    {"speaker": "B", "text": "The kitchen looks amazing in the photos. And we need at least three bedrooms, we have two kids.", "start": 27000, "end": 32000},
+    {"speaker": "A", "text": "Yeah the kitchen is the centerpiece, fully renovated last year. Three beds, two and a half baths. What's your timeframe like?", "start": 32500, "end": 39000},
+    {"speaker": "B", "text": "Honestly we're ready now. Pre-approved up to one point four. We'd close in 60 days if it's the right house.", "start": 39500, "end": 45500},
+    {"speaker": "A", "text": "Perfect. Take your time looking around. I'll be here if you have any questions.", "start": 46000, "end": 50000},
+
+    {"speaker": "A", "text": "Hey, welcome! I'm John.", "start": 120000, "end": 122000},
+    {"speaker": "C", "text": "Mike, nice to meet you.", "start": 122500, "end": 124000},
+    {"speaker": "A", "text": "Hey Mike, you live in the neighborhood?", "start": 124500, "end": 126500},
+    {"speaker": "C", "text": "Yeah, two blocks over on Riverside. Actually, I was curious what's going on with this market. We've been in our place fifteen years. Kids are off to college. Thinking about downsizing maybe in the next six months.", "start": 127000, "end": 140000},
+    {"speaker": "A", "text": "Interesting. Have you talked to anyone about what your place might list for?", "start": 140500, "end": 144000},
+    {"speaker": "C", "text": "Not seriously. I figured I'd start by seeing what's selling. This one's asking one point three, right?", "start": 144500, "end": 150000},
+    {"speaker": "A", "text": "Yeah, one point two nine five. We've had multiple showings already. Listen, if you're thinking about it, I'd love to do a free comp analysis on your place. No pressure.", "start": 150500, "end": 160000},
+    {"speaker": "C", "text": "Yeah that would actually be helpful. Can you email me?", "start": 160500, "end": 163000},
+    {"speaker": "A", "text": "Absolutely. What's the best address for you?", "start": 163500, "end": 165500},
+    {"speaker": "C", "text": "Mike at example dot com.", "start": 166000, "end": 168000},
+
+    {"speaker": "A", "text": "Hi there! John, nice to meet you.", "start": 240000, "end": 242500},
+    {"speaker": "D", "text": "Hi, I'm Jennifer.", "start": 243000, "end": 244500},
+    {"speaker": "A", "text": "What brings you in today Jennifer?", "start": 245000, "end": 247000},
+    {"speaker": "D", "text": "Honestly just curious. I drive by this building all the time and wanted to see inside. My lease isn't up until next year and I'm not really sure yet if I want to buy or keep renting.", "start": 247500, "end": 260000},
+    {"speaker": "A", "text": "Sure, no pressure. Are you familiar with the neighborhood?", "start": 260500, "end": 263500},
+    {"speaker": "D", "text": "Yeah I'm a couple blocks down. I love the area, just trying to figure out what I want long term.", "start": 264000, "end": 270000},
+    {"speaker": "A", "text": "Makes sense. If you want I can keep you on a low-key list for similar properties when they come up.", "start": 270500, "end": 275500},
+    {"speaker": "D", "text": "Yeah that would be great, no pressure though.", "start": 276000, "end": 278500}
+  ]
+}

@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foyer — Every open house, quietly remembered.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #000000;
+      --bg: #050505;
+      --bg-card: #0c0c0c;
+      --bg-elev: #141414;
+      --bg-elev-2: #1c1c1c;
+      --border: rgba(255,255,255,0.09);
+      --border-strong: rgba(255,255,255,0.22);
+      --hairline: rgba(255,255,255,0.06);
+      --accent: #ffffff;
+      --accent-dim: #ededed;
+      --accent-soft: rgba(255,255,255,0.06);
+      --cream: #fafafa;
+      --cream-dim: #b4b4b4;
+      --text: #fafafa;
+      --text-dim: #8a8a8a;
+      --text-muted: #525252;
+      --terracotta: #fb923c;
+      --terracotta-soft: rgba(251,146,60,0.10);
+      --sage: #4ade80;
+      --sage-soft: rgba(74,222,128,0.10);
+      --shadow-card: 0 0 0 1px rgba(255,255,255,0.04) inset, 0 30px 60px -30px rgba(0,0,0,0.8);
+      --shadow-deep: 0 1px 0 rgba(255,255,255,0.05) inset, 0 40px 120px -20px rgba(0,0,0,1);
+      --sans: 'Geist', -apple-system, system-ui, sans-serif;
+      --mono: 'Geist Mono', ui-monospace, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-weight: 400;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    ::selection { background: #fff; color: #000; }
+    a { color: inherit; text-decoration: none; }
+
+    /* ---- typography helpers ---- */
+    .display {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      line-height: 0.94;
+    }
+    .display-em { color: var(--accent); }
+    .mono { font-family: var(--mono); }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .eyebrow .rule {
+      display: inline-block;
+      width: 22px;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    .hairline { height: 1px; width: 100%; background: var(--hairline); }
+
+    /* ---- buttons ---- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 22px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      color: var(--cream);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(255,255,255,0.35);
+      color: #fff;
+    }
+    .btn-primary {
+      background: #fff;
+      color: #000;
+      border-color: #fff;
+      font-weight: 500;
+    }
+    .btn-primary:hover {
+      background: var(--accent-dim);
+      border-color: var(--accent-dim);
+      color: #000;
+    }
+    .btn-ghost { border-color: transparent; padding: 12px 0; }
+    .btn-ghost:hover { background: transparent; border-color: transparent; color: #fff; }
+    .btn-lg { padding: 16px 28px; font-size: 14px; }
+    .btn-xl { padding: 16px 32px; font-size: 14px; }
+    .btn .arrow { font-family: var(--sans); font-weight: 400; margin-left: 2px; }
+
+    /* ---- crest (logo) ---- */
+    .crest {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--sans);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--cream);
+      letter-spacing: -0.02em;
+    }
+    .crest-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: #fff;
+      color: #000;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .crest-sm { font-size: 18px; }
+    .crest-sm .crest-mark { width: 24px; height: 24px; font-size: 12px; }
+
+    /* ---- tags ---- */
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px 4px;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      border: 1px solid currentColor;
+      font-weight: 500;
+    }
+    .tag .tag-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .tag-buyer { color: var(--accent); background: var(--accent-soft); }
+    .tag-seller { color: var(--terracotta); background: var(--terracotta-soft); }
+    .tag-browser { color: var(--sage); background: var(--sage-soft); }
+
+    /* ============ NAV ============ */
+    .nav {
+      padding: 28px 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--hairline);
+    }
+    .nav-links {
+      display: flex;
+      gap: 36px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+    .nav-links a:hover { color: var(--cream); }
+    .nav-cta { display: flex; gap: 14px; align-items: center; }
+
+    /* ============ HERO ============ */
+    .hero {
+      padding: 90px 56px 120px;
+      position: relative;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 80px;
+      align-items: end;
+    }
+    .hero h1 {
+      font-size: 116px;
+      line-height: 0.94;
+      margin: 32px 0 0;
+      letter-spacing: -0.045em;
+      color: var(--cream);
+      font-weight: 500;
+    }
+    .hero p.lede {
+      max-width: 480px;
+      margin-top: 36px;
+      font-size: 17px;
+      line-height: 1.6;
+      color: var(--text-dim);
+    }
+    .hero-actions {
+      display: flex;
+      gap: 16px;
+      margin-top: 44px;
+      align-items: center;
+    }
+    .hero-trust {
+      margin-top: 56px;
+      display: flex;
+      gap: 48px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .hero-trust .trust-label { color: var(--text-muted); }
+    .hero-trust .trust-name {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      color: var(--text-dim);
+    }
+
+    /* ---- animated phone ---- */
+    .phone-stage {
+      position: relative;
+      height: 640px;
+    }
+    .phone-glow {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, var(--accent-soft), transparent 70%);
+      pointer-events: none;
+    }
+    .phone {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 320px;
+      height: 600px;
+      border-radius: 44px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-card);
+      box-shadow: var(--shadow-deep);
+      padding: 28px;
+      overflow: hidden;
+    }
+    .phone-statusbar {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 36px;
+    }
+    .phone-address {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 28px;
+      line-height: 1.1;
+      margin-top: 14px;
+      color: var(--cream);
+    }
+    .phone-address .phase-line { color: var(--accent); display: block; }
+    .phone-divider {
+      margin-top: 28px;
+      padding: 20px 0;
+      border-top: 1px solid var(--hairline);
+      border-bottom: 1px solid var(--hairline);
+    }
+    .phase-text {
+      font-size: 12px;
+      color: var(--cream-dim);
+      line-height: 1.5;
+    }
+    .waveform {
+      display: flex;
+      gap: 3px;
+      align-items: flex-end;
+      height: 36px;
+    }
+    .waveform .bar {
+      width: 4px;
+      background: var(--accent);
+      transform-origin: bottom;
+    }
+    @keyframes hbar0 { from { transform: scaleY(.3); } to { transform: scaleY(1); } }
+    @keyframes hbar1 { from { transform: scaleY(.6); } to { transform: scaleY(.4); } }
+    @keyframes hbar2 { from { transform: scaleY(.5); } to { transform: scaleY(.9); } }
+    @keyframes hbar3 { from { transform: scaleY(.8); } to { transform: scaleY(.3); } }
+    .guests { margin-top: 22px; }
+    .guest-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--hairline);
+      transition: opacity .5s;
+    }
+    .guest-row.dim { opacity: 0.35; }
+    .guest-name { font-size: 13px; color: var(--cream); }
+    .guest-meta { font-family: var(--mono); font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+    .guest-dash { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+
+    .corner-mark {
+      position: absolute;
+      color: var(--accent);
+      pointer-events: none;
+    }
+    .corner-tl { top: 0; left: 0; }
+    .corner-br { bottom: 0; right: 0; transform: rotate(180deg); }
+    .phase-dots {
+      position: absolute;
+      bottom: -8px;
+      left: 0;
+      display: flex;
+      gap: 8px;
+    }
+    .phase-dots .dot {
+      width: 18px;
+      height: 1px;
+      background: var(--border);
+      transition: background .3s;
+    }
+    .phase-dots .dot.active { background: var(--accent); }
+
+    /* ============ THE METHOD ============ */
+    .method { padding: 120px 56px; }
+    .method-grid {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 80px;
+      align-items: start;
+    }
+    .method h2 {
+      font-size: 56px;
+      line-height: 1;
+      margin: 28px 0 0;
+      color: var(--cream);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+    }
+    .method-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--hairline);
+    }
+    .method-step {
+      background: var(--bg-deep);
+      padding: 40px 36px 48px;
+    }
+    .method-step .num {
+      font-family: var(--mono);
+      font-size: 14px;
+      color: var(--accent);
+      line-height: 1;
+      letter-spacing: 0.16em;
+    }
+    .method-step .title {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 28px;
+      margin-top: 28px;
+      color: var(--cream);
+    }
+    .method-step .body {
+      margin-top: 18px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text-dim);
+    }
+
+    /* ============ SHOWCASE ============ */
+    .showcase {
+      padding: 120px 56px;
+      background: var(--bg);
+    }
+    .showcase-inner { max-width: 1240px; margin: 0 auto; }
+    .showcase-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 60px;
+      gap: 60px;
+    }
+    .showcase h2 {
+      font-size: 56px;
+      line-height: 1;
+      margin: 28px 0 0;
+      color: var(--cream);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+    }
+    .showcase-blurb {
+      max-width: 380px;
+      color: var(--text-dim);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .preview-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-card);
+      box-shadow: var(--shadow-deep);
+      overflow: hidden;
+    }
+    .preview-inner {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 460px;
+    }
+    .preview-list {
+      border-right: 1px solid var(--hairline);
+      padding: 28px;
+    }
+    .preview-property {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 24px;
+      color: var(--cream);
+      margin-top: 6px;
+    }
+    .preview-time {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .preview-list .hairline { margin: 24px 0; }
+    .visitor-row {
+      padding: 14px;
+      margin: 0 -14px;
+      border-left: 2px solid transparent;
+    }
+    .visitor-row.active {
+      background: var(--accent-soft);
+      border-left-color: var(--accent);
+    }
+    .visitor-row-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .visitor-row .name { font-size: 14px; color: var(--cream); }
+    .visitor-row .sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .preview-detail { padding: 40px; }
+    .detail-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .detail-name {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 36px;
+      margin-top: 6px;
+      color: var(--cream);
+    }
+    .detail-contact {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .detail-summary {
+      margin-top: 28px;
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--cream-dim);
+    }
+    .detail-summary .em { color: var(--accent); }
+    .detail-chips {
+      display: flex;
+      gap: 8px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      padding: 5px 10px;
+      border: 1px solid var(--hairline);
+      color: var(--text-dim);
+    }
+    .followup-box {
+      margin-top: 16px;
+      padding: 22px;
+      background: var(--bg-deep);
+      border: 1px solid var(--hairline);
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--cream-dim);
+    }
+    .followup-box .hi { color: var(--accent); }
+
+    /* ============ QUOTES ============ */
+    .quotes {
+      padding: 140px 56px;
+      background: var(--bg-deep);
+    }
+    .quotes-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 48px;
+    }
+    .quote-mark {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 40px;
+      color: var(--accent);
+      line-height: 1;
+    }
+    blockquote {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      margin: 8px 0 28px;
+      font-size: 26px;
+      line-height: 1.25;
+      color: var(--cream);
+    }
+    figure { margin: 0; }
+    figcaption .who { font-size: 13px; color: var(--cream); }
+    figcaption .title { margin-top: 4px; }
+
+    /* ============ STATS ============ */
+    .stats {
+      padding: 90px 56px;
+      border-top: 1px solid var(--hairline);
+      border-bottom: 1px solid var(--hairline);
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 48px;
+    }
+    .stat-value {
+      font-family: var(--sans);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      font-size: 56px;
+      line-height: 1;
+      color: var(--cream);
+    }
+    .stat-value .suffix { color: var(--accent); }
+    .stat-label { margin-top: 10px; }
+
+    /* ============ CTA ============ */
+    .cta {
+      padding: 140px 56px;
+      text-align: center;
+    }
+    .cta h2 {
+      font-size: 88px;
+      line-height: 1;
+      margin: 32px 0 0;
+      color: var(--cream);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+    }
+    .cta-eyebrow { justify-content: center; }
+    .cta p {
+      max-width: 520px;
+      margin: 32px auto 0;
+      color: var(--text-dim);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .cta-actions {
+      margin-top: 44px;
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+    }
+
+    /* ============ FOOTER ============ */
+    footer {
+      padding: 60px 56px 40px;
+      border-top: 1px solid var(--hairline);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .foot-meta {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.14em;
+    }
+    .foot-links {
+      display: flex;
+      gap: 32px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .foot-links a:hover { color: var(--cream); }
+
+    /* ---- responsive: collapse multi-col to single, keep design tight ---- */
+    @media (max-width: 1100px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 60px; }
+      .method-grid { grid-template-columns: 1fr; gap: 40px; }
+      .method-steps { grid-template-columns: 1fr; }
+      .preview-inner { grid-template-columns: 1fr; }
+      .preview-list { border-right: none; border-bottom: 1px solid var(--hairline); }
+      .quotes-grid { grid-template-columns: 1fr; gap: 40px; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .nav-links { display: none; }
+      .hero h1 { font-size: 72px; }
+      .cta h2 { font-size: 56px; }
+      .showcase h2, .method h2 { font-size: 40px; }
+      .nav, .hero, .method, .showcase, .quotes, .stats, .cta, footer { padding-left: 24px; padding-right: 24px; }
+    }
+    @media (max-width: 640px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      .phone-stage { height: 540px; }
+      .phone { width: 280px; height: 520px; right: 50%; transform: translateX(50%); top: 10px; }
+      .hero h1 { font-size: 52px; }
+      .cta h2 { font-size: 40px; }
+      .hero-trust { gap: 20px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============ NAV ============ -->
+  <header class="nav">
+    <a href="/" class="crest">
+      <span class="crest-mark">F</span>
+      <span>Foyer</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#method">The Method</a>
+      <a href="#agents">For Agents</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#journal">Journal</a>
+    </nav>
+    <div class="nav-cta">
+      <a href="/login" class="btn btn-ghost" style="font-size:13px">Sign in</a>
+      <a href="#access" class="btn btn-primary">Request access</a>
+    </div>
+  </header>
+
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow"><span class="rule"></span><span>01 &nbsp;/&nbsp; For the modern broker</span></div>
+        <h1 class="display">
+          Every open house,<br>
+          <span class="display-em">quietly remembered.</span>
+        </h1>
+        <p class="lede">
+          Foyer listens through your phone, identifies each guest who walked in,
+          and drafts the follow-up before you've locked the front door. So you
+          spend the showing showing — not scribbling.
+        </p>
+        <div class="hero-actions">
+          <a href="#download" class="btn btn-primary btn-lg">
+            Download for iPhone <span class="arrow">→</span>
+          </a>
+          <a href="#tour" class="btn btn-ghost" style="font-size:14px;color:var(--cream-dim)">
+            Watch the 90-second tour
+          </a>
+        </div>
+        <div class="hero-trust">
+          <span class="eyebrow trust-label">Trusted at</span>
+          <span class="trust-name">DOUGLAS ELLIMAN</span>
+          <span class="trust-name">COMPASS</span>
+          <span class="trust-name">CORCORAN</span>
+          <span class="trust-name">SOTHEBY&rsquo;S</span>
+        </div>
+      </div>
+
+      <!-- animated phone -->
+      <div class="phone-stage" id="phone-stage">
+        <div class="phone-glow"></div>
+        <div class="corner-mark corner-tl">
+          <svg width="80" height="80" viewBox="0 0 80 80"><path d="M0 1 L40 1 M1 0 L1 40" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+        </div>
+        <div class="corner-mark corner-br">
+          <svg width="80" height="80" viewBox="0 0 80 80"><path d="M0 1 L40 1 M1 0 L1 40" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+        </div>
+
+        <div class="phone">
+          <div class="phone-statusbar">
+            <span class="mono">9:41</span>
+            <span class="mono">●●●●●</span>
+          </div>
+          <div class="eyebrow" id="phone-eyebrow"><span>Live · 14:22</span></div>
+          <div class="phone-address">
+            412 W 78th St
+            <span class="phase-line" id="phone-phase">Open house</span>
+          </div>
+          <div class="phone-divider">
+            <div class="eyebrow" id="phone-state" style="margin-bottom:14px"><span>Now recording</span></div>
+            <div id="phone-state-body">
+              <div class="waveform" id="waveform"></div>
+            </div>
+          </div>
+          <div class="guests">
+            <div class="eyebrow" style="margin-bottom:14px"><span>Guests today</span></div>
+            <div id="guest-list"></div>
+          </div>
+        </div>
+
+        <div class="phase-dots" id="phase-dots">
+          <div class="dot active"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="hairline"></div>
+
+  <!-- ============ THE METHOD ============ -->
+  <section class="method" id="method">
+    <div class="method-grid">
+      <div>
+        <div class="eyebrow"><span class="rule"></span><span>02 &nbsp;/&nbsp; The method</span></div>
+        <h2 class="display">
+          Three movements,<br>
+          <span class="display-em">one finished record.</span>
+        </h2>
+      </div>
+      <div class="method-steps">
+        <div class="method-step">
+          <div class="num">01 /</div>
+          <div class="title">Record</div>
+          <p class="body">Tap once when the first guest arrives. Foyer captures every conversation through the open house, in pocket, on airplane mode if needed.</p>
+        </div>
+        <div class="method-step">
+          <div class="num">02 /</div>
+          <div class="title">Recognize</div>
+          <p class="body">Guests sign in on your iPad — we match each voice to a name, separate the buyers from the browsers, and pull out what they said matters to them.</p>
+        </div>
+        <div class="method-step">
+          <div class="num">03 /</div>
+          <div class="title">Reach out</div>
+          <p class="body">Walk out and the follow-up is already drafted in your voice, scheduled to send tomorrow at 9:14 AM, ready for your read.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="hairline"></div>
+
+  <!-- ============ SHOWCASE ============ -->
+  <section class="showcase">
+    <div class="showcase-inner">
+      <div class="showcase-head">
+        <div>
+          <div class="eyebrow"><span class="rule"></span><span>03 &nbsp;/&nbsp; A closer look</span></div>
+          <h2 class="display">
+            What you see, <span class="display-em">Monday morning.</span>
+          </h2>
+        </div>
+        <div class="showcase-blurb">
+          Every guest, in plain language: who they are, what they want, and the
+          note we'd send on your behalf — yours to approve, edit, or rewrite.
+        </div>
+      </div>
+
+      <div class="preview-card">
+        <div class="preview-inner">
+          <div class="preview-list">
+            <div class="eyebrow"><span>Saturday, May 10</span></div>
+            <div class="preview-property">412 W 78th Street</div>
+            <div class="preview-time">2:00 PM — 4:00 PM · 1h 47m</div>
+            <div class="hairline"></div>
+
+            <div class="visitor-row active">
+              <div class="visitor-row-head">
+                <div class="name">Sarah Chen</div>
+                <span class="tag tag-buyer"><span class="tag-dot"></span>buyer</span>
+              </div>
+              <div class="sub">pre-approved $1.4M</div>
+            </div>
+            <div class="visitor-row">
+              <div class="visitor-row-head">
+                <div class="name">Mike Rodriguez</div>
+                <span class="tag tag-seller"><span class="tag-dot"></span>seller</span>
+              </div>
+              <div class="sub">wants comp analysis</div>
+            </div>
+            <div class="visitor-row">
+              <div class="visitor-row-head">
+                <div class="name">Jennifer Park</div>
+                <span class="tag tag-browser"><span class="tag-dot"></span>browser</span>
+              </div>
+              <div class="sub">curious renter</div>
+            </div>
+          </div>
+
+          <div class="preview-detail">
+            <div class="detail-head">
+              <div>
+                <div class="eyebrow"><span>Guest · 14:05</span></div>
+                <div class="detail-name">Sarah Chen</div>
+                <div class="detail-contact">SARAH@EXAMPLE.COM · 555-0101</div>
+              </div>
+              <span class="tag tag-buyer"><span class="tag-dot"></span>buyer · 94</span>
+            </div>
+            <p class="detail-summary">
+              Actively searching the West Side. Sold her Queens place last year. Drawn by the
+              kitchen. Needs three bedrooms — two kids. <span class="em">Pre-approved to $1.4M.</span> Ready to close in 60 days.
+            </p>
+            <div class="detail-chips">
+              <span class="chip">Pre-approved $1.4M</span>
+              <span class="chip">Close in 60d</span>
+              <span class="chip">3+ bedrooms</span>
+              <span class="chip">6mo searching</span>
+            </div>
+            <div class="hairline" style="margin:32px 0 24px"></div>
+            <div class="eyebrow"><span>Drafted follow-up · sends tomorrow 9:14 AM</span></div>
+            <div class="followup-box">
+              <span class="hi">Hi Sarah,</span><br><br>
+              It was great meeting you today. I love how prepared you and Tom are —
+              pre-approved and ready to close in 60 days is exactly the position that gives
+              buyers an edge in this market…
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="hairline"></div>
+
+  <!-- ============ QUOTES ============ -->
+  <section class="quotes">
+    <div class="quotes-grid">
+      <figure>
+        <div class="quote-mark">"</div>
+        <blockquote>It is the difference between hosting an open house and harvesting one.</blockquote>
+        <figcaption>
+          <div class="who">Eliana Morales</div>
+          <div class="eyebrow title"><span>Top producer, UWS</span></div>
+        </figcaption>
+      </figure>
+      <figure>
+        <div class="quote-mark">"</div>
+        <blockquote>Foyer wrote a follow-up that closed a $2.4M townhouse. I sent it word for word.</blockquote>
+        <figcaption>
+          <div class="who">David Chen</div>
+          <div class="eyebrow title"><span>Principal broker</span></div>
+        </figcaption>
+      </figure>
+      <figure>
+        <div class="quote-mark">"</div>
+        <blockquote>My team's response time went from three days to nine minutes. Quietly.</blockquote>
+        <figcaption>
+          <div class="who">Renée Pinault</div>
+          <div class="eyebrow title"><span>Brokerage owner, Boston</span></div>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ============ STATS ============ -->
+  <section class="stats">
+    <div class="stats-grid">
+      <div>
+        <div class="stat-value">9<span class="suffix">min</span></div>
+        <div class="eyebrow stat-label"><span>Avg. response time</span></div>
+      </div>
+      <div>
+        <div class="stat-value">3.4<span class="suffix">×</span></div>
+        <div class="eyebrow stat-label"><span>More follow-ups sent</span></div>
+      </div>
+      <div>
+        <div class="stat-value">92<span class="suffix">%</span></div>
+        <div class="eyebrow stat-label"><span>Speaker recognition</span></div>
+      </div>
+      <div>
+        <div class="stat-value">0</div>
+        <div class="eyebrow stat-label"><span>Notes to write</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section class="cta" id="access">
+    <div class="eyebrow cta-eyebrow"><span class="rule"></span><span>04 &nbsp;/&nbsp; An invitation</span></div>
+    <h2 class="display">
+      The next showing is <span class="display-em">Saturday.</span>
+    </h2>
+    <p>
+      Be ready. Free for your first three open houses — no card, no contract,
+      no calls from anyone in a quarter-zip.
+    </p>
+    <div class="cta-actions">
+      <a href="#download" class="btn btn-primary btn-xl">Download for iPhone</a>
+      <a href="#contact" class="btn">Talk to founder</a>
+    </div>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer>
+    <a href="/" class="crest crest-sm">
+      <span class="crest-mark">F</span>
+      <span>Foyer</span>
+    </a>
+    <div class="foot-meta">MADE IN NEW YORK · © MMXXVI</div>
+    <div class="foot-links">
+      <a href="#privacy">Privacy</a>
+      <a href="#security">Security</a>
+      <a href="#press">Press</a>
+    </div>
+  </footer>
+
+  <script>
+    // --- waveform bars (phase 0 only) ---
+    (function renderWaveform() {
+      const wf = document.getElementById('waveform');
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < 22; i++) {
+        const bar = document.createElement('div');
+        bar.className = 'bar';
+        const h = 6 + Math.abs(Math.sin(i * 0.7)) * 30;
+        bar.style.height = h + 'px';
+        bar.style.opacity = (0.35 + (i % 3) * 0.22).toString();
+        bar.style.animation = 'hbar' + (i % 4) + ' 0.9s ease-in-out ' + (i * 60) + 'ms infinite alternate';
+        frag.appendChild(bar);
+      }
+      wf.appendChild(frag);
+    })();
+
+    // --- guests + phase cycler ---
+    const GUESTS = [
+      { name: 'Sarah Chen',     t: '2:05', tag: 'buyer'   },
+      { name: 'Mike Rodriguez', t: '2:22', tag: 'seller'  },
+      { name: 'Jennifer Park',  t: '2:35', tag: 'browser' },
+    ];
+
+    function renderGuests(phase) {
+      const host = document.getElementById('guest-list');
+      host.innerHTML = '';
+      GUESTS.forEach((g, i) => {
+        const row = document.createElement('div');
+        row.className = 'guest-row' + (phase === 0 && i > phase ? ' dim' : '');
+        const left = document.createElement('div');
+        left.innerHTML =
+          '<div class="guest-name">' + g.name + '</div>' +
+          '<div class="guest-meta">' + (phase === 2 ? 'DRAFTED · 9:14 AM' : 'SIGNED · ' + g.t) + '</div>';
+        row.appendChild(left);
+        if (phase >= 1) {
+          const tag = document.createElement('span');
+          tag.className = 'tag tag-' + g.tag;
+          tag.innerHTML = '<span class="tag-dot"></span>' + g.tag;
+          row.appendChild(tag);
+        } else {
+          const dash = document.createElement('span');
+          dash.className = 'guest-dash';
+          dash.textContent = '—';
+          row.appendChild(dash);
+        }
+        host.appendChild(row);
+      });
+    }
+
+    function setPhase(phase) {
+      const eyebrow = phase === 0 ? 'Live · 14:22' : phase === 1 ? 'Recognizing · 14:38' : 'Brief · 16:04';
+      const phaseLine = phase === 0 ? 'Open house' : phase === 1 ? 'Three voices' : 'Walk-out';
+      const stateLabel = phase === 0 ? 'Now recording' : phase === 1 ? 'Matched · 3 / 3' : 'Follow-ups ready';
+
+      document.querySelector('#phone-eyebrow span').textContent = eyebrow;
+      document.getElementById('phone-phase').textContent = phaseLine;
+      document.querySelector('#phone-state span').textContent = stateLabel;
+
+      const body = document.getElementById('phone-state-body');
+      if (phase === 0) {
+        body.innerHTML = '<div class="waveform" id="waveform"></div>';
+        const wf = document.getElementById('waveform');
+        for (let i = 0; i < 22; i++) {
+          const bar = document.createElement('div');
+          bar.className = 'bar';
+          const h = 6 + Math.abs(Math.sin(i * 0.7)) * 30;
+          bar.style.height = h + 'px';
+          bar.style.opacity = (0.35 + (i % 3) * 0.22).toString();
+          bar.style.animation = 'hbar' + (i % 4) + ' 0.9s ease-in-out ' + (i * 60) + 'ms infinite alternate';
+          wf.appendChild(bar);
+        }
+      } else if (phase === 1) {
+        body.innerHTML = '<div class="phase-text">Sarah · Mike · Jennifer voice-matched against today\'s sign-in.</div>';
+      } else {
+        body.innerHTML = '<div class="phase-text">3 drafted messages waiting on your read. Sending tomorrow at 9:14 AM.</div>';
+      }
+
+      const dots = document.querySelectorAll('#phase-dots .dot');
+      dots.forEach((d, i) => d.classList.toggle('active', i === phase));
+
+      renderGuests(phase);
+    }
+
+    let phase = 0;
+    renderGuests(0);
+    setInterval(() => {
+      phase = (phase + 1) % 3;
+      setPhase(phase);
+    }, 3200);
+  </script>
+</body>
+</html>

@@ -1,0 +1,344 @@
+/* Foyer — premium luxury editorial */
+
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  /* dark (default) */
+  --bg-deep: #0a0e13;
+  --bg: #11161c;
+  --bg-card: #161c24;
+  --bg-elev: #1d242d;
+  --bg-elev-2: #242c36;
+  --border: rgba(201, 168, 106, 0.12);
+  --border-strong: rgba(201, 168, 106, 0.28);
+  --hairline: rgba(235, 229, 214, 0.08);
+
+  --gold: #c9a86a;
+  --gold-bright: #d8bc7e;
+  --gold-deep: #a8884a;
+  --gold-soft: rgba(201, 168, 106, 0.14);
+
+  --cream: #ebe5d6;
+  --cream-dim: #c4bda9;
+  --text: #ebe5d6;
+  --text-dim: #9a9384;
+  --text-muted: #6f695c;
+
+  --terracotta: #c4663d;
+  --terracotta-soft: rgba(196, 102, 61, 0.16);
+  --sage: #8ea886;
+  --sage-soft: rgba(142, 168, 134, 0.16);
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 30px 60px -20px rgba(0, 0, 0, 0.5);
+  --shadow-deep: 0 40px 100px -30px rgba(0, 0, 0, 0.8);
+
+  --serif: 'Instrument Serif', 'Times New Roman', serif;
+  --sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --mono: 'Geist Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+
+.font-instrument { --serif: 'Instrument Serif', serif; --sans: 'Geist', system-ui, sans-serif; --mono: 'Geist Mono', monospace; }
+.font-newsreader { --serif: 'Newsreader', serif; --sans: 'Geist', system-ui, sans-serif; --mono: 'Geist Mono', monospace; }
+.font-cormorant  { --serif: 'Cormorant Garamond', serif; --sans: 'Geist', system-ui, sans-serif; --mono: 'IBM Plex Mono', monospace; }
+
+.theme-light {
+  --bg-deep: #f3efe6;
+  --bg: #f8f5ec;
+  --bg-card: #ffffff;
+  --bg-elev: #faf7ee;
+  --bg-elev-2: #f3efe5;
+  --border: rgba(60, 50, 30, 0.10);
+  --border-strong: rgba(60, 50, 30, 0.22);
+  --hairline: rgba(40, 30, 15, 0.06);
+
+  --gold: #8a6f2f;
+  --gold-bright: #a8884a;
+  --gold-deep: #6a5418;
+  --gold-soft: rgba(138, 111, 47, 0.10);
+
+  --cream: #1a1610;
+  --cream-dim: #3a3528;
+  --text: #1a1610;
+  --text-dim: #5a5240;
+  --text-muted: #8a8270;
+
+  --terracotta: #a85226;
+  --terracotta-soft: rgba(168, 82, 38, 0.10);
+  --sage: #607a58;
+  --sage-soft: rgba(96, 122, 88, 0.10);
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 30px 60px -20px rgba(40, 30, 15, 0.10);
+  --shadow-deep: 0 40px 100px -30px rgba(40, 30, 15, 0.18);
+}
+
+/* ============ STYLE PRESETS ============ */
+
+/* 01 — Editorial Brokerage (current default, dark+brass) */
+.style-editorial { }
+
+/* 02 — Linear / AI startup — flat dark, electric accent, sans only */
+.style-ai {
+  --bg-deep: #08090b;
+  --bg: #0b0d10;
+  --bg-card: #101317;
+  --bg-elev: #161a20;
+  --bg-elev-2: #1c2128;
+  --border: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.14);
+  --hairline: rgba(255,255,255,0.06);
+  --gold: #a5f3fc;
+  --gold-bright: #cffafe;
+  --gold-deep: #67e8f9;
+  --gold-soft: rgba(165,243,252,0.10);
+  --cream: #ededf2;
+  --cream-dim: #b8b8c4;
+  --text: #ededf2;
+  --text-dim: #8a8a96;
+  --text-muted: #5a5a64;
+  --terracotta: #f87171;
+  --terracotta-soft: rgba(248,113,113,0.12);
+  --sage: #86efac;
+  --sage-soft: rgba(134,239,172,0.12);
+  --serif: 'Geist', system-ui, sans-serif;
+  --sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --mono: 'Geist Mono', monospace;
+}
+.style-ai .serif, .style-ai .serif-it {
+  font-family: var(--sans) !important; font-style: normal !important;
+  font-weight: 500 !important; letter-spacing: -0.03em !important;
+}
+.style-ai .eyebrow { color: var(--text-muted); }
+
+/* 03 — Vercel / Geist mono-luxe — pure b&w with subtle utility accents */
+.style-mono {
+  --bg-deep: #000000;
+  --bg: #050505;
+  --bg-card: #0c0c0c;
+  --bg-elev: #141414;
+  --bg-elev-2: #1c1c1c;
+  --border: rgba(255,255,255,0.09);
+  --border-strong: rgba(255,255,255,0.22);
+  --hairline: rgba(255,255,255,0.06);
+  --gold: #ffffff;
+  --gold-bright: #ffffff;
+  --gold-deep: #ededed;
+  --gold-soft: rgba(255,255,255,0.06);
+  --cream: #fafafa;
+  --cream-dim: #b4b4b4;
+  --text: #fafafa;
+  --text-dim: #8a8a8a;
+  --text-muted: #525252;
+  --terracotta: #fb923c;
+  --terracotta-soft: rgba(251,146,60,0.10);
+  --sage: #4ade80;
+  --sage-soft: rgba(74,222,128,0.10);
+  --serif: 'Geist', system-ui, sans-serif;
+  --sans: 'Geist', system-ui, sans-serif;
+  --mono: 'Geist Mono', monospace;
+  --shadow-card: 0 0 0 1px rgba(255,255,255,0.04) inset, 0 30px 60px -30px rgba(0,0,0,0.8);
+  --shadow-deep: 0 1px 0 rgba(255,255,255,0.05) inset, 0 40px 120px -20px rgba(0,0,0,1);
+}
+.style-mono .serif, .style-mono .serif-it {
+  font-family: var(--sans) !important; font-style: normal !important;
+  font-weight: 500 !important; letter-spacing: -0.045em !important;
+}
+.style-mono .eyebrow {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  letter-spacing: 0.12em;
+}
+.style-mono .btn { border-radius: 6px; }
+.style-mono .btn-primary {
+  background: #fff; color: #000; border-color: #fff;
+  font-weight: 500;
+}
+.style-mono .btn-primary:hover { background: #ededed; border-color: #ededed; }
+.style-mono .btn:not(.btn-primary):hover {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.35);
+  color: #fff;
+}
+.style-mono .card { border-radius: 8px; }
+.style-mono .crest { letter-spacing: -0.02em; font-weight: 600; }
+.style-mono .crest-mark {
+  border-radius: 6px;
+  background: #fff; color: #000; border-color: #fff;
+  font-style: normal; font-weight: 700;
+}
+.style-mono .tag { border-radius: 4px; font-weight: 500; }
+.style-mono .placeholder {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 8px, rgba(255,255,255,0.03) 8px 9px),
+    var(--bg-elev);
+}
+.style-mono ::selection { background: #fff; color: #000; }
+
+/* 04 — Warm cream paper, editorial light */
+.style-paper {
+  --bg-deep: #efeae0;
+  --bg: #f7f3e9;
+  --bg-card: #ffffff;
+  --bg-elev: #f3efe5;
+  --bg-elev-2: #ebe6d8;
+  --border: rgba(40,30,15,0.12);
+  --border-strong: rgba(40,30,15,0.28);
+  --hairline: rgba(40,30,15,0.08);
+  --gold: #7a5a1f;
+  --gold-bright: #966f28;
+  --gold-deep: #5a3f10;
+  --gold-soft: rgba(122,90,31,0.10);
+  --cream: #1a1610;
+  --cream-dim: #3a3528;
+  --text: #1a1610;
+  --text-dim: #5a5240;
+  --text-muted: #8a8270;
+  --terracotta: #9a3f1f;
+  --terracotta-soft: rgba(154,63,31,0.10);
+  --sage: #4d6244;
+  --sage-soft: rgba(77,98,68,0.10);
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.6) inset, 0 30px 60px -20px rgba(40,30,15,0.10);
+  --shadow-deep: 0 40px 100px -30px rgba(40,30,15,0.18);
+  --serif: 'Newsreader', serif;
+}
+
+/* 05 — Saturated / bold — Sunset noir w/ electric coral */
+.style-noir {
+  --bg-deep: #1a0d14;
+  --bg: #221218;
+  --bg-card: #2a1820;
+  --bg-elev: #341e29;
+  --bg-elev-2: #3e2733;
+  --border: rgba(255,200,180,0.10);
+  --border-strong: rgba(255,200,180,0.24);
+  --hairline: rgba(255,200,180,0.08);
+  --gold: #ff7a5c;
+  --gold-bright: #ff9a7e;
+  --gold-deep: #d65a3c;
+  --gold-soft: rgba(255,122,92,0.14);
+  --cream: #fef3ec;
+  --cream-dim: #e8d5c5;
+  --text: #fef3ec;
+  --text-dim: #b5a092;
+  --text-muted: #7e6b5e;
+  --terracotta: #ffb347;
+  --terracotta-soft: rgba(255,179,71,0.14);
+  --sage: #88d4b4;
+  --sage-soft: rgba(136,212,180,0.12);
+}
+
+.foyer { font-family: var(--sans); color: var(--text); background: var(--bg); }
+.foyer * { box-sizing: border-box; }
+
+.serif { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; }
+.serif-it { font-family: var(--serif); font-style: italic; font-weight: 400; }
+.mono { font-family: var(--mono); }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.dim { color: var(--text-dim); }
+.muted { color: var(--text-muted); }
+
+.hairline { border-top: 1px solid var(--hairline); }
+.divider {
+  display: flex; align-items: center; gap: 14px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--hairline); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 22px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border-radius: 2px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--cream);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn:hover { background: var(--gold-soft); border-color: var(--gold); }
+.btn-primary {
+  background: var(--gold);
+  color: #1a1610;
+  border-color: var(--gold);
+}
+.btn-primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
+.btn-ghost { border-color: transparent; padding: 12px 0; }
+.btn-ghost:hover { background: transparent; color: var(--gold); }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.tag-buyer { color: var(--gold); background: var(--gold-soft); }
+.tag-seller { color: var(--terracotta); background: var(--terracotta-soft); }
+.tag-browser { color: var(--sage); background: var(--sage-soft); }
+.tag-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.crest {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--cream);
+  letter-spacing: -0.01em;
+}
+.crest-mark {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* placeholder block for imagery */
+.placeholder {
+  position: relative;
+  background:
+    repeating-linear-gradient(135deg, transparent 0 8px, rgba(201,168,106,0.05) 8px 9px),
+    var(--bg-elev);
+  border: 1px dashed var(--border-strong);
+  display: grid; place-items: center;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* number flourish */
+.numeral {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--gold);
+  font-weight: 500;
+}
+
+::selection { background: var(--gold); color: #1a1610; }

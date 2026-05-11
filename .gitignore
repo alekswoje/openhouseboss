@@ -1,0 +1,21 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+results/
+results.json
+*.m4a
+*.mp3
+*.wav
+*.mp4
+.idea/
+.vscode/
+
+# Runtime session data (uploads + processed results)
+sessions/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
