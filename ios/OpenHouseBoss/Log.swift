@@ -11,21 +11,15 @@ import os
 enum Log {
     private static let logger = Logger(subsystem: "com.openhouseboss.app", category: "OHB")
 
-    static func ui(_ msg: @autoclosure () -> String,
-                   file: String = #fileID, line: Int = #line) {
-        let location = "\(file):\(line)"
-        logger.log("[UI] \(msg()) (\(location))")
+    static func ui(_ msg: String, file: String = #fileID, line: Int = #line) {
+        logger.log("[UI] \(msg, privacy: .public) (\(file, privacy: .public):\(line, privacy: .public))")
     }
 
-    static func net(_ msg: @autoclosure () -> String,
-                    file: String = #fileID, line: Int = #line) {
-        let location = "\(file):\(line)"
-        logger.log("[NET] \(msg()) (\(location))")
+    static func net(_ msg: String, file: String = #fileID, line: Int = #line) {
+        logger.log("[NET] \(msg, privacy: .public) (\(file, privacy: .public):\(line, privacy: .public))")
     }
 
-    static func warn(_ msg: @autoclosure () -> String,
-                     file: String = #fileID, line: Int = #line) {
-        let location = "\(file):\(line)"
-        logger.warning("[WARN] \(msg()) (\(location))")
+    static func warn(_ msg: String, file: String = #fileID, line: Int = #line) {
+        logger.warning("[WARN] \(msg, privacy: .public) (\(file, privacy: .public):\(line, privacy: .public))")
     }
 }
