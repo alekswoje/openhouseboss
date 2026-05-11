@@ -174,26 +174,73 @@ struct SessionsTabContent: View {
     @State private var store = SessionStore.shared
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    statsCard
-                    sessionsList
-                    Spacer().frame(height: 120)
-                }
-                .padding(.top, 8)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                startSessionCard
+                statsCard
+                sessionsList
+                Spacer().frame(height: 120)
             }
-            .background(FoyerTheme.bgDeep)
-            .refreshable { await store.refreshSessions() }
-
-            addButton
+            .padding(.top, 8)
         }
+        .background(FoyerTheme.bgDeep)
+        .refreshable { await store.refreshSessions() }
         .onAppear { Log.ui("SessionsTabContent appeared") }
         .task {
             await store.refreshSessions()
             await store.refreshScripts()
         }
+    }
+
+    // Primary action — the whole reason an agent opens this tab during an
+    // open house. Big, unmistakable, mic-icon-first. Tapping is the same as
+    // the old top-right NEW button (which is now gone): reset transient
+    // session state, push into the listings picker.
+    private var startSessionCard: some View {
+        Button {
+            store.reset()
+            router.push(.picker)
+        } label: {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(FoyerTheme.inkOnGold.opacity(0.18))
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                }
+                .frame(width: 52, height: 52)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Start an open house")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                    Text("TAP TO BEGIN RECORDING")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundStyle(FoyerTheme.inkOnGold.opacity(0.7))
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(FoyerTheme.inkOnGold.opacity(0.8))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity)
+            .background(
+                LinearGradient(
+                    colors: [FoyerTheme.gold, FoyerTheme.gold.opacity(0.85)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18)
+            )
+            .shadow(color: FoyerTheme.gold.opacity(0.35), radius: 14, x: 0, y: 6)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 18)
     }
 
     private var header: some View {
@@ -206,30 +253,6 @@ struct SessionsTabContent: View {
         .padding(.horizontal, 20)
         .padding(.top, 56)
         .padding(.bottom, 18)
-    }
-
-    // Top-right "NEW" action — replaces the floating FAB. Opens the
-    // listings picker (the new entry into the recording flow).
-    private var addButton: some View {
-        Button {
-            store.reset()
-            router.push(.picker)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("NEW")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.4)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .foregroundStyle(FoyerTheme.inkOnGold)
-            .background(FoyerTheme.gold, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 20)
-        .padding(.top, 60)
     }
 
     private var statsCard: some View {
@@ -450,6 +473,7 @@ struct SessionsTabContent: View {
 
 struct VisitorsTabContent: View {
     @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
     @State private var addLeadSheet = false
 
     var body: some View {
@@ -463,8 +487,10 @@ struct VisitorsTabContent: View {
                 .padding(.top, 8)
             }
             .background(FoyerTheme.bgDeep)
+            .refreshable { await store.refreshSessions() }
             addButton
         }
+        .task { await store.refreshSessions() }
         .sheet(isPresented: $addLeadSheet) { AddLeadSheet() }
     }
 
@@ -2120,6 +2146,7 @@ struct FUBConnectSheet: View {
 // visitor and a templated follow-up draft the agent can edit before sending.
 struct AddLeadSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
 
     @State private var name: String = ""
@@ -2286,18 +2313,28 @@ struct AddLeadSheet: View {
         guard !trimmedName.isEmpty else { return }
         saving = true
         saveError = nil
+        let trimmedAddress = address.trimmingCharacters(in: .whitespaces)
         Task {
             do {
-                _ = try await APIClient.shared.createManualLead(
+                let newSession = try await APIClient.shared.createManualLead(
                     name: trimmedName,
                     email: email.trimmingCharacters(in: .whitespaces),
                     phone: phone.trimmingCharacters(in: .whitespaces),
                     tag: tag,
-                    address: address.trimmingCharacters(in: .whitespaces).isEmpty ? nil : address.trimmingCharacters(in: .whitespaces)
+                    address: trimmedAddress.isEmpty ? nil : trimmedAddress
                 )
                 await store.refreshSessions()
                 await MainActor.run {
                     saving = false
+                    // Land the agent on the new lead's follow-up draft —
+                    // they came here to add a lead, the natural next step is
+                    // editing the email. Solves the "I added a lead but
+                    // didn't see it" UX gap by making the result visible
+                    // immediately instead of hiding it in an inbox tap-away.
+                    if let visitor = newSession.result?.visitors.first {
+                        store.session = newSession
+                        router.push(.followup(visitor))
+                    }
                     dismiss()
                 }
             } catch {
