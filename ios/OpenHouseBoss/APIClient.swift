@@ -1,5 +1,8 @@
+import AuthenticationServices
 import Foundation
+import Observation
 import Security
+import UIKit
 
 enum APIError: Error, LocalizedError {
     case http(Int, String)
@@ -92,6 +95,25 @@ actor APIClient {
         return URLSession(configuration: cfg)
     }()
 
+    // Attaches the saved Authorization: Bearer header so every backend call
+    // is automatically scoped to the signed-in user. Keep request mutation
+    // in one place so individual call sites don't forget.
+    private func authorize(_ req: inout URLRequest) {
+        if let token = Keychain.get(AuthStore.tokenKey) {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+    }
+
+    // GET /auth/me — used to (a) verify a Keychain token on launch and (b)
+    // pull the user's name/email/picture for the profile screen.
+    func fetchMe() async throws -> AuthUser {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/me"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthUser.self, from: data)
+    }
+
     // iOS-only path: upload audio, let the backend synthesize visitors from
     // diarized speakers. Returns the freshly-created session (status=processing).
     // `speakersExpected` is forwarded to AssemblyAI as a diarization hint.
@@ -113,6 +135,7 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
 
         var body = Data()
         if let a = address?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty {
@@ -140,8 +163,9 @@ actor APIClient {
 
     // GET /scripts — presets + user-created.
     func listScripts() async throws -> [ScriptSummary] {
-        let url = Config.backendURL.appendingPathComponent("scripts")
-        let (data, response) = try await self.session.data(from: url)
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let scripts: [ScriptSummary] }
         return try JSONDecoder().decode(Wrapper.self, from: data).scripts
@@ -152,6 +176,7 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
         let stepDicts = steps.map { s -> [String: String] in
             ["label": s.label, "quote": s.quote, "intent": s.intent]
         }
@@ -176,6 +201,7 @@ actor APIClient {
     func deleteScript(id: String) async throws {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/\(id)"))
         req.httpMethod = "DELETE"
+        authorize(&req)
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
     }
@@ -194,6 +220,7 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("leads"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
         var body: [String: Any] = [
             "name": name,
             "email": email,
@@ -209,8 +236,9 @@ actor APIClient {
 
     // GET /sessions — compact list for the home screen.
     func listSessions() async throws -> [SessionSummary] {
-        let url = Config.backendURL.appendingPathComponent("sessions")
-        let (data, response) = try await self.session.data(from: url)
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let sessions: [SessionSummary] }
         return try JSONDecoder().decode(Wrapper.self, from: data).sessions
@@ -231,6 +259,7 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(sessionId)/visitors/state"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
 
         var body: [String: Any] = [
             "name": visitorName,
@@ -248,8 +277,9 @@ actor APIClient {
     }
 
     func getSession(id: String) async throws -> Session {
-        let url = Config.backendURL.appendingPathComponent("sessions/\(id)")
-        let (data, response) = try await self.session.data(from: url)
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
     }
@@ -262,6 +292,7 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)/reprocess"))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
 
         var body = Data()
         if let n = speakersExpected, n > 0 {
@@ -436,4 +467,153 @@ private extension Data {
         append(value)
         append("\r\n")
     }
+}
+
+// MARK: – Auth (Google Sign-In via backend-brokered OAuth)
+
+// Single source of truth for "is the agent signed in?". Holds the backend
+// JWT (Keychain-backed) and the latest /auth/me profile. RootView gates on
+// `currentUser` — nil means show LoginView, set means show the main app.
+@MainActor
+@Observable
+final class AuthStore {
+    static let shared = AuthStore()
+
+    nonisolated static let tokenKey = "auth_token"
+
+    var currentUser: AuthUser?
+    var loading = true        // true while we verify a saved token on launch
+    var lastError: String?
+
+    var token: String? { Keychain.get(Self.tokenKey) }
+    var isSignedIn: Bool { currentUser != nil }
+
+    private init() {}
+
+    // Called from RootView on app launch — if we have a saved token, verify
+    // it with the backend so a revoked/expired one doesn't keep the user
+    // stuck on a stale "signed in" state. If no token, just clear loading
+    // and let LoginView take over.
+    func restore() async {
+        guard token != nil else {
+            await MainActor.run { self.loading = false }
+            return
+        }
+        do {
+            let user = try await APIClient.shared.fetchMe()
+            await MainActor.run {
+                self.currentUser = user
+                self.loading = false
+            }
+        } catch {
+            Keychain.remove(Self.tokenKey)
+            await MainActor.run {
+                self.currentUser = nil
+                self.loading = false
+            }
+        }
+    }
+
+    // Drives the ASWebAuthenticationSession dance: open the backend's
+    // /auth/google/start in a system-managed webview, listen for the
+    // com.openhouseboss.app:// redirect, pull the token out, verify with
+    // /auth/me, and stash both.
+    func signInWithGoogle(presentationAnchor: ASPresentationAnchor) async {
+        await MainActor.run {
+            self.lastError = nil
+            self.loading = true
+        }
+        do {
+            let token = try await GoogleAuthDriver.run(presentationAnchor: presentationAnchor)
+            try Keychain.set(token, for: Self.tokenKey)
+            let user = try await APIClient.shared.fetchMe()
+            await MainActor.run {
+                self.currentUser = user
+                self.loading = false
+            }
+        } catch {
+            Keychain.remove(Self.tokenKey)
+            await MainActor.run {
+                self.currentUser = nil
+                self.loading = false
+                if let asError = error as? ASWebAuthenticationSessionError, asError.code == .canceledLogin {
+                    // User backed out — not an error worth surfacing.
+                    self.lastError = nil
+                } else {
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func signOut() {
+        Keychain.remove(Self.tokenKey)
+        currentUser = nil
+    }
+}
+
+struct AuthUser: Codable, Hashable {
+    let id: String
+    let email: String?
+    let name: String?
+    let picture: String?
+}
+
+// ASWebAuthenticationSession wrapper. Adapts the callback-based API to
+// async/await and pulls the `token` query param out of the success URL.
+enum GoogleAuthDriver {
+    enum AuthError: Error, LocalizedError {
+        case missingToken
+        var errorDescription: String? { "Sign-in finished but no token came back." }
+    }
+
+    @MainActor
+    static func run(presentationAnchor: ASPresentationAnchor) async throws -> String {
+        let url = Config.backendURL.appendingPathComponent("auth/google/start")
+            .appending(queryItems: [URLQueryItem(name: "platform", value: "ios")])
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "com.openhouseboss.app"
+            ) { callbackURL, error in
+                if let error {
+                    cont.resume(throwing: error)
+                    return
+                }
+                guard let callbackURL,
+                      let comps = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                      let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
+                else {
+                    cont.resume(throwing: AuthError.missingToken)
+                    return
+                }
+                cont.resume(returning: token)
+            }
+            session.presentationContextProvider = AuthAnchorProvider.shared(anchor: presentationAnchor)
+            // Pop into a webview the user is already signed in to — they
+            // won't see a Google login form if they already have a session
+            // in Safari/iCloud Keychain. prefersEphemeralWebBrowserSession
+            // would force a fresh login each time; keep it off for UX.
+            session.prefersEphemeralWebBrowserSession = false
+            session.start()
+        }
+    }
+}
+
+// ASWebAuthenticationSession wants a UIWindow-ish anchor to attach its
+// presentation to. Holding a strong reference here keeps the provider
+// alive for the duration of the auth flow.
+final class AuthAnchorProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private static var _shared: AuthAnchorProvider?
+    private let anchor: ASPresentationAnchor
+
+    static func shared(anchor: ASPresentationAnchor) -> AuthAnchorProvider {
+        let provider = AuthAnchorProvider(anchor: anchor)
+        _shared = provider
+        return provider
+    }
+
+    private init(anchor: ASPresentationAnchor) { self.anchor = anchor }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { anchor }
 }

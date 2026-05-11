@@ -9,11 +9,12 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend import auth as auth_lib
 from pipeline.analyze import analyze_visitor
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
@@ -40,6 +41,100 @@ app.add_middleware(
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Auth — Google Sign-In
+# --------------------------------------------------------------------------
+
+@app.get("/auth/google/start")
+def google_start(platform: str = "web"):
+    """Kicks off Google OAuth. iOS uses ASWebAuthenticationSession to open
+    this URL; web frontend just navigates here. The platform query-string
+    rides through Google as part of the signed `state` so the callback knows
+    where to return the user."""
+    state = auth_lib.encode_state(platform)
+    return RedirectResponse(auth_lib.build_google_authorize_url(state), status_code=302)
+
+
+@app.get("/auth/google/callback")
+def google_callback(code: str, state: str):
+    state_data = auth_lib.decode_state(state)
+    platform = state_data.get("platform", "web")
+
+    id_token_str = auth_lib.exchange_code_for_id_token(code)
+    payload = auth_lib.verify_google_id_token(id_token_str)
+    user = auth_lib.upsert_user_from_google(payload)
+
+    # First time anyone signs in? Inherit every pre-auth session so the
+    # agent's existing recordings aren't orphaned.
+    if auth_lib.first_user_id() == user["id"]:
+        auth_lib.migrate_orphan_sessions_to(user["id"], SESSIONS_DIR)
+
+    jwt_str = auth_lib.mint_session_jwt(user)
+
+    if platform == "ios":
+        # Hand the JWT back through the custom URL scheme that
+        # ASWebAuthenticationSession listens for.
+        return RedirectResponse(
+            f"{auth_lib.IOS_CUSTOM_SCHEME}://auth?token={jwt_str}", status_code=302
+        )
+
+    # Web: set httpOnly session cookie + bounce to the app.
+    resp = RedirectResponse(url="/#/app", status_code=302)
+    resp.set_cookie(
+        key="fb_session",
+        value=jwt_str,
+        max_age=int(auth_lib.SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@app.get("/auth/me")
+def auth_me(user: dict = Depends(auth_lib.get_current_user)):
+    """Used by web + iOS to check that the saved token/cookie is still
+    valid and to render "signed in as X". Returns a slim user profile."""
+    return {
+        "id": user["id"],
+        "email": user.get("email"),
+        "name": user.get("name"),
+        "picture": user.get("picture"),
+    }
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    resp = RedirectResponse(url="/", status_code=302)
+    resp.delete_cookie("fb_session", path="/")
+    return resp
+
+
+# Native iOS path that bypasses ASWebAuthenticationSession — if the iOS
+# app ever uses the Google Sign-In SDK directly, it can POST the id_token
+# straight here and skip the redirect dance. Not used by the current
+# webview flow but cheap to keep.
+@app.post("/auth/google/ios")
+def google_ios(payload: dict):
+    id_token_str = (payload.get("id_token") or "").strip()
+    if not id_token_str:
+        raise HTTPException(400, "id_token is required")
+    google_payload = auth_lib.verify_google_id_token(id_token_str)
+    user = auth_lib.upsert_user_from_google(google_payload)
+    if auth_lib.first_user_id() == user["id"]:
+        auth_lib.migrate_orphan_sessions_to(user["id"], SESSIONS_DIR)
+    return {
+        "token": auth_lib.mint_session_jwt(user),
+        "user": {
+            "id": user["id"],
+            "email": user.get("email"),
+            "name": user.get("name"),
+            "picture": user.get("picture"),
+        },
+    }
 
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
@@ -159,6 +254,7 @@ async def create_session(
     address: Optional[str] = Form(None),
     speakers_expected: Optional[int] = Form(None),
     script_id: Optional[str] = Form(None),
+    current_user: dict = Depends(auth_lib.get_current_user),
 ):
     if not audio and not mock_transcript:
         raise HTTPException(400, "Provide audio or mock_transcript")
@@ -194,6 +290,7 @@ async def create_session(
         "completed_at": None,
         "result": None,
         "error": None,
+        "user_id": current_user["id"],
     }
     with _sessions_lock:
         _sessions[session_id] = session
@@ -246,7 +343,11 @@ def remove_script(script_id: str):
 
 
 @app.post("/sessions/{session_id}/reprocess")
-async def reprocess_session(session_id: str, speakers_expected: Optional[int] = Form(None)):
+async def reprocess_session(
+    session_id: str,
+    speakers_expected: Optional[int] = Form(None),
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
     """Re-run the pipeline on a saved audio file with a (usually different)
     speakers_expected hint. Lets the agent fix a diarization undercount
     without re-recording the session."""
@@ -269,6 +370,7 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
             path = session_dir / "session.json"
             if path.exists():
                 _sessions[session_id] = json.loads(path.read_text())
+        _require_owner(_sessions.get(session_id), current_user, session_id)
         existing_script_id = _sessions[session_id].get("script_id")
         _sessions[session_id].update({
             "status": "processing",
@@ -292,8 +394,19 @@ _VALID_LEAD_STATUSES = {"drafted", "sent", "replied", "archived"}
 _VALID_LEAD_TAGS = {"Buyer", "Seller", "Browser"}
 
 
+def _require_owner(session: Optional[dict], user: dict, session_id: str) -> None:
+    """Raises 404 if session missing, 403 if owned by someone else. Sessions
+    created before auth landed have no user_id — fall through so the first
+    user's orphan-migration step can claim them on next read."""
+    if session is None:
+        raise HTTPException(404, f"Session {session_id} not found")
+    owner = session.get("user_id")
+    if owner and owner != user["id"]:
+        raise HTTPException(404, f"Session {session_id} not found")
+
+
 @app.post("/leads")
-def create_manual_lead(payload: dict):
+def create_manual_lead(payload: dict, current_user: dict = Depends(auth_lib.get_current_user)):
     """Create a stand-alone lead with no recording — typed in by the agent
     on the spot. Stored as a one-visitor session with kind="manual" so all
     downstream code (inbox, FUB push, follow-up flow) works without a
@@ -334,6 +447,7 @@ def create_manual_lead(payload: dict):
         "script_id": None,
         "created_at": now_iso,
         "completed_at": now_iso,
+        "user_id": current_user["id"],
         "result": {
             "agent_speaker": "",
             "unmatched_speakers": [],
@@ -373,7 +487,11 @@ def create_manual_lead(payload: dict):
 
 
 @app.post("/sessions/{session_id}/visitors/state")
-def update_visitor_state(session_id: str, payload: dict):
+def update_visitor_state(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
     """Flip lead_state for a single visitor in a session.
 
     Body: {name, speaker?, status, snoozed_until?}
@@ -400,8 +518,7 @@ def update_visitor_state(session_id: str, payload: dict):
             if path.exists():
                 session = json.loads(path.read_text())
                 _sessions[session_id] = session
-        if session is None:
-            raise HTTPException(404, f"Session {session_id} not found")
+        _require_owner(session, current_user, session_id)
 
         result = session.get("result")
         if not result:
@@ -431,10 +548,25 @@ def update_visitor_state(session_id: str, payload: dict):
 
 
 @app.get("/sessions/{session_id}/audio")
-def get_session_audio(session_id: str):
+def get_session_audio(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
     """Stream the saved recording so a different device (laptop, iPad) can
     play back a session that was recorded elsewhere. Centralized backend =
     audio lives here, not on the recording device."""
+    # Owner check first — pull session metadata so we can verify before
+    # exposing the file. Falls back to disk if the in-memory cache misses.
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+    if session is None:
+        path = SESSIONS_DIR / session_id / "session.json"
+        if path.exists():
+            session = json.loads(path.read_text())
+            with _sessions_lock:
+                _sessions[session_id] = session
+    _require_owner(session, current_user, session_id)
+
     session_dir = SESSIONS_DIR / session_id
     if not session_dir.exists():
         raise HTTPException(404, f"Session {session_id} not found")
@@ -452,20 +584,20 @@ def get_session_audio(session_id: str):
 
 
 @app.get("/sessions/{session_id}")
-def get_session(session_id: str):
+def get_session(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
     with _sessions_lock:
         session = _sessions.get(session_id)
-    if session:
-        return session
-
-    path = SESSIONS_DIR / session_id / "session.json"
-    if path.exists():
-        session = json.loads(path.read_text())
-        with _sessions_lock:
-            _sessions[session_id] = session
-        return session
-
-    raise HTTPException(404, f"Session {session_id} not found")
+    if session is None:
+        path = SESSIONS_DIR / session_id / "session.json"
+        if path.exists():
+            session = json.loads(path.read_text())
+            with _sessions_lock:
+                _sessions[session_id] = session
+    _require_owner(session, current_user, session_id)
+    return session
 
 
 def _summarize(s: dict) -> dict:
@@ -489,8 +621,9 @@ def _summarize(s: dict) -> dict:
 def _hydrate_sessions_from_disk() -> None:
     # Sessions are in-memory by default; on cold start, scan the sessions/
     # directory so list_sessions returns previously-completed runs too.
+    # Skip "_"-prefixed dirs (e.g. _auth) — those aren't session payloads.
     for entry in SESSIONS_DIR.iterdir():
-        if not entry.is_dir():
+        if not entry.is_dir() or entry.name.startswith("_"):
             continue
         path = entry / "session.json"
         if not path.exists():
@@ -505,10 +638,14 @@ def _hydrate_sessions_from_disk() -> None:
 
 
 @app.get("/sessions")
-def list_sessions():
+def list_sessions(current_user: dict = Depends(auth_lib.get_current_user)):
     _hydrate_sessions_from_disk()
     with _sessions_lock:
-        items = [_summarize(s) for s in _sessions.values()]
+        items = [
+            _summarize(s)
+            for s in _sessions.values()
+            if s.get("user_id") == current_user["id"]
+        ]
     items.sort(key=lambda x: x["created_at"], reverse=True)
     return {"sessions": items}
 

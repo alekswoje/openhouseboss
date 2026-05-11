@@ -685,18 +685,22 @@ struct ScriptsTabContent: View {
 struct ProfileTabContent: View {
     @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
+    @State private var auth = AuthStore.shared
     @State private var defaultScriptSheet = false
     @State private var fubSheet = false
     @State private var fubConnectedName: String? = nil
+    @State private var showSignOutConfirm = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                accountCard
                 statsCard
                 defaultScriptRow
                 kioskRow
                 fubRow
+                signOutRow
                 versionLabel
                 Spacer().frame(height: 120)
             }
@@ -707,6 +711,12 @@ struct ProfileTabContent: View {
         .sheet(isPresented: $fubSheet) {
             FUBConnectSheet(connectedName: $fubConnectedName)
                 .presentationDetents([.medium, .large])
+        }
+        .confirmationDialog("Sign out of Foyer?", isPresented: $showSignOutConfirm, titleVisibility: .visible) {
+            Button("Sign out", role: .destructive) { auth.signOut() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You'll need to sign in with Google again to see your leads.")
         }
         .task {
             await store.refreshScripts()
@@ -729,6 +739,54 @@ struct ProfileTabContent: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 20)
         .padding(.top, 10)
+    }
+
+    private var accountCard: some View {
+        GlassSurface(cornerRadius: 12) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle().fill(FoyerTheme.goldSoft)
+                    Text(initials(for: auth.currentUser?.name))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+                .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(auth.currentUser?.name ?? "Signed in")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text((auth.currentUser?.email ?? "").uppercased())
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
+    }
+
+    private var signOutRow: some View {
+        Button { showSignOutConfirm = true } label: {
+            settingsRow(
+                icon: "arrow.right.square",
+                label: "Sign out",
+                value: "End this device's session"
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+    }
+
+    private func initials(for name: String?) -> String {
+        let parts = (name ?? "").split(separator: " ").prefix(2)
+        let letters = parts.compactMap { $0.first }
+        let s = String(letters).uppercased()
+        return s.isEmpty ? "?" : s
     }
 
     private var header: some View {

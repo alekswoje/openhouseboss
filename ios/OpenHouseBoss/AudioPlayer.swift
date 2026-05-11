@@ -32,7 +32,20 @@ final class AudioPlayer {
             Log.warn("AVAudioSession setup failed: \(error.localizedDescription)")
         }
 
-        let newItem = AVPlayerItem(url: url)
+        // Remote audio is now behind /sessions/{id}/audio which requires
+        // a Bearer token. AVPlayer fetches via AVURLAsset, so we attach
+        // the Authorization header through the asset's HTTP headers option.
+        let asset: AVURLAsset
+        if url.isFileURL {
+            asset = AVURLAsset(url: url)
+        } else if let token = Keychain.get(AuthStore.tokenKey) {
+            asset = AVURLAsset(url: url, options: [
+                "AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token)"]
+            ])
+        } else {
+            asset = AVURLAsset(url: url)
+        }
+        let newItem = AVPlayerItem(asset: asset)
         let newPlayer = AVPlayer(playerItem: newItem)
         newPlayer.automaticallyWaitsToMinimizeStalling = true
         item = newItem

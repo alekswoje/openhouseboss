@@ -5,3 +5,8 @@ pydantic>=2.0.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
 python-multipart>=0.0.9
+# Google Sign-In: verify ID tokens server-side, mint our own session JWTs,
+# and sign the OAuth state param so we don't need server-side state storage.
+google-auth>=2.32.0
+requests>=2.32.0
+PyJWT>=2.9.0

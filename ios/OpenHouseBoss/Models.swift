@@ -60,7 +60,7 @@ struct SessionSummary: Codable, Hashable, Identifiable {
 struct SessionResult: Codable, Hashable {
     let agentSpeaker: String
     let unmatchedSpeakers: [String]
-    let visitors: [VisitorResult]
+    var visitors: [VisitorResult]
     let fullTranscript: String
     var utterances: [Utterance]?
     var scriptCoverage: ScriptCoverage?

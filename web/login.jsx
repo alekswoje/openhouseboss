@@ -3,8 +3,7 @@
 const Login = () => {
   const handleContinue = (e) => {
     e?.preventDefault?.();
-    window.foyerToast('Welcome back, John.');
-    setTimeout(() => window.foyerGo('#/app'), 350);
+    window.foyerSignIn();
   };
   return (
     <div className="foyer" data-screen-label="Login" style={{ background: 'var(--bg-deep)', minHeight: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
@@ -49,7 +48,7 @@ const Login = () => {
           <a
             className="serif-it"
             style={{ fontSize: 14, color: 'var(--gold)', cursor: 'pointer' }}
-            onClick={() => window.foyerToast('Request received · we’ll reach out within 24h')}
+            onClick={() => window.foyerSignIn()}
           >Request access →</a>
         </div>
 
@@ -62,41 +61,24 @@ const Login = () => {
             Pick up Saturday's open house from your desk.
           </p>
 
-          <form onSubmit={handleContinue} style={{ marginTop: 40 }}>
-            <Field label="Email" placeholder="agent@brokerage.com" defaultValue="john@halloran.realty" />
-            <Field label="Password" placeholder="••••••••••••" type="password" defaultValue="hunter2sample" />
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14, alignItems: 'center' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-dim)' }}>
-                <input type="checkbox" defaultChecked style={{ accentColor: 'var(--gold)' }}/> Keep me signed in
-              </label>
-              <a
-                className="serif-it"
-                style={{ fontSize: 13, color: 'var(--gold)', cursor: 'pointer' }}
-                onClick={() => window.foyerToast('Reset link sent to john@halloran.realty')}
-              >Forgot →</a>
-            </div>
+          <div style={{ marginTop: 40 }}>
             <button
-              type="submit"
+              type="button"
               className="btn btn-primary"
-              style={{ width: '100%', justifyContent: 'center', marginTop: 28, padding: '16px' }}
+              style={{ width: '100%', justifyContent: 'center', padding: '16px', gap: 10 }}
+              onClick={handleContinue}
             >
-              Continue
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 22, height: 22, borderRadius: 22, background: 'white',
+                color: '#4285F4', fontWeight: 700, fontSize: 14,
+              }}>G</span>
+              Continue with Google
             </button>
-          </form>
-
-          <div className="divider" style={{ margin: '36px 0' }}>or</div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <button
-              className="btn"
-              style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => window.foyerToast('Signing in with Apple…')}
-            >Sign in with Apple</button>
-            <button
-              className="btn"
-              style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => window.foyerToast('Code sent · check your phone')}
-            >Continue with phone</button>
+            <p style={{ marginTop: 16, color: 'var(--text-dim)', fontSize: 12, lineHeight: 1.6 }}>
+              We'll never post anything to your account. Signing in with Google
+              lets Foyer match you to your captured open-house sessions.
+            </p>
           </div>
         </div>
 

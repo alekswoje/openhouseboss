@@ -153,6 +153,19 @@
         };
         // Convenience navigator for JSX callsites that don't want to deal with hashes.
         window.foyerGo = (hash) => { window.location.hash = hash; };
+        // Kick off Google sign-in. Backend handles the OAuth dance and
+        // bounces back here with a session cookie set, landing on #/app.
+        window.foyerSignIn = () => {
+          window.location.href = '/auth/google/start?platform=web';
+        };
+        // Fetch the current user (if any). Returns null if not signed in.
+        window.foyerMe = async () => {
+          try {
+            const r = await fetch('/auth/me', { credentials: 'include' });
+            if (!r.ok) return null;
+            return await r.json();
+          } catch { return null; }
+        };
       }, []);
 
       const route = ROUTES.find(r => r.hash === hash) || ROUTES[0];

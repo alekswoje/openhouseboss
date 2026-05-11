@@ -1,851 +1,1023 @@
 import SwiftUI
 
-// iPad landscape — the agent surface running on the open-house iPad.
-// Side rail + main content; tabs swap between Home, Kiosk form, Live, Leads.
+// iPad agent surface — runs on the open-house iPad. Side rail picks the
+// section; the main pane hosts Home / Kiosk / Leads / Listings.
+//
+// Data model: reads SessionStore.shared for listings + past sessions, and
+// for the active session's visitors/lead state when reviewing one. Mock
+// arrays (SampleData) are no longer referenced here — every list is real.
 struct IPadAgentApp: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case home, listings, sessions, leads, templates
+        case home, kiosk, leads, listings
         var id: String { rawValue }
-        var title: String {
+        var label: String {
             switch self {
-            case .home: return "Home"
+            case .home:     return "Home"
+            case .kiosk:    return "Sign in"
+            case .leads:    return "Leads"
             case .listings: return "Listings"
-            case .sessions: return "Sessions"
-            case .leads: return "Leads"
-            case .templates: return "Templates"
             }
         }
-        var systemImage: String {
+        var icon: String {
             switch self {
-            case .home: return "house"
-            case .listings: return "rectangle.grid.2x2"
-            case .sessions: return "circle.dashed.inset.filled"
-            case .leads: return "person.2"
-            case .templates: return "doc.text"
+            case .home:     return "house"
+            case .kiosk:    return "person.badge.plus"
+            case .leads:    return "person.2"
+            case .listings: return "square.grid.2x2"
             }
         }
     }
 
     @State private var tab: Tab = .home
+    @State private var store = SessionStore.shared
+    // Listing the kiosk is currently hosting. Set when the agent taps a
+    // listing on Home or in Listings; passed through to IPadKiosk so the
+    // sign-in form shows the right property.
+    @State private var activeListing: Listing?
+    // Session the agent is reviewing leads for in the Leads tab. nil means
+    // "show every lead across every recorded session, newest first."
+    @State private var activeSessionId: String?
 
     var body: some View {
         HStack(spacing: 0) {
             sideRail
-            Group {
-                switch tab {
-                case .home:      IPadHome { tab = .sessions }
-                case .listings:  IPadHome { tab = .sessions } // collapse — only one listing today
-                case .sessions:  IPadSessionLeads()
-                case .leads:     IPadSessionLeads()
-                case .templates: IPadKioskForm()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            mainPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(FoyerTheme.bgDeep.ignoresSafeArea())
+        .task {
+            await store.refreshSessions()
+        }
+    }
+
+    @ViewBuilder
+    private var mainPane: some View {
+        switch tab {
+        case .home:
+            IPadHome(
+                store: store,
+                onStartKiosk: { listing in
+                    activeListing = listing
+                    tab = .kiosk
+                },
+                onOpenSession: { id in
+                    activeSessionId = id
+                    tab = .leads
+                }
+            )
+        case .kiosk:
+            IPadKiosk(
+                store: store,
+                listing: activeListing ?? store.listings.first,
+                onLaunchListing: { tab = .listings }
+            )
+        case .leads:
+            IPadLeads(
+                store: store,
+                sessionId: $activeSessionId
+            )
+        case .listings:
+            IPadListings(
+                store: store,
+                onPickListing: { listing in
+                    activeListing = listing
+                    tab = .kiosk
+                }
+            )
+        }
     }
 
     private var sideRail: some View {
-        VStack(spacing: 22) {
-            // Crest mark
+        VStack(spacing: 24) {
             Text("F")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 38, height: 38)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(FoyerTheme.gold, lineWidth: 1))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(FoyerTheme.gold.opacity(0.5), lineWidth: 1)
+                )
                 .padding(.top, 6)
 
-            ForEach(Tab.allCases) { t in
-                Button { tab = t } label: {
-                    VStack(spacing: 6) {
-                        Image(systemName: t.systemImage)
-                            .font(.system(size: 16))
-                            .frame(width: 36, height: 36)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(tab == t ? FoyerTheme.gold : FoyerTheme.hairline, lineWidth: 1)
-                            )
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(tab == t ? FoyerTheme.goldSoft : Color.clear)
-                            )
-                        Text(t.title.uppercased())
-                            .font(.system(size: 8, design: .monospaced)).tracking(1.4)
-                    }
-                    .foregroundStyle(tab == t ? FoyerTheme.gold : FoyerTheme.textMuted)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-
-            // Profile avatar
-            Text("JH")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 32, height: 32)
-                .background(FoyerTheme.bgElev2, in: Circle())
-                .overlay(Circle().stroke(FoyerTheme.border, lineWidth: 1))
-                .padding(.bottom, 8)
-        }
-        .frame(width: 88)
-        .padding(.vertical, 18)
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(FoyerTheme.hairline).frame(width: 1)
-        }
-    }
-}
-
-// ─── iPad Home — greeting + Launch sign-in / Quick record + listing + sessions table.
-struct IPadHome: View {
-    var onLaunchKiosk: () -> Void
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                topBar
-                heroRow
-                listingSection
-                sessionsTable
-            }
-            .padding(.horizontal, 36)
-            .padding(.vertical, 28)
-        }
-        .background(FoyerTheme.bgDeep)
-    }
-
-    private var topBar: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    Rectangle().fill(FoyerTheme.gold).frame(width: 22, height: 1)
-                    Text("SATURDAY · MAY 10 · 2:14 PM")
-                        .font(.system(size: 11, design: .monospaced)).tracking(2)
-                        .foregroundStyle(FoyerTheme.gold)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("Good afternoon, ").foyerDisplay(38).foregroundStyle(FoyerTheme.cream)
-                    Text("John.")
-                        .font(.system(size: 38, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                }
-            }
-            Spacer()
-            HStack(spacing: 6) {
-                Circle().fill(FoyerTheme.sage).frame(width: 6, height: 6)
-                Text("MLS · LIVE")
-                    .font(.system(size: 10, design: .monospaced)).tracking(1.6)
-                    .foregroundStyle(FoyerTheme.sage)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(FoyerTheme.sageSoft, in: Capsule())
-            .overlay(Capsule().stroke(FoyerTheme.sage, lineWidth: 1))
-        }
-    }
-
-    private var heroRow: some View {
-        HStack(spacing: 16) {
-            // Primary — launch sign-in
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 10) {
-                    Circle().fill(FoyerTheme.terracotta).frame(width: 6, height: 6)
-                    Text("HOSTING NOW · 412 W 78TH ST")
-                        .font(.system(size: 11, design: .monospaced)).tracking(2)
-                        .foregroundStyle(FoyerTheme.terracotta)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("Launch the ").foyerDisplay(36).foregroundStyle(FoyerTheme.cream)
-                    Text("sign-in form")
-                        .font(.system(size: 36, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                }
-                .padding(.top, 12)
-                Text("Pulls today's listing automatically from MLS · photos, price, beds rotate while guests sign in.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .padding(.top, 8)
-                Spacer()
-                HStack {
-                    Button(action: onLaunchKiosk) {
-                        HStack(spacing: 10) {
-                            Text("Launch sign-in")
-                            Text("→").font(.system(size: 18, weight: .medium))
+            VStack(spacing: 4) {
+                ForEach(Tab.allCases) { t in
+                    Button { tab = t } label: {
+                        VStack(spacing: 5) {
+                            Image(systemName: t.icon)
+                                .font(.system(size: 19, weight: tab == t ? .semibold : .regular))
+                                .frame(width: 44, height: 44)
+                                .foregroundStyle(tab == t ? FoyerTheme.gold : FoyerTheme.creamDim)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(tab == t ? FoyerTheme.goldSoft : Color.clear)
+                                )
+                            Text(t.label)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(tab == t ? FoyerTheme.gold : FoyerTheme.textMuted)
+                                .lineLimit(1)
+                                .frame(width: 70)
                         }
-                    }
-                    .buttonStyle(FoyerPrimaryButton())
-                    .fixedSize()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(28)
-            .background(
-                ZStack {
-                    LinearGradient(colors: [
-                        Color(white: 0.094),
-                        Color(white: 0.140),
-                        Color(white: 0.039),
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                }
-            )
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(FoyerTheme.borderStrong, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .frame(maxWidth: .infinity)
-
-            // Secondary — quick record
-            VStack(alignment: .leading) {
-                Eyebrow(text: "Quick capture", color: FoyerTheme.terracotta)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("Start ").foyerDisplay(28).foregroundStyle(FoyerTheme.cream)
-                    Text("recording")
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundStyle(FoyerTheme.terracotta)
-                }
-                Text("No sign-in — just listen. Foyer pulls names + leads from the conversation.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .padding(.top, 6)
-                Spacer()
-                HStack(spacing: 14) {
-                    Circle().fill(FoyerTheme.terracotta).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(FoyerTheme.terracottaSoft, lineWidth: 4))
-                    Text("Tap to record")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .tracking(0.6).textCase(.uppercase)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 14)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.terracotta, lineWidth: 1))
-                .foregroundStyle(FoyerTheme.terracotta)
-            }
-            .padding(26)
-            .frame(maxWidth: 320, maxHeight: .infinity)
-            .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.hairline, lineWidth: 1))
-        }
-        .frame(minHeight: 200)
-    }
-
-    private var listingSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow(text: "Your open house · pulled from MLS")
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("Hosting today ").foyerDisplay(22).foregroundStyle(FoyerTheme.cream)
-                        Text("2–4 PM")
-                            .font(.system(size: 22, weight: .medium))
-                            .foregroundStyle(FoyerTheme.textDim)
-                    }
-                }
-                Spacer()
-                Text("All listings →")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(FoyerTheme.gold)
-            }
-            HStack(alignment: .top, spacing: 12) {
-                propertyCard
-                    .frame(maxWidth: .infinity)
-                addOpenHouseButton
-                    .frame(width: 280)
-            }
-        }
-    }
-
-    private var propertyCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                LinearGradient(colors: [
-                    Color(white: 0.140),
-                    Color(white: 0.039),
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                .frame(height: 100)
-                HStack(spacing: 6) {
-                    Circle().fill(FoyerTheme.terracotta).frame(width: 5, height: 5)
-                    Text("HOSTING")
-                        .font(.system(size: 9, design: .monospaced)).tracking(2)
-                }
-                .foregroundStyle(FoyerTheme.terracotta)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Color(red: 0.039, green: 0.055, blue: 0.075, opacity: 0.7))
-                .overlay(Rectangle().stroke(FoyerTheme.terracotta, lineWidth: 1))
-                .padding(10)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("412 W 78th St").foyerDisplay(18).foregroundStyle(FoyerTheme.cream)
-                Text("UPPER WEST SIDE · 3 / 2.5 / 1,840")
-                    .font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
-                HStack(alignment: .firstTextBaseline) {
-                    Text("$1,295,000")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                    Spacer()
-                    Text("TODAY · 2–4 PM")
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .foregroundStyle(FoyerTheme.textDim)
-                }
-                Hairline().padding(.top, 4)
-                HStack {
-                    Text("6 SIGNED IN")
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .foregroundStyle(FoyerTheme.sage)
-                    Spacer()
-                    Text("Launch →")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                }
-                .padding(.top, 4)
-            }
-            .padding(.horizontal, 16).padding(.vertical, 14)
-        }
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.gold, lineWidth: 1))
-    }
-
-    private var addOpenHouseButton: some View {
-        VStack(spacing: 10) {
-            Text("+")
-                .font(.system(size: 22, weight: .light))
-                .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 44, height: 44)
-                .background(FoyerTheme.goldSoft, in: Circle())
-                .overlay(Circle().stroke(FoyerTheme.gold, lineWidth: 1))
-            Text("Add an open house")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(FoyerTheme.cream)
-            Text("PASTE MLS # · OR SEARCH ADDRESS")
-                .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                .foregroundStyle(FoyerTheme.textMuted)
-        }
-        .frame(maxWidth: .infinity, minHeight: 200)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                .foregroundStyle(FoyerTheme.borderStrong)
-        )
-    }
-
-    private var sessionsTable: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Eyebrow(text: "Recordings & leads")
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("8 follow-ups")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(FoyerTheme.terracotta)
-                        Text(" ready to send").foyerDisplay(18).foregroundStyle(FoyerTheme.cream)
-                    }
-                }
-                Spacer()
-                Text("All sessions →")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(FoyerTheme.gold)
-            }
-            VStack(spacing: 0) {
-                ForEach(Array(sessionRows.enumerated()), id: \.element.address) { idx, s in
-                    sessionRow(s)
-                        .overlay(alignment: .top) { if idx > 0 { Hairline() } }
-                }
-            }
-            .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.hairline, lineWidth: 1))
-        }
-    }
-
-    private struct SessionRow {
-        let address, when, duration: String
-        let leads, hot, ready, sent: Int
-    }
-    private let sessionRows: [SessionRow] = [
-        .init(address: "301 E 79th St",       when: "YESTERDAY · 3:14 PM", duration: "54 min", leads: 8,  hot: 2, ready: 5, sent: 1),
-        .init(address: "212 W End Ave · #6F", when: "THU · 5:02 PM",       duration: "38 min", leads: 4,  hot: 1, ready: 3, sent: 0),
-        .init(address: "88 Greenwich St",     when: "WED · 1:22 PM",       duration: "1 h 12", leads: 11, hot: 4, ready: 0, sent: 11),
-    ]
-
-    private func sessionRow(_ s: SessionRow) -> some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(s.address).font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(FoyerTheme.cream)
-                Text(s.when)
-                    .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
-            }
-            .frame(maxWidth: 260, alignment: .leading)
-
-            Text(s.duration)
-                .font(.system(size: 11, design: .monospaced)).tracking(0.8)
-                .foregroundStyle(FoyerTheme.textDim)
-                .frame(maxWidth: 80, alignment: .leading)
-
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(s.leads)")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(FoyerTheme.cream)
-                Text("LEADS")
-                    .font(.system(size: 9, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
-            }
-            .frame(width: 80, alignment: .leading)
-
-            HStack(spacing: 6) {
-                if s.hot > 0 { TagPill(kind: .buyer, text: "\(s.hot) HOT") }
-                if s.ready > 0 { TagPill(kind: .seller, text: "\(s.ready) READY") }
-                if s.sent > 0 { TagPill(kind: .browser, text: "\(s.sent) SENT") }
-            }
-            .frame(maxWidth: 280, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 0) {
-                    Rectangle().fill(FoyerTheme.sage)
-                        .frame(width: progressBarWidth(s.sent, total: s.leads))
-                    Rectangle().fill(FoyerTheme.gold)
-                        .frame(width: progressBarWidth(s.ready, total: s.leads))
-                    Rectangle().fill(FoyerTheme.terracotta)
-                        .frame(width: progressBarWidth(s.hot, total: s.leads))
-                    Spacer(minLength: 0)
-                }
-                .frame(height: 3)
-                .background(FoyerTheme.hairline)
-                Text("\(s.sent)/\(s.leads) FOLLOW-UPS SENT")
-                    .font(.system(size: 9, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text("Open →")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(FoyerTheme.gold)
-        }
-        .padding(.horizontal, 18).padding(.vertical, 12)
-    }
-
-    private func progressBarWidth(_ value: Int, total: Int) -> CGFloat {
-        guard total > 0 else { return 0 }
-        return CGFloat(value) / CGFloat(total) * 220
-    }
-}
-
-// ─── iPad kiosk form — guest sign-in surface
-struct IPadKioskForm: View {
-    @State private var first = "Sarah"
-    @State private var last = "Chen"
-    @State private var email = "sarah.chen@gmail.com"
-    @State private var phone = "(212) 555-0101"
-    @State private var intent = "buying"
-    @State private var agent = "no"
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // LEFT — property hero
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle().fill(FoyerTheme.gold).frame(width: 5, height: 5)
-                        Text("ACTIVE LISTING · MLS 4072281")
-                            .font(.system(size: 10, design: .monospaced)).tracking(2)
-                    }
-                    .foregroundStyle(FoyerTheme.gold)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Color(red: 0.039, green: 0.055, blue: 0.075, opacity: 0.6), in: Capsule())
-                    .overlay(Capsule().stroke(FoyerTheme.gold, lineWidth: 1))
-                    Spacer()
-                    Text("PHOTO 1 / 14")
-                        .font(.system(size: 10, design: .monospaced)).tracking(2)
-                        .foregroundStyle(FoyerTheme.creamDim)
-                }
-                Spacer()
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(spacing: 12) {
-                        Rectangle().fill(FoyerTheme.gold).frame(width: 22, height: 1)
-                        Text("OPEN HOUSE · SATURDAY, MAY 10 · 2 — 4 PM")
-                            .font(.system(size: 11, design: .monospaced)).tracking(2)
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    Text("412 W 78th Street").foyerDisplay(56).foregroundStyle(FoyerTheme.cream)
-                    Text("Upper West Side, NY")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("$1,295,000")
-                            .font(.system(size: 38, weight: .medium))
-                            .foregroundStyle(FoyerTheme.gold)
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("3 BED · 2.5 BA · 1,840 SQ FT")
-                                .font(.system(size: 10, design: .monospaced)).tracking(1.4)
-                                .foregroundStyle(FoyerTheme.creamDim)
-                            Text("HOSTED BY JOHN HALLORAN")
-                                .font(.system(size: 10, design: .monospaced)).tracking(1.4)
-                                .foregroundStyle(FoyerTheme.sage)
-                        }
-                    }
-                    HStack(spacing: 4) {
-                        ForEach(0..<14, id: \.self) { d in
-                            Rectangle()
-                                .fill(d == 0 ? FoyerTheme.gold : FoyerTheme.cream.opacity(0.22))
-                                .frame(width: 22, height: 2)
-                        }
-                    }
-                }
-            }
-            .padding(40)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .background(
-                LinearGradient(colors: [
-                    Color(white: 0.094),
-                    Color(white: 0.140),
-                    Color(white: 0.039),
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-
-            // RIGHT — form
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Crest(size: 16)
-                    Spacer()
-                    Text("STEP 1 / 1")
-                        .font(.system(size: 10, design: .monospaced)).tracking(1.6)
-                        .foregroundStyle(FoyerTheme.textMuted)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        Rectangle().fill(FoyerTheme.gold).frame(width: 22, height: 1)
-                        Text("WELCOME IN")
-                            .font(.system(size: 11, design: .monospaced)).tracking(2)
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("A few details, ").foyerDisplay(38).foregroundStyle(FoyerTheme.cream)
-                        Text("please.")
-                            .font(.system(size: 38, weight: .medium))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    Text("Shared only with John Halloran. We verify each number and email so spam doesn't make it to your inbox either.")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .padding(.top, 4)
-                }
-                .padding(.top, 22)
-
-                VStack(spacing: 18) {
-                    HStack(spacing: 22) {
-                        underInput(label: "First name", value: $first)
-                        underInput(label: "Last name", value: $last)
-                    }
-                    underInput(label: "Email", value: $email, verified: true, hint: "MX confirmed · Gmail · checked just now")
-                    underInput(label: "Mobile phone", value: $phone, verified: true, hint: "T-Mobile · NY · mobile · live carrier check")
-
-                    chooser(label: "What brings you in?", value: $intent, options: [
-                        ("buying", "I'm looking to buy"),
-                        ("curious", "Just curious"),
-                        ("selling", "Sell my own place"),
-                    ])
-                    chooser(label: "Working with an agent?", value: $agent, options: [
-                        ("yes", "Yes"),
-                        ("no", "Not yet"),
-                    ])
-                }
-                .padding(.top, 22)
-
-                Spacer()
-                HStack(alignment: .center) {
-                    Text("CONSENT TO AMBIENT RECORDING\nAUTO-DELETED IN 30 DAYS · v 2.1")
-                        .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                        .foregroundStyle(FoyerTheme.textMuted)
-                    Spacer()
-                    Button {} label: {
-                        HStack(spacing: 12) {
-                            Text("Begin tour")
-                            Text("→").font(.system(size: 20, weight: .medium))
-                        }
-                    }
-                    .buttonStyle(FoyerPrimaryButton())
-                    .fixedSize()
-                }
-            }
-            .padding(38)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(FoyerTheme.bgDeep)
-        }
-    }
-
-    private func underInput(label: String, value: Binding<String>, verified: Bool = false, hint: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Eyebrow(text: label)
-                Spacer()
-                if verified {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark").font(.system(size: 9))
-                        Text("VERIFIED")
-                            .font(.system(size: 10, design: .monospaced)).tracking(1.6)
-                    }
-                    .foregroundStyle(FoyerTheme.sage)
-                }
-            }
-            TextField("", text: value)
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(FoyerTheme.cream)
-                .padding(.bottom, 10)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(verified ? FoyerTheme.sage : FoyerTheme.borderStrong)
-                        .frame(height: 1)
-                }
-            if let hint {
-                Text(hint)
-                    .font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(verified ? FoyerTheme.sage : FoyerTheme.textMuted)
-            }
-        }
-    }
-
-    private func chooser(label: String, value: Binding<String>, options: [(String, String)]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(text: label)
-            HStack(spacing: 8) {
-                ForEach(options, id: \.0) { (v, l) in
-                    Button { value.wrappedValue = v } label: {
-                        Text(l).font(.system(size: 12, weight: .medium))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .foregroundStyle(value.wrappedValue == v ? FoyerTheme.gold : FoyerTheme.creamDim)
-                            .background(value.wrappedValue == v ? FoyerTheme.goldSoft : Color.clear)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(value.wrappedValue == v ? FoyerTheme.gold : FoyerTheme.hairline, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .buttonStyle(.plain)
                 }
             }
+
+            Spacer()
+
+            Text("JH")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .frame(width: 36, height: 36)
+                .background(FoyerTheme.bgElev, in: Circle())
+                .padding(.bottom, 8)
+        }
+        .frame(width: 88)
+        .padding(.vertical, 20)
+    }
+}
+
+// MARK: – Home
+
+// Greeting, active listing card, and a real list of recent recorded
+// sessions pulled from SessionStore.pastSessions. Tapping the listing card
+// jumps to the kiosk for that property; tapping a session jumps to Leads
+// with that session preselected.
+private struct IPadHome: View {
+    let store: SessionStore
+    var onStartKiosk: (Listing) -> Void
+    var onOpenSession: (String) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 36) {
+                greeting
+                if let listing = store.listings.first {
+                    activeListingCard(listing)
+                } else {
+                    emptyListingCard
+                }
+                recentSessions
+            }
+            .padding(.horizontal, 40)
+            .padding(.top, 32)
+            .padding(.bottom, 48)
+        }
+        .background(FoyerTheme.bgDeep)
+    }
+
+    private var greeting: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(dateGreeting)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text("Hello, John")
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.6)
+        }
+    }
+
+    private var dateGreeting: String {
+        let now = Date()
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "EEEE"
+        let dayPart = dayFormatter.string(from: now)
+        let hour = Calendar.current.component(.hour, from: now)
+        let period: String
+        switch hour {
+        case 5..<12:  period = "morning"
+        case 12..<17: period = "afternoon"
+        case 17..<22: period = "evening"
+        default:      period = "night"
+        }
+        return "\(dayPart) \(period)"
+    }
+
+    private func activeListingCard(_ listing: Listing) -> some View {
+        Button { onStartKiosk(listing) } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .topLeading) {
+                    listingPhoto(listing)
+                        .frame(height: 220)
+                        .clipped()
+                    HStack(spacing: 6) {
+                        Circle().fill(FoyerTheme.terracotta).frame(width: 6, height: 6)
+                        Text("Hosting now")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .padding(16)
+                }
+
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(listing.address)
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .lineLimit(1)
+                        Text(subtitle(for: listing))
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 16)
+                    HStack(spacing: 8) {
+                        Text("Start sign-in")
+                            .font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .padding(20)
+            }
+            .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 20))
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func listingPhoto(_ listing: Listing) -> some View {
+        if let data = listing.photoData, let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            // Subtle gradient placeholder when no photo is attached.
+            LinearGradient(
+                colors: [FoyerTheme.bgElev2, FoyerTheme.bgCard],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            .overlay(
+                Image(systemName: "house")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+            )
+        }
+    }
+
+    private func subtitle(for listing: Listing) -> String {
+        var parts: [String] = []
+        if !listing.displayPrice.isEmpty { parts.append(listing.displayPrice) }
+        if !listing.neighborhood.isEmpty { parts.append(listing.neighborhood) }
+        parts.append(listing.displaySpecs)
+        return parts.joined(separator: "  ·  ")
+    }
+
+    private var emptyListingCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .light))
+                .frame(width: 56, height: 56)
+                .foregroundStyle(FoyerTheme.gold)
+                .background(FoyerTheme.goldSoft, in: Circle())
+            Text("No listings yet")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("Add an open house to start a sign-in session.")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 56)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var recentSessions: some View {
+        let recorded = store.pastSessions.filter { $0.kind == "recorded" }
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Recent sessions")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Spacer()
+                if recorded.count > 5 {
+                    Text("\(recorded.count) total")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
+            }
+            if recorded.isEmpty {
+                Text("No recordings yet.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(recorded.prefix(8)) { s in
+                        Button { onOpenSession(s.id) } label: {
+                            sessionRow(s)
+                        }
+                        .buttonStyle(.plain)
+                        if s.id != recorded.prefix(8).last?.id {
+                            Hairline().padding(.horizontal, 4)
+                        }
+                    }
+                }
+                .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+    }
+
+    private func sessionRow(_ s: SessionSummary) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(s.displayTitle)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                Text(relativeTime(s.createdDate))
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Spacer()
+            HStack(spacing: 4) {
+                Text("\(s.visitorCount)")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(s.visitorCount == 1 ? "lead" : "leads")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FoyerTheme.textMuted)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 16)
+        .contentShape(Rectangle())
+    }
+
+    private func relativeTime(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: – Kiosk (sign-in form)
+
+// The on-iPad sign-in form guests fill out at the open house. Left pane
+// shows the listing they're walking through; right pane collects name +
+// email + phone and pushes onto SessionStore.pendingKioskGuests. On Done
+// we don't navigate — the agent picks the iPad back up and starts a
+// session from Home (LiveView reads the guest list from the store).
+private struct IPadKiosk: View {
+    let store: SessionStore
+    let listing: Listing?
+    var onLaunchListing: () -> Void
+
+    @State private var name: String = ""
+    @State private var email: String = ""
+    @State private var phone: String = ""
+
+    var body: some View {
+        HStack(spacing: 0) {
+            listingPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FoyerTheme.bgDeep)
+            formPane
+                .frame(maxWidth: 520, maxHeight: .infinity)
+                .background(FoyerTheme.bg)
+        }
+    }
+
+    @ViewBuilder
+    private var listingPane: some View {
+        if let listing {
+            ZStack(alignment: .bottomLeading) {
+                listingPhoto(listing)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.4), .black.opacity(0.85)],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(maxHeight: .infinity)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 6) {
+                        Circle().fill(FoyerTheme.gold).frame(width: 5, height: 5)
+                        Text("Open house")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(listing.address)
+                        .font(.system(size: 56, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .tracking(-1)
+                        .lineLimit(2)
+                    if !listing.neighborhood.isEmpty {
+                        Text(listing.neighborhood)
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                    }
+                    HStack(alignment: .firstTextBaseline) {
+                        if !listing.displayPrice.isEmpty {
+                            Text(listing.displayPrice)
+                                .font(.system(size: 32, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.gold)
+                        }
+                        Spacer()
+                        Text(listing.displaySpecs)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream.opacity(0.85))
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(40)
+            }
+        } else {
+            VStack(spacing: 18) {
+                Image(systemName: "house")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.4))
+                Text("No listing picked")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text("Pick the property guests are signing in to.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Button(action: onLaunchListing) {
+                    Text("Pick a listing")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func listingPhoto(_ listing: Listing) -> some View {
+        if let data = listing.photoData, let img = UIImage(data: data) {
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.12, green: 0.14, blue: 0.17),
+                    Color(red: 0.04, green: 0.05, blue: 0.07),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        }
+    }
+
+    private var formPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Welcome in")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.gold)
+                Spacer()
+                Text("\(store.pendingKioskGuests.count) signed in")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .padding(.bottom, 18)
+
+            Text("A few quick details.")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.5)
+            Text("Shared with the listing agent so they can follow up.")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+                .padding(.top, 6)
+
+            VStack(spacing: 14) {
+                kioskField(label: "Full name", value: $name, keyboard: .default, content: .name)
+                kioskField(label: "Email", value: $email, keyboard: .emailAddress, content: .emailAddress)
+                kioskField(label: "Phone", value: $phone, keyboard: .phonePad, content: .telephoneNumber)
+            }
+            .padding(.top, 28)
+
+            if !store.pendingKioskGuests.isEmpty {
+                checkedInStrip
+                    .padding(.top, 22)
+            }
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                Button { saveGuest(andClear: true) } label: {
+                    Text("Sign in another")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity(name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+
+                Button { saveGuest(andClear: false) } label: {
+                    HStack(spacing: 8) {
+                        Text("Done")
+                            .font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 16)
+        }
+        .padding(.horizontal, 36).padding(.vertical, 36)
+    }
+
+    private func kioskField(
+        label: String,
+        value: Binding<String>,
+        keyboard: UIKeyboardType,
+        content: UITextContentType
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            TextField("", text: value)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .textContentType(content)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var checkedInStrip: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Already signed in")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            VStack(spacing: 0) {
+                ForEach(store.pendingKioskGuests) { g in
+                    HStack {
+                        Text(g.name)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Spacer()
+                        Text(g.email.isEmpty ? g.phone : g.email)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textDim)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    if g.id != store.pendingKioskGuests.last?.id {
+                        Hairline()
+                    }
+                }
+            }
+            .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func saveGuest(andClear: Bool) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        store.pendingKioskGuests.append(
+            VisitorInput(name: trimmed, email: email, phone: phone)
+        )
+        if andClear {
+            name = ""
+            email = ""
+            phone = ""
         }
     }
 }
 
-// ─── iPad session leads — left rail of leads + visitor detail + drafted follow-up
-struct IPadSessionLeads: View {
-    @State private var activeId: Int = 1
+// MARK: – Leads (per-session review)
 
-    private var visitor: SampleVisitor {
-        SampleData.visitors.first(where: { $0.id == activeId }) ?? SampleData.visitors[0]
-    }
+// Two-pane leads viewer. Left: list of every visitor across recorded
+// sessions (or, when a session is preselected, just that session's leads).
+// Right: detail for the picked visitor including the auto-summary, signal
+// tags, and the drafted follow-up. Lead-state changes hit the backend via
+// APIClient.updateLeadState, same as the iPhone flow.
+private struct IPadLeads: View {
+    let store: SessionStore
+    @Binding var sessionId: String?
+
+    @State private var detailSession: Session?
+    @State private var activeVisitorId: String?
+    @State private var loading = false
 
     var body: some View {
         HStack(spacing: 0) {
-            leadsList
-                .frame(width: 320)
-                .background(FoyerTheme.bgDeep)
+            list
+                .frame(width: 360)
+                .background(FoyerTheme.bg)
                 .overlay(alignment: .trailing) {
                     Rectangle().fill(FoyerTheme.hairline).frame(width: 1)
                 }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    visitorHeader
-                    summarySection
-                    draftedSection
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(FoyerTheme.bgDeep)
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FoyerTheme.bgDeep)
+        }
+        .task(id: sessionId) {
+            await loadDetail()
         }
     }
 
-    private var leadsList: some View {
+    private var visitors: [VisitorResult] {
+        detailSession?.result?.visitors ?? []
+    }
+
+    private var currentVisitor: VisitorResult? {
+        if let id = activeVisitorId {
+            return visitors.first { $0.id == id }
+        }
+        return visitors.first
+    }
+
+    private var list: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Eyebrow(text: "Session · 412 W 78th St")
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("Sat May 10 · ").foyerDisplay(22).foregroundStyle(FoyerTheme.cream)
-                    Text("3 leads")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
+                Text("Leads")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                if let s = detailSession {
+                    Text(s.address ?? "Open house")
+                        .font(.system(size: 14))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(1)
                 }
-                Text("18 MIN · 1,420 WORDS · 4 SPEAKERS")
-                    .font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
             }
-            .padding(.horizontal, 24).padding(.vertical, 24)
-            .overlay(alignment: .bottom) { Hairline() }
+            .padding(.horizontal, 24).padding(.top, 32).padding(.bottom, 20)
 
-            ForEach(SampleData.visitors) { v in
-                leadRow(v)
-                    .background(activeId == v.id ? FoyerTheme.goldSoft : Color.clear)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(activeId == v.id ? FoyerTheme.gold : Color.clear).frame(width: 2)
+            if loading {
+                Spacer()
+                ProgressView().tint(FoyerTheme.gold)
+                Spacer()
+            } else if visitors.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(visitors) { v in
+                            Button { activeVisitorId = v.id } label: {
+                                row(v)
+                            }
+                            .buttonStyle(.plain)
+                            Hairline()
+                        }
                     }
-                    .overlay(alignment: .bottom) { Hairline() }
-                    .onTapGesture { activeId = v.id }
+                }
             }
-            Spacer()
-            Button {} label: { Text("Send all 3 follow-ups →") }
-                .buttonStyle(FoyerGhostButton())
-                .padding(.horizontal, 24)
-                .padding(.vertical, 14)
-                .overlay(alignment: .top) { Hairline() }
         }
     }
 
-    private func leadRow(_ v: SampleVisitor) -> some View {
-        HStack(spacing: 12) {
-            Text(v.name.split(separator: " ").map { String($0.prefix(1)) }.joined())
-                .font(.system(size: 14, weight: .medium))
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "person.2")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+            Text(sessionId == nil ? "Pick a session from Home" : "No leads on this session")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func row(_ v: VisitorResult) -> some View {
+        let isActive = (activeVisitorId ?? visitors.first?.id) == v.id
+        return HStack(spacing: 12) {
+            Text(v.displayInitials)
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 36, height: 36)
+                .frame(width: 38, height: 38)
                 .background(FoyerTheme.bgElev2, in: Circle())
-                .overlay(Circle().stroke(FoyerTheme.border, lineWidth: 1))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(v.name)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(v.displayName)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(FoyerTheme.cream)
-                HStack(spacing: 8) {
-                    if let kind = TagPill.Kind(v.tag) { TagPill(kind: kind, text: v.tag) }
-                    Text(v.signedAt.uppercased())
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .foregroundStyle(FoyerTheme.textMuted)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if let kind = TagPill.Kind(v.analysis.tagToken) {
+                        TagPill(kind: kind, text: v.analysis.tag)
+                    }
+                    if let state = v.leadState {
+                        Text(state.status.rawValue.capitalized)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
                 }
             }
             Spacer()
-            Text("\(v.score)")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(v.score >= 80 ? FoyerTheme.gold : v.score >= 50 ? FoyerTheme.cream : FoyerTheme.textMuted)
+            Text("\(v.analysis.score)")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
         }
-        .padding(.horizontal, 24).padding(.vertical, 16)
+        .padding(.horizontal, 20).padding(.vertical, 14)
+        .background(isActive ? FoyerTheme.goldSoft : Color.clear)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(isActive ? FoyerTheme.gold : Color.clear).frame(width: 2)
+        }
     }
 
-    private var visitorHeader: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow(text: "Visitor · auto-summarized")
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(visitor.name).foyerDisplay(32).foregroundStyle(FoyerTheme.cream)
-                    Text(" · ")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                    Text("\(visitor.score)/100")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(visitor.score >= 80 ? FoyerTheme.gold : FoyerTheme.cream)
+    @ViewBuilder
+    private var detail: some View {
+        if let v = currentVisitor, let session = detailSession {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    detailHeader(v)
+                    summarySection(v)
+                    followupSection(v, session: session)
                 }
-                Text("\(visitor.email.uppercased()) · \(visitor.phone) · SIGNED \(visitor.signedAt.uppercased())")
-                    .font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
+                .padding(.horizontal, 40).padding(.vertical, 32)
             }
-            Spacer()
-            if let kind = TagPill.Kind(visitor.tag) { TagPill(kind: kind, text: visitor.tag) }
+        } else if !loading {
+            VStack(spacing: 14) {
+                Image(systemName: "rectangle.and.text.magnifyingglass")
+                    .font(.system(size: 32, weight: .light))
+                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+                Text(sessionId == nil ? "Pick a session to see its leads."
+                                       : "Pick a lead to see the summary and follow-up.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView().tint(FoyerTheme.gold)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 32).padding(.vertical, 22)
-        .overlay(alignment: .bottom) { Hairline() }
     }
 
-    private var summarySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Eyebrow(text: "What we heard")
-            Text(visitor.summary)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(FoyerTheme.creamDim)
+    private func detailHeader(_ v: VisitorResult) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(v.displayName)
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                Spacer()
+                if let kind = TagPill.Kind(v.analysis.tagToken) {
+                    TagPill(kind: kind, text: v.analysis.tag)
+                }
+            }
+            HStack(spacing: 12) {
+                Text(v.analysis.score.description)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
+                Text("· score")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                if !v.visitor.email.isEmpty {
+                    Label(v.visitor.email, systemImage: "envelope")
+                        .labelStyle(.titleAndIcon)
+                }
+                if !v.visitor.phone.isEmpty {
+                    Label(v.visitor.phone, systemImage: "phone")
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(FoyerTheme.textDim)
+        }
+    }
+
+    private func summarySection(_ v: VisitorResult) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What we heard")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text(v.analysis.summary)
+                .font(.system(size: 16))
+                .foregroundStyle(FoyerTheme.cream)
                 .lineSpacing(5)
-            FlowLayout(spacing: 6) {
-                ForEach(visitor.signals, id: \.self) { s in
-                    Text(s)
-                        .font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                        .foregroundStyle(FoyerTheme.gold)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(FoyerTheme.goldSoft)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(FoyerTheme.borderStrong, lineWidth: 1))
+            if !v.analysis.signals.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(v.analysis.signals, id: \.self) { s in
+                        Text(s)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(FoyerTheme.goldSoft, in: Capsule())
+                    }
                 }
+                .padding(.top, 4)
             }
         }
-        .padding(.horizontal, 32).padding(.vertical, 20)
-        .overlay(alignment: .bottom) { Hairline() }
+        .padding(20)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private var draftedSection: some View {
+    private func followupSection(_ v: VisitorResult, session: Session) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Eyebrow(text: "Drafted follow-ups · \(templateLabel) template")
+                Text("Drafted follow-up")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textDim)
                 Spacer()
-                HStack(spacing: 6) {
-                    Text("EMAIL")
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(FoyerTheme.goldSoft)
+                if let state = v.leadState {
+                    statusPill(state.status)
+                }
+            }
+            Text(v.analysis.followUpDraft)
+                .font(.system(size: 15))
+                .foregroundStyle(FoyerTheme.cream)
+                .lineSpacing(5)
+
+            HStack(spacing: 10) {
+                Button { } label: {
+                    Text("Regenerate")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .padding(.horizontal, 16).padding(.vertical, 11)
+                        .background(FoyerTheme.bgElev, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Button { Task { await sendNow(v, session: session) } } label: {
+                    HStack(spacing: 8) {
+                        Text("Send email")
+                            .font(.system(size: 13, weight: .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 6)
+        }
+        .padding(20)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func statusPill(_ status: LeadState.Status) -> some View {
+        let (text, tone): (String, StatusPill.Tone) = {
+            switch status {
+            case .drafted:  return ("Drafted", .gold)
+            case .sent:     return ("Sent", .sage)
+            case .replied:  return ("Replied", .sage)
+            case .archived: return ("Archived", .glass)
+            }
+        }()
+        return StatusPill(text: text, tone: tone)
+    }
+
+    private func loadDetail() async {
+        guard let id = sessionId else {
+            detailSession = nil
+            activeVisitorId = nil
+            return
+        }
+        loading = true
+        defer { loading = false }
+        do {
+            let s = try await APIClient.shared.getSession(id: id)
+            detailSession = s
+            activeVisitorId = s.result?.visitors.first?.id
+        } catch {
+            detailSession = nil
+        }
+    }
+
+    private func sendNow(_ v: VisitorResult, session: Session) async {
+        do {
+            let updated = try await APIClient.shared.updateLeadState(
+                sessionId: session.id,
+                visitorName: v.visitor.name,
+                visitorSpeaker: v.visitor.speaker,
+                status: .sent,
+                snoozedUntil: nil
+            )
+            await MainActor.run {
+                if let idx = detailSession?.result?.visitors.firstIndex(where: { $0.id == v.id }) {
+                    detailSession?.result?.visitors[idx].leadState = updated
+                }
+            }
+        } catch {
+            // Silent failure here mirrors the iPhone — the UI just doesn't
+            // flip to Sent. A toast would be nicer once we have one.
+        }
+    }
+}
+
+// MARK: – Listings (manage open houses)
+
+private struct IPadListings: View {
+    let store: SessionStore
+    var onPickListing: (Listing) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Listings")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+
+                if store.listings.isEmpty {
+                    emptyState
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 280), spacing: 18)],
+                        spacing: 18
+                    ) {
+                        ForEach(store.listings) { listing in
+                            Button { onPickListing(listing) } label: {
+                                card(listing)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 40).padding(.top, 32).padding(.bottom, 48)
+        }
+        .background(FoyerTheme.bgDeep)
+    }
+
+    private func card(_ listing: Listing) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                if let data = listing.photoData, let img = UIImage(data: data) {
+                    Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    LinearGradient(
+                        colors: [FoyerTheme.bgElev2, FoyerTheme.bgCard],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                    .overlay(
+                        Image(systemName: "house")
+                            .font(.system(size: 32, weight: .light))
+                            .foregroundStyle(FoyerTheme.creamDim.opacity(0.3))
+                    )
+                }
+            }
+            .frame(height: 160)
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(listing.address)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                if !listing.displayPrice.isEmpty {
+                    Text(listing.displayPrice)
+                        .font(.system(size: 13))
                         .foregroundStyle(FoyerTheme.gold)
-                        .overlay(Rectangle().stroke(FoyerTheme.gold, lineWidth: 1))
-                    Text("SMS")
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .overlay(Rectangle().stroke(FoyerTheme.hairline, lineWidth: 1))
                 }
+                Text(listing.displaySpecs)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineLimit(1)
             }
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("TO   ").font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                            .foregroundStyle(FoyerTheme.textMuted)
-                        + Text(visitor.email).font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                            .foregroundStyle(FoyerTheme.cream)
-                        Text("SUBJ ").font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                            .foregroundStyle(FoyerTheme.textMuted)
-                        + Text(subjectLine).font(.system(size: 10, design: .monospaced)).tracking(1.0)
-                            .foregroundStyle(FoyerTheme.cream)
-                    }
-                    Spacer()
-                    Text("✓ MATCHES \"WARM BUYER · UWS\" TEMPLATE")
-                        .font(.system(size: 9.5, design: .monospaced)).tracking(1.0)
-                        .foregroundStyle(FoyerTheme.sage)
-                }
-                Hairline()
-                Text(visitor.followUp)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .lineSpacing(5)
-                    .padding(.top, 4)
-            }
-            .padding(22)
-            .background(FoyerTheme.bgCard)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(FoyerTheme.hairline, lineWidth: 1))
-
-            HStack {
-                HStack(spacing: 8) {
-                    ghostMini("Regenerate")
-                    ghostMini("Edit")
-                    ghostMini("Change template")
-                }
-                Spacer()
-                Button {} label: {
-                    HStack(spacing: 10) {
-                        Text("Send email + SMS")
-                        Text("→").font(.system(size: 16, weight: .medium))
-                    }
-                }
-                .buttonStyle(FoyerPrimaryButton())
-                .fixedSize()
-            }
+            .padding(16)
         }
-        .padding(.horizontal, 32).padding(.vertical, 22)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    private func ghostMini(_ t: String) -> some View {
-        Text(t)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(FoyerTheme.cream)
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(FoyerTheme.borderStrong, lineWidth: 1))
-    }
-
-    private var subjectLine: String {
-        switch visitor.tag {
-        case "buyer":   return "412 W 78th — private showing options?"
-        case "seller":  return "Comp analysis on your Riverside place"
-        default:        return "412 W 78th — light updates only, no pressure"
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "house")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+            Text("No listings yet")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("Add a listing from the iPhone app — it'll sync here.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.textDim)
         }
-    }
-    private var templateLabel: String {
-        if visitor.tag == "browser" { return "low-touch" }
-        return visitor.score >= 80 ? "warm-lead" : "standard"
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

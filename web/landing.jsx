@@ -18,8 +18,8 @@ const Landing = () => {
           <a onClick={() => window.foyerToast({ message: 'Journal · field notes coming soon', kind: 'info' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Journal</a>
         </nav>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-          <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => window.foyerGo('#/login')}>Sign in</button>
-          <button className="btn btn-primary" onClick={() => window.foyerToast('Request received · we’ll reach out within 24h')}>Request access</button>
+          <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => window.foyerSignIn()}>Sign in</button>
+          <button className="btn btn-primary" onClick={() => window.foyerSignIn()}>Request access</button>
         </div>
       </header>
 

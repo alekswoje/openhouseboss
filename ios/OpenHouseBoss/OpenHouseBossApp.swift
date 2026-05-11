@@ -1,4 +1,6 @@
+import AuthenticationServices
 import SwiftUI
+import UIKit
 
 @main
 struct OpenHouseBossApp: App {
@@ -70,15 +72,49 @@ final class AppRouter {
 }
 
 // Routes to the iPhone agent flow or the iPad-landscape agent surface based
-// on the device's horizontal size class.
+// on the device's horizontal size class. Sits behind an auth gate — the
+// AuthStore tries to restore a Keychain-saved JWT on launch; if there's no
+// valid session, LoginView takes over.
 struct RootView: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var router = AppRouter()
+    @State private var auth = AuthStore.shared
     @State private var splashDone = false
 
     var body: some View {
         ZStack {
             FoyerTheme.bgDeep.ignoresSafeArea()
+            content
+
+            if !splashDone {
+                SplashView()
+                    .transition(.opacity)
+                    .onAppear {
+                        // Kick off auth-restore + first prefetches in the
+                        // background so the splash isn't dead time.
+                        Task {
+                            await auth.restore()
+                            if auth.isSignedIn {
+                                await SessionStore.shared.refreshSessions()
+                                await SessionStore.shared.refreshScripts()
+                            }
+                        }
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(1400))
+                            await MainActor.run {
+                                withAnimation(.easeOut(duration: 0.35)) {
+                                    splashDone = true
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if auth.isSignedIn {
             Group {
                 if UIDevice.current.userInterfaceIdiom == .pad && hSize == .regular {
                     IPadAgentApp()
@@ -92,26 +128,15 @@ struct RootView: View {
                     .environment(router)
                 }
             }
-
-            if !splashDone {
-                SplashView()
-                    .transition(.opacity)
-                    .onAppear {
-                        // Kick off backend prefetch in the background so the
-                        // splash isn't dead time — by the time it fades, the
-                        // Sessions tab usually has data ready to render.
-                        Task { await SessionStore.shared.refreshSessions() }
-                        Task { await SessionStore.shared.refreshScripts() }
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(1400))
-                            await MainActor.run {
-                                withAnimation(.easeOut(duration: 0.35)) {
-                                    splashDone = true
-                                }
-                            }
-                        }
-                    }
-            }
+            .transition(.opacity)
+        } else if !auth.loading {
+            LoginView()
+                .transition(.opacity)
+        } else {
+            // While we're still verifying the saved token. Splash is up too,
+            // so this is invisible — but rendering an empty view keeps the
+            // ZStack stable across the loading → signed-in transition.
+            Color.clear
         }
     }
 
@@ -212,6 +237,110 @@ struct SplashView: View {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                 pulse = true
             }
+        }
+    }
+}
+
+// MARK: – Login (Google Sign-In)
+
+// Pre-auth landing inside the app. Editorial styling that matches the
+// splash: gold radial glow, serif wordmark, single Continue-with-Google
+// button. Tapping the button hands off to AuthStore.signInWithGoogle which
+// opens an ASWebAuthenticationSession on the backend's /auth/google/start.
+struct LoginView: View {
+    @State private var auth = AuthStore.shared
+    @State private var isSigningIn = false
+
+    var body: some View {
+        ZStack {
+            FoyerTheme.bgDeep.ignoresSafeArea()
+
+            RadialGradient(
+                colors: [
+                    FoyerTheme.gold.opacity(0.22),
+                    FoyerTheme.gold.opacity(0.08),
+                    .clear,
+                ],
+                center: .top, startRadius: 20, endRadius: 480
+            )
+            .ignoresSafeArea()
+
+            VStack {
+                Spacer()
+                VStack(spacing: 16) {
+                    Text("OPEN HOUSE")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .tracking(2.4)
+                        .foregroundStyle(FoyerTheme.gold)
+                    Text("Boss")
+                        .foyerDisplay(60)
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text("Every open house, quietly remembered.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
+                }
+                Spacer()
+                signInBlock
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 60)
+            }
+        }
+    }
+
+    private var signInBlock: some View {
+        VStack(spacing: 12) {
+            if let err = auth.lastError {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2)
+            }
+            Button(action: signIn) {
+                HStack(spacing: 10) {
+                    if isSigningIn || auth.loading {
+                        ProgressView().tint(FoyerTheme.inkOnGold).scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "g.circle.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                    }
+                    Text(isSigningIn || auth.loading ? "Signing in…" : "Continue with Google")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 14))
+                .shadow(color: FoyerTheme.gold.opacity(0.35), radius: 12, x: 0, y: 6)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSigningIn || auth.loading)
+            .opacity(isSigningIn || auth.loading ? 0.65 : 1)
+
+            Text("BY CONTINUING, YOU AGREE TO FOYER'S TERMS · AGENTS ONLY")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textMuted)
+                .padding(.top, 6)
+        }
+    }
+
+    private func signIn() {
+        // ASWebAuthenticationSession needs a UIWindow-shaped anchor. Pull
+        // the active window from the connected scene set.
+        let anchor: ASPresentationAnchor = (
+            UIApplication.shared
+                .connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows)
+                .first { $0.isKeyWindow }
+        ) ?? UIWindow()
+        isSigningIn = true
+        Task {
+            await auth.signInWithGoogle(presentationAnchor: anchor)
+            await MainActor.run { isSigningIn = false }
         }
     }
 }
