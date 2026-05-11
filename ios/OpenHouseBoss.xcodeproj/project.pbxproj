@@ -19,6 +19,7 @@
 		7B880972808B12F311F66774 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7639E9BFDB5C581D58043144 /* SampleData.swift */; };
 		8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 486C86D53F7F13F83881027C /* FollowupView.swift */; };
 		9F99468A8A85EE024AFE3903 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C2623D371CC35BE5C79E0F /* SessionStore.swift */; };
+		A9FD41F941A91A0BB7101205 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = B550150CDEF72AE1714252D7 /* Log.swift */; };
 		C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88172970AE449A66CFAE784B /* RecordView.swift */; };
 		D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */; };
 		DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */; };
@@ -37,6 +38,7 @@
 		7639E9BFDB5C581D58043144 /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		88172970AE449A66CFAE784B /* RecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordView.swift; sourceTree = "<group>"; };
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
 		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -62,6 +64,7 @@
 				9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */,
 				C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */,
 				701CBCDE2440532BB88C1222 /* LiveView.swift */,
+				B550150CDEF72AE1714252D7 /* Log.swift */,
 				661C2F2EF9FC742158DE3390 /* Models.swift */,
 				FFE577A9E7DBCF6DCC8F6928 /* OpenHouseBossApp.swift */,
 				88172970AE449A66CFAE784B /* RecordView.swift */,
@@ -147,6 +150,7 @@
 				DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */,
 				36A2F83B5677D376932A1CB0 /* IPadAgentApp.swift in Sources */,
 				1083B061DCE584035504F74C /* LiveView.swift in Sources */,
+				A9FD41F941A91A0BB7101205 /* Log.swift in Sources */,
 				3746A7E818ACECF5E1FE9EE1 /* Models.swift in Sources */,
 				371F09E8CA61B1078CD2AFC4 /* OpenHouseBossApp.swift in Sources */,
 				C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */,
