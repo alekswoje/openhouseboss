@@ -11,7 +11,7 @@ load_dotenv(override=True)
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from pipeline.analyze import analyze_visitor
@@ -92,6 +92,19 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                     "error": str(ce),
                 }
 
+        # Speaker-attributed turn list — needed by the iOS Summary so the
+        # agent can see what they said and who they were talking to. Raw
+        # `transcript.text` is just a flat string with no turn boundaries.
+        utterances_out = [
+            {
+                "speaker": u.speaker,
+                "text": u.text,
+                "start_ms": int(getattr(u, "start", 0) or 0),
+                "end_ms": int(getattr(u, "end", 0) or 0),
+            }
+            for u in (transcript.utterances or [])
+        ]
+
         _update(
             session_id,
             status="ready",
@@ -101,6 +114,7 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                 "unmatched_speakers": identification.unmatched_speakers,
                 "visitors": visitors_out,
                 "full_transcript": transcript.text,
+                "utterances": utterances_out,
                 "script_coverage": script_coverage_out,
             },
         )
@@ -248,6 +262,27 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
+
+
+@app.get("/sessions/{session_id}/audio")
+def get_session_audio(session_id: str):
+    """Stream the saved recording so a different device (laptop, iPad) can
+    play back a session that was recorded elsewhere. Centralized backend =
+    audio lives here, not on the recording device."""
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, f"Session {session_id} not found")
+    for candidate in session_dir.iterdir():
+        if candidate.suffix.lower() in {".m4a", ".mp4", ".wav", ".mp3", ".aac"}:
+            media_type = {
+                ".m4a": "audio/mp4",
+                ".mp4": "audio/mp4",
+                ".wav": "audio/wav",
+                ".mp3": "audio/mpeg",
+                ".aac": "audio/aac",
+            }.get(candidate.suffix.lower(), "application/octet-stream")
+            return FileResponse(candidate, media_type=media_type, filename=candidate.name)
+    raise HTTPException(404, "No audio file saved for this session")
 
 
 @app.get("/sessions/{session_id}")

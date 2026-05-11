@@ -1,10 +1,8 @@
 import SwiftUI
 
-// Post-session summary — v2 editorial. Breadcrumb back row that exits to
-// Sessions (this was missing before — there was no way out). A "Done" pill
-// in the trailing slot also dismisses, so approval is treated as a task you
-// can do later. The "Approve all & schedule" CTA remains at the bottom but
-// is no longer the only way off the screen.
+// Post-session summary — v2 editorial. Breadcrumb back row + a trailing
+// status pill, both exit to Sessions. Per-visitor approval happens inside
+// each visitor card; the footer is just a Done that returns home.
 struct SummaryView: View {
     var pastSessionId: String? = nil
 
@@ -23,7 +21,7 @@ struct SummaryView: View {
                         StatusPill(text: trailingPillText, tone: trailingPillTone, pulsing: isProcessing)
                     }
                     header
-                    if let url = store.lastRecordedAudioURL {
+                    if let url = audioURL {
                         playbackBar(url: url)
                     }
                     content
@@ -39,11 +37,29 @@ struct SummaryView: View {
             if let id = pastSessionId {
                 store.openPastSession(id: id)
             }
-            if let url = store.lastRecordedAudioURL {
+            if let url = audioURL {
                 player.load(url: url)
             }
         }
+        .onChange(of: audioURL) { _, new in
+            if let new { player.load(url: new) }
+        }
         .onDisappear { player.stop() }
+    }
+
+    // Resolve the audio source: prefer the just-recorded local file (it's
+    // already on this device, no round-trip), otherwise stream the saved
+    // recording from the backend so a past session opened on a different
+    // device still plays.
+    private var audioURL: URL? {
+        if let local = store.lastRecordedAudioURL { return local }
+        if let id = store.session?.id {
+            return Config.backendURL
+                .appendingPathComponent("sessions")
+                .appendingPathComponent(id)
+                .appendingPathComponent("audio")
+        }
+        return nil
     }
 
     private var backCrumbs: [String] {
@@ -215,6 +231,7 @@ struct SummaryView: View {
                 scriptCoverageSection(coverage)
                 Spacer().frame(height: 20)
             }
+            agentTranscriptSection
             if visitors.isEmpty {
                 Text("No guests detected. The recording might have been too short or only contained your voice.")
                     .font(.system(size: 13))
@@ -380,20 +397,13 @@ struct SummaryView: View {
     private var footerButton: some View {
         switch store.phase {
         case .ready:
-            HStack(spacing: 10) {
-                Button { router.popToRoot() } label: { Text("Back to home") }
-                    .buttonStyle(FoyerGhostButton())
-                    .layoutPriority(1)
-                Button {
-                    // Approval as a task — for now, just go home;
-                    // the actual sending happens per-visitor.
-                    router.popToRoot()
-                } label: { Text("Approve & schedule") }
+            // The agent reviews and sends per-visitor drafts from inside the
+            // visitor cards above — there's nothing to bulk-approve from
+            // this screen, so a single Done back to Sessions is enough.
+            Button { router.popToRoot() } label: { Text("Done · back to sessions") }
                 .buttonStyle(FoyerPrimaryButton())
-                .layoutPriority(1.4)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 36)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 36)
 
         case .failed:
             Button { router.popToRoot() } label: { Text("Back to home") }
@@ -451,6 +461,154 @@ struct SummaryView: View {
         default:
             return "Just a moment."
         }
+    }
+}
+
+// MARK: – Agent transcript (what you said, who you were talking to)
+
+extension SummaryView {
+    // Builds an agent-centric transcript: every turn the agent took, with
+    // the visitor they were most likely addressing at that moment derived
+    // from the surrounding diarized turns. Helps the agent skim their own
+    // performance instead of squinting at a flat transcript.
+    @ViewBuilder
+    var agentTranscriptSection: some View {
+        let result = store.session?.result
+        let utterances = result?.utterances ?? []
+        let agentSpeaker = result?.agentSpeaker ?? ""
+        let speakerNameMap = Dictionary(
+            uniqueKeysWithValues: (result?.visitors ?? []).compactMap { v -> (String, String)? in
+                guard let s = v.visitor.speaker else { return nil }
+                return (s, v.visitor.name)
+            }
+        )
+        let agentTurns: [AgentTurn] = Self.buildAgentTurns(
+            utterances: utterances,
+            agentSpeaker: agentSpeaker,
+            speakerNameMap: speakerNameMap
+        )
+
+        if !agentTurns.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Eyebrow(text: "What you said · who you were talking to", color: FoyerTheme.gold)
+                    Spacer()
+                    Text("\(agentTurns.count) TURNS")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .padding(.horizontal, 20)
+
+                VStack(spacing: 8) {
+                    ForEach(agentTurns) { turn in
+                        agentTurnCard(turn)
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 20)
+        }
+    }
+
+    private func agentTurnCard(_ turn: AgentTurn) -> some View {
+        GlassSurface(cornerRadius: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("YOU")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(FoyerTheme.gold, in: Capsule())
+                    if let addressed = turn.addressing {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text(addressed.uppercased())
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text(turn.timestampLabel)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                Text(turn.text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(14)
+        }
+    }
+
+    // Walk the utterance list once, collapsing consecutive agent turns into
+    // a single block and using the *next* non-agent speaker as the most
+    // likely addressee (you typically address the visitor who is about to
+    // respond; if there's no following visitor turn, use the previous one).
+    static func buildAgentTurns(
+        utterances: [Utterance],
+        agentSpeaker: String,
+        speakerNameMap: [String: String]
+    ) -> [AgentTurn] {
+        guard !utterances.isEmpty, !agentSpeaker.isEmpty else { return [] }
+
+        var result: [AgentTurn] = []
+        var i = 0
+        var lastVisitorSpeaker: String? = nil
+
+        while i < utterances.count {
+            if utterances[i].speaker != agentSpeaker {
+                lastVisitorSpeaker = utterances[i].speaker
+                i += 1
+                continue
+            }
+            let blockStart = i
+            var combinedText: [String] = []
+            while i < utterances.count, utterances[i].speaker == agentSpeaker {
+                combinedText.append(utterances[i].text)
+                i += 1
+            }
+            let nextVisitorSpeaker: String? = {
+                var j = i
+                while j < utterances.count {
+                    if utterances[j].speaker != agentSpeaker { return utterances[j].speaker }
+                    j += 1
+                }
+                return nil
+            }()
+            let addressed = nextVisitorSpeaker ?? lastVisitorSpeaker
+            let addressedLabel = addressed.map { speakerNameMap[$0] ?? "Speaker \($0)" }
+            let startMs = utterances[blockStart].startMs
+            result.append(AgentTurn(
+                index: result.count,
+                text: combinedText.joined(separator: " "),
+                addressing: addressedLabel,
+                startMs: startMs
+            ))
+        }
+        return result
+    }
+}
+
+struct AgentTurn: Identifiable, Hashable {
+    let index: Int
+    let text: String
+    let addressing: String?
+    let startMs: Int
+
+    var id: Int { index }
+
+    var timestampLabel: String {
+        let total = max(0, startMs / 1000)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

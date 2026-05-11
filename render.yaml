@@ -2,7 +2,7 @@ services:
   - type: web
     name: openhouseboss-api
     runtime: python
-    plan: free
+    plan: starter
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.server:app --host 0.0.0.0 --port $PORT
@@ -14,3 +14,10 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: "3.11"
+    # Persistent disk mounted at <workdir>/sessions so transcripts + recorded
+    # audio survive redeploys and restarts. Without this, the container's
+    # filesystem is ephemeral and sessions vanish on every push.
+    disk:
+      name: sessions
+      mountPath: /opt/render/project/src/sessions
+      sizeGB: 10

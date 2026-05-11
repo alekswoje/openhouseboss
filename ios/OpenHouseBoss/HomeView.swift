@@ -8,7 +8,12 @@ import UIKit
 // instead of jumping at the end of the swipe.
 struct HomeShell: View {
     @Environment(AppRouter.self) private var router
-    @State private var pageFraction: CGFloat = 0   // 0..(N-1), continuous
+    // Drives the bottom-bar underline. Updated from two sources:
+    //   • scroll preference → continuous during swipes (Instagram-style)
+    //   • onChange(router.tab) → animated jump for tab taps, since
+    //     programmatic scrollPosition changes don't reliably fire the
+    //     scroll-preference reads on iOS 17.
+    @State private var pageFraction: CGFloat = 0   // 0..(N-1)
 
     private let tabs = HomeTab.allCases
 
@@ -21,6 +26,13 @@ struct HomeShell: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        .onChange(of: router.tab) { _, new in
+            if let idx = tabs.firstIndex(of: new) {
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    pageFraction = CGFloat(idx)
+                }
+            }
+        }
     }
 
     private func paged(width: CGFloat) -> some View {
@@ -52,7 +64,12 @@ struct HomeShell: View {
         .coordinateSpace(name: "hscroll")
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: pos)
-        .onPreferenceChange(ScrollOffsetKey.self) { pageFraction = $0 }
+        .onPreferenceChange(ScrollOffsetKey.self) { newValue in
+            // No animation here — the value already streams continuously
+            // from the scroll, so wrapping it in withAnimation would just
+            // make the underline lag the finger.
+            pageFraction = newValue
+        }
         .ignoresSafeArea(edges: .bottom)
     }
 

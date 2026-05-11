@@ -46,14 +46,32 @@ struct SessionResult: Codable, Hashable {
     let unmatchedSpeakers: [String]
     let visitors: [VisitorResult]
     let fullTranscript: String
+    var utterances: [Utterance]?
     var scriptCoverage: ScriptCoverage?
 
     enum CodingKeys: String, CodingKey {
-        case visitors
+        case visitors, utterances
         case agentSpeaker = "agent_speaker"
         case unmatchedSpeakers = "unmatched_speakers"
         case fullTranscript = "full_transcript"
         case scriptCoverage = "script_coverage"
+    }
+}
+
+// One diarized turn — surfaced in the Summary "What you said" section so
+// the agent can see their own lines with the visitor they were addressing.
+struct Utterance: Codable, Hashable, Identifiable {
+    let speaker: String
+    let text: String
+    let startMs: Int
+    let endMs: Int
+
+    var id: String { "\(speaker):\(startMs)" }
+
+    enum CodingKeys: String, CodingKey {
+        case speaker, text
+        case startMs = "start_ms"
+        case endMs = "end_ms"
     }
 }
 
