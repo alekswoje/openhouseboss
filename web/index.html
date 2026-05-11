@@ -317,16 +317,26 @@
   <script type="text/babel" src="landing.jsx"></script>
   <script type="text/babel" src="login.jsx"></script>
   <script type="text/babel" src="dashboard.jsx"></script>
+  <script type="text/babel" src="sessions-list.jsx"></script>
+  <script type="text/babel" src="kiosk.jsx"></script>
   <script type="text/babel" src="session-detail.jsx"></script>
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect } = React;
 
+    // Marketing routes ('home', 'sign in') are demo helpers visible to anyone.
+    // App routes (everything else) sit behind the AppShell sidebar and assume
+    // /auth/me succeeds — useFoyerData kicks unauthed users back to '#/'.
     const ROUTES = [
-      { hash: '#/',         label: 'Home',     El: () => <Landing /> },
-      { hash: '#/login',    label: 'Sign in',  El: () => <Login /> },
-      { hash: '#/app',      label: 'App',      El: () => <Dashboard /> },
-      { hash: '#/session',  label: 'Session',  El: () => <SessionDetail /> },
+      { hash: '#/',         label: 'Home',     El: () => <Landing />,     marketing: true },
+      { hash: '#/login',    label: 'Sign in',  El: () => <Login />,       marketing: true },
+      { hash: '#/app',      label: 'Today',    El: () => <Dashboard /> },
+      { hash: '#/sessions', label: 'Sessions', El: () => <SessionsList /> },
+      { hash: '#/session',  label: 'Detail',   El: () => <SessionDetail /> },
+      { hash: '#/kiosk',    label: 'Kiosk',    El: () => <KioskForm /> },
+      // Aliases so the sidebar's "Leads" entry has a destination that
+      // re-uses the existing inbox surface in SessionsList for now.
+      { hash: '#/leads',    label: 'Leads',    El: () => <SessionsList /> },
     ];
 
     function useHashRoute() {

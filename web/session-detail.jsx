@@ -1,4 +1,4 @@
-/* global React, Crest, Tag, Eyebrow, Hairline, useFoyerData, foyerApi, foyerLoad, fmtRelative, fmtClock */
+/* global React, Crest, AppShell, Tag, Eyebrow, Hairline, useFoyerData, foyerApi, foyerLoad, fmtRelative, fmtClock */
 
 const SessionDetail = () => {
   const { user, summaries, sessionsById, loading, error } = useFoyerData();
@@ -22,11 +22,16 @@ const SessionDetail = () => {
   const [audioTime, setAudioTime] = React.useState(0);
   const [audioDuration, setAudioDuration] = React.useState(0);
 
-  // Pick which session to show. Set by the dashboard via window.foyerActiveSessionId
-  // (set right before navigating). Falls back to the most recent ready session.
-  const targetId = window.foyerActiveSessionId
-    || summaries.find(s => s.status === 'ready')?.id
-    || summaries[0]?.id;
+  // Pick which session to show. Set by the Sessions list / Dashboard via
+  // window.foyerActiveSessionId before navigating here. If nothing's set
+  // (e.g. agent typed /#/session directly), bounce to the list page so
+  // they can pick rather than getting dropped into something arbitrary.
+  const targetId = window.foyerActiveSessionId;
+  React.useEffect(() => {
+    if (!targetId) {
+      window.foyerGo('#/sessions');
+    }
+  }, [targetId]);
   const session = targetId ? sessionsById[targetId] : null;
   const result = session?.result;
   const allVisitors = result?.visitors || [];
@@ -79,16 +84,21 @@ const SessionDetail = () => {
          || allVisitors.find(x => keyOf(x) === activeVisitorKey);
 
   if (loading) {
-    return <Centered>LOADING SESSION…</Centered>;
+    return <AppShell active="sessions"><Centered>LOADING SESSION…</Centered></AppShell>;
   }
   if (error) {
-    return <Centered>Couldn't load: {error}</Centered>;
+    return <AppShell active="sessions"><Centered>Couldn't load: {error}</Centered></AppShell>;
+  }
+  if (!targetId) {
+    // Effect above is bouncing to /#/sessions — render an empty placeholder
+    // so we don't flash the previous content while the route changes.
+    return <AppShell active="sessions"><Centered>OPENING SESSIONS…</Centered></AppShell>;
   }
   if (!session || !result) {
-    return <Centered>No ready sessions yet. Record one from the iOS app.</Centered>;
+    return <AppShell active="sessions"><Centered>This session is still processing — pull up the list and try again in a moment.</Centered></AppShell>;
   }
   if (!v) {
-    return <Centered>This session has no guests detected.</Centered>;
+    return <AppShell active="sessions"><Centered>This session has no guests detected.</Centered></AppShell>;
   }
 
   const tag = (v.analysis?.tag || '').toLowerCase();
@@ -100,43 +110,19 @@ const SessionDetail = () => {
     u.speaker === visitorSpeaker || u.speaker === agentSpeaker
   );
 
-  const recentSessions = summaries.filter(s => (s.kind || 'recorded') !== 'manual').slice(0, 4);
-
   return (
-    <div className="foyer" data-screen-label="Session detail" style={{ background: 'var(--bg)', minHeight: '100%', display: 'grid', gridTemplateColumns: '240px 320px 1fr' }}>
+    <AppShell active="sessions">
+      <div data-screen-label="Session detail" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', minHeight: '100vh' }}>
 
-      {/* SIDEBAR */}
-      <aside style={{ borderRight: '1px solid var(--hairline)', padding: '24px 0', background: 'var(--bg-deep)' }}>
-        <div style={{ padding: '0 24px 24px', borderBottom: '1px solid var(--hairline)' }}>
-          <Crest size={18} />
-        </div>
-        <div style={{ padding: '20px 24px' }}>
-          <a className="serif-it" style={{ fontSize: 13, color: 'var(--gold)', cursor: 'pointer' }}
-             onClick={() => window.foyerGo('#/app')}>← Back to today</a>
-        </div>
-        <div style={{ padding: '0 24px' }}>
-          <Eyebrow>Recent sessions</Eyebrow>
-          <div style={{ marginTop: 14 }}>
-            {recentSessions.map(s => {
-              const isActive = s.id === session.id;
-              return (
-                <div key={s.id}
-                     className="session-row"
-                     onClick={() => { window.foyerActiveSessionId = s.id; setActiveVisitorKey(null); setEditing(false); }}
-                     style={{ padding: '10px 6px', borderBottom: '1px solid var(--hairline)' }}>
-                  <div style={{ fontSize: 13, color: isActive ? 'var(--gold)' : 'var(--cream)' }}>{s.address || 'Untitled'}</div>
-                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: 3 }}>
-                    {fmtRelative(s.created_at)}
-                  </div>
-                </div>
-              );
-            })}
+        {/* "Back to all sessions" + lead list (left rail of the inner pane) */}
+        <section style={{ borderRight: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '24px 28px 0' }}>
+            <a href="#/sessions" className="serif-it" style={{ fontSize: 13, color: 'var(--gold)', textDecoration: 'none' }}>
+              ← All sessions
+            </a>
           </div>
-        </div>
-      </aside>
-
-      {/* LEAD LIST */}
-      <section style={{ borderRight: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column' }}>
+          {/* LEAD LIST */}
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
         <div style={{ padding: '32px 28px 0' }}>
           <Eyebrow>Session</Eyebrow>
           <div className="serif" style={{ fontSize: 24, color: 'var(--cream)', marginTop: 8, lineHeight: 1.1 }}>
@@ -211,6 +197,7 @@ const SessionDetail = () => {
               </div>
             );
           })}
+        </div>
         </div>
       </section>
 
@@ -404,6 +391,7 @@ const SessionDetail = () => {
         </div>
       </section>
     </div>
+    </AppShell>
   );
 };
 

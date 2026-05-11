@@ -1,91 +1,25 @@
-/* global React, Crest, Tag, Eyebrow, useFoyerData, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour, foyerSignOut */
+/* global React, AppShell, Tag, Eyebrow, useFoyerData, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour */
 
 const Dashboard = () => {
   const { user, summaries, sessionsById, loading, error } = useFoyerData();
-  const [menuOpen, setMenuOpen] = React.useState(false);
 
-  // Most recent ready session = "today's open house" feature.
   const recordedSummaries = summaries.filter(s => (s.kind || 'recorded') !== 'manual');
-  const allSummaries = summaries;
-  const featured = recordedSummaries.find(s => s.status === 'ready') || allSummaries[0];
+  const featured = recordedSummaries.find(s => s.status === 'ready') || summaries[0];
   const featuredSession = featured ? sessionsById[featured.id] : null;
   const featuredVisitors = (featuredSession?.result?.visitors || []).slice().sort((a, b) =>
     (b.analysis?.score || 0) - (a.analysis?.score || 0)
   );
 
-  // Inbox view: every loaded visitor across every session, bucketed by lead
-  // state. Drives the right-rail follow-up queue and the YTD count.
   const visitors = allLoadedVisitors(sessionsById);
   const needs = visitors.filter(v => leadBucket(v.lead_state) === 'needs');
-  const done = visitors.filter(v => leadBucket(v.lead_state) === 'done');
   const topScore = visitors.reduce((m, v) => Math.max(m, v.analysis?.score || 0), 0);
   const topScoreVisitor = visitors.find(v => (v.analysis?.score || 0) === topScore);
 
   const firstName = (user?.name || '').split(' ')[0] || 'there';
 
   return (
-    <div className="foyer" data-screen-label="Dashboard" style={{ background: 'var(--bg)', minHeight: '100%', display: 'grid', gridTemplateColumns: '240px 1fr' }}>
-
-      {/* SIDEBAR */}
-      <aside style={{ borderRight: '1px solid var(--hairline)', padding: '24px 0', background: 'var(--bg-deep)', position: 'relative' }}>
-        <div style={{ padding: '0 24px 24px', borderBottom: '1px solid var(--hairline)' }}>
-          <Crest size={18} />
-        </div>
-        <nav style={{ padding: '20px 0' }}>
-          {[
-            { label: 'Today',     sub: featured ? featured.address || 'Recent session' : 'No sessions yet', active: true },
-            { label: 'Sessions',  sub: `${recordedSummaries.length} recorded`, go: () => featured && goToSession(featured.id) },
-            { label: 'Leads',     sub: `${visitors.length} total` },
-            { label: 'Needs action', sub: `${needs.length} open` },
-            { label: 'Done',      sub: `${done.length} archived/replied` },
-          ].map(item => (
-            <div key={item.label}
-                 className={'nav-item' + (item.active ? ' is-active' : '')}
-                 onClick={item.go || (() => {})} style={{
-              padding: '12px 24px',
-              borderLeft: item.active ? '2px solid var(--gold)' : '2px solid transparent',
-              background: item.active ? 'var(--gold-soft)' : 'transparent',
-              cursor: item.go ? 'pointer' : 'default',
-            }}>
-              <div className="nav-item-label" style={{ fontSize: 14, color: item.active ? 'var(--gold)' : 'var(--cream)', fontWeight: item.active ? 500 : 400 }}>{item.label}</div>
-              <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.1em' }}>{item.sub}</div>
-            </div>
-          ))}
-        </nav>
-
-        {/* User card pinned to bottom */}
-        <div style={{ padding: '20px 24px', borderTop: '1px solid var(--hairline)', position: 'absolute', bottom: 24, width: 240 }}>
-          <div className="user-card" onClick={() => setMenuOpen(o => !o)} style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            padding: 10, borderRadius: 12,
-            background: 'var(--bg-card)', border: '1px solid var(--hairline)', cursor: 'pointer',
-          }}>
-            <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--gold-soft)', display: 'grid', placeItems: 'center', color: 'var(--gold)', fontFamily: 'var(--serif)', fontStyle: 'italic' }}>
-              {(user?.name || '?').slice(0, 1).toUpperCase()}
-            </div>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ fontSize: 13, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Signed in'}</div>
-              <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(user?.email || '').toUpperCase()}</div>
-            </div>
-            <span className="mono" style={{ fontSize: 14, color: 'var(--text-muted)' }}>⌄</span>
-          </div>
-          {menuOpen && (
-            <div style={{
-              position: 'absolute', left: 16, bottom: 78, width: 240,
-              background: 'var(--bg-card)', border: '1px solid var(--border-strong)', borderRadius: 12,
-              boxShadow: '0 30px 80px -20px rgba(0,0,0,0.6)', padding: '8px 0',
-            }}>
-              <div onClick={() => { setMenuOpen(false); foyerSignOut(); }}
-                   style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', fontSize: 13, color: 'var(--terracotta)', cursor: 'pointer' }}>
-                <span style={{ width: 16, textAlign: 'center' }}>⇥</span>Log out
-              </div>
-            </div>
-          )}
-        </div>
-      </aside>
-
-      {/* MAIN */}
-      <main style={{ padding: '40px 56px 80px', overflowY: 'auto' }}>
+    <AppShell active="today">
+      <div style={{ padding: '40px 56px 80px' }}>
         {loading && (
           <div className="mono" style={{ color: 'var(--text-muted)', letterSpacing: '0.14em', fontSize: 11 }}>LOADING SESSIONS…</div>
         )}
@@ -112,10 +46,8 @@ const Dashboard = () => {
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 12 }}>
-                <button className="btn" onClick={() => alert('Open the iOS app to start recording.')}>Start session</button>
-                {featured && (
-                  <button className="btn btn-primary" onClick={() => goToSession(featured.id)}>Review follow-ups</button>
-                )}
+                <a href="#/kiosk" className="btn">Open kiosk</a>
+                <a href="#/sessions" className="btn btn-primary">All sessions</a>
               </div>
             </div>
 
@@ -144,7 +76,7 @@ const Dashboard = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <Eyebrow>{featured ? 'Most recent session' : 'No sessions yet'}</Eyebrow>
                   {featured && (
-                    <a onClick={() => goToSession(featured.id)} className="serif-it" style={{ fontSize: 12, color: 'var(--gold)', cursor: 'pointer' }}>Open session →</a>
+                    <a href="#/sessions" className="serif-it" style={{ fontSize: 12, color: 'var(--gold)', textDecoration: 'none' }}>Browse all →</a>
                   )}
                 </div>
                 {featured ? (
@@ -157,7 +89,7 @@ const Dashboard = () => {
                       {featured.completed_at ? ` · COMPLETED ${fmtRelative(featured.completed_at)}` : ''}
                     </div>
 
-                    <div style={{ marginTop: 28, display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    <div style={{ marginTop: 28 }}>
                       {featuredVisitors.length === 0 ? (
                         <div style={{ padding: '22px 0', borderTop: '1px solid var(--hairline)', color: 'var(--text-dim)', fontSize: 13 }}>
                           No guests detected — recording may have been too short.
@@ -166,16 +98,15 @@ const Dashboard = () => {
                         const tagToken = (v.analysis?.tag || '').toLowerCase();
                         const sig = (v.analysis?.signals || [])[0];
                         return (
-                          <div
-                            key={v.visitor.name + ':' + (v.visitor.speaker || '')}
-                            className="lead-row"
-                            onClick={() => goToSession(featured.id, v.visitor.name)}
-                            style={{
-                              padding: '22px 4px',
-                              borderTop: '1px solid var(--hairline)',
-                              borderBottom: i === featuredVisitors.length - 1 ? '1px solid var(--hairline)' : 'none',
-                              display: 'grid', gridTemplateColumns: '40px 1fr auto', gap: 20, alignItems: 'start',
-                            }}>
+                          <div key={v.visitor.name + ':' + (v.visitor.speaker || '')}
+                               className="lead-row"
+                               onClick={() => goToSession(featured.id, v.visitor.name)}
+                               style={{
+                                 padding: '22px 4px',
+                                 borderTop: '1px solid var(--hairline)',
+                                 borderBottom: i === featuredVisitors.length - 1 ? '1px solid var(--hairline)' : 'none',
+                                 display: 'grid', gridTemplateColumns: '40px 1fr auto', gap: 20, alignItems: 'start',
+                               }}>
                             <div className="mono" style={{ fontSize: 12, color: 'var(--gold)', letterSpacing: '0.1em' }}>{String(i + 1).padStart(2, '0')}</div>
                             <div>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -207,7 +138,6 @@ const Dashboard = () => {
                 )}
               </div>
 
-              {/* right column — needs-action queue */}
               <div>
                 <Eyebrow>The follow-up queue</Eyebrow>
                 <div style={{ marginTop: 16 }}>
@@ -215,7 +145,7 @@ const Dashboard = () => {
                     <div style={{ padding: '20px 0', color: 'var(--text-dim)', fontSize: 13 }}>
                       Nothing waiting on you. New recordings will land here as drafts.
                     </div>
-                  ) : needs.slice(0, 8).map((v, i) => {
+                  ) : needs.slice(0, 8).map((v) => {
                     const tagToken = (v.analysis?.tag || '').toLowerCase();
                     return (
                       <div key={v._session.id + ':' + v._id}
@@ -242,8 +172,8 @@ const Dashboard = () => {
             </div>
           </>
         )}
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 };
 
@@ -268,4 +198,4 @@ function goToSession(sessionId, visitorName) {
   window.foyerGo('#/session');
 }
 
-Object.assign(window, { Dashboard });
+Object.assign(window, { Dashboard, foyerGoToSession: goToSession });

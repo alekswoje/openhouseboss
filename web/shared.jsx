@@ -194,8 +194,140 @@ async function foyerSignOut() {
   window.location.hash = '#/';
 }
 
+// ============================================================
+// AppShell — sidebar + main pane shared across all signed-in pages.
+// Dashboard, SessionsList, SessionDetail, Kiosk all wrap their content
+// in <AppShell active="…"> so navigation is consistent and the sidebar
+// is one place to change.
+// ============================================================
+
+function AppShell({ active, children, sessionStats }) {
+  const { user, summaries, sessionsById } = useFoyerData();
+  const [menuOpen, setMenuOpen] = React.useState(false);
+
+  const recordedCount = summaries.filter(s => (s.kind || 'recorded') !== 'manual').length;
+  const visitors = allLoadedVisitors(sessionsById);
+  const needs = visitors.filter(v => leadBucket(v.lead_state) === 'needs').length;
+
+  // Hover-to-close for the menu.
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const onClick = (e) => {
+      if (!e.target.closest('.user-card-wrap')) setMenuOpen(false);
+    };
+    setTimeout(() => document.addEventListener('click', onClick), 0);
+    return () => document.removeEventListener('click', onClick);
+  }, [menuOpen]);
+
+  const sections = [
+    {
+      label: 'Open house',
+      items: [
+        { id: 'today',   label: 'Today',          sub: 'Live overview',         hash: '#/app' },
+        { id: 'kiosk',   label: 'Kiosk sign-in',  sub: 'Hand to a guest',       hash: '#/kiosk' },
+      ],
+    },
+    {
+      label: 'Library',
+      items: [
+        { id: 'sessions', label: 'Sessions',  sub: `${recordedCount} recorded`, hash: '#/sessions' },
+        { id: 'leads',    label: 'Leads',     sub: `${visitors.length} captured · ${needs} need action`, hash: '#/leads' },
+      ],
+    },
+  ];
+
+  return (
+    <div className="foyer" style={{ background: 'var(--bg)', minHeight: '100%', display: 'grid', gridTemplateColumns: '260px 1fr' }}>
+      <aside style={{
+        borderRight: '1px solid var(--hairline)',
+        background: 'var(--bg-deep)',
+        display: 'flex', flexDirection: 'column',
+        padding: '24px 0 20px',
+        position: 'sticky', top: 0, height: '100vh',
+      }}>
+        <div style={{ padding: '0 22px 22px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <a href="#/app" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Crest size={18} />
+          </a>
+          {sessionStats?.live && (
+            <span className="mono" style={{ fontSize: 9, color: 'var(--gold)', letterSpacing: '0.18em', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 8px var(--gold)' }} />
+              LIVE
+            </span>
+          )}
+        </div>
+
+        <nav style={{ padding: '12px 0', flex: 1, overflowY: 'auto' }}>
+          {sections.map(section => (
+            <div key={section.label} style={{ padding: '14px 0' }}>
+              <div className="eyebrow" style={{ padding: '0 22px 8px' }}>{section.label}</div>
+              {section.items.map(item => {
+                const isActive = item.id === active;
+                return (
+                  <a key={item.id}
+                     href={item.hash}
+                     className={'nav-item' + (isActive ? ' is-active' : '')}
+                     style={{
+                       display: 'block',
+                       textDecoration: 'none',
+                       padding: '11px 22px',
+                       borderLeft: isActive ? '2px solid var(--gold)' : '2px solid transparent',
+                       background: isActive ? 'var(--gold-soft)' : 'transparent',
+                     }}>
+                    <div className="nav-item-label" style={{ fontSize: 14, color: isActive ? 'var(--gold)' : 'var(--cream)', fontWeight: isActive ? 500 : 400 }}>{item.label}</div>
+                    <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 3, letterSpacing: '0.1em' }}>{item.sub}</div>
+                  </a>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div className="user-card-wrap" style={{ padding: '14px 18px', borderTop: '1px solid var(--hairline)', position: 'relative' }}>
+          <div className="user-card" onClick={() => setMenuOpen(o => !o)} style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: 10, borderRadius: 12,
+            background: 'var(--bg-card)', border: '1px solid var(--hairline)', cursor: 'pointer',
+          }}>
+            <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--gold-soft)', display: 'grid', placeItems: 'center', color: 'var(--gold)', fontFamily: 'var(--serif)', fontStyle: 'italic' }}>
+              {(user?.name || '?').slice(0, 1).toUpperCase()}
+            </div>
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              <div style={{ fontSize: 13, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Signed in'}</div>
+              <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(user?.email || '').toUpperCase()}</div>
+            </div>
+            <span className="mono" style={{ fontSize: 14, color: 'var(--text-muted)' }}>{menuOpen ? '⌃' : '⌄'}</span>
+          </div>
+          {menuOpen && (
+            <div style={{
+              position: 'absolute', left: 18, right: 18, bottom: 78,
+              background: 'var(--bg-card)', border: '1px solid var(--border-strong)', borderRadius: 12,
+              boxShadow: '0 30px 80px -20px rgba(0,0,0,0.6)', padding: '8px 0',
+            }}>
+              <a href="#/" onClick={(e) => { e.preventDefault(); setMenuOpen(false); window.foyerGo('#/'); }}
+                 style={{ display: 'block', padding: '10px 16px', fontSize: 13, color: 'var(--cream-dim)', textDecoration: 'none' }}>
+                Marketing site
+              </a>
+              <div style={{ borderTop: '1px solid var(--hairline)', margin: '6px 0' }}></div>
+              <div onClick={() => { setMenuOpen(false); foyerSignOut(); }}
+                   style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', fontSize: 13, color: 'var(--terracotta)', cursor: 'pointer' }}>
+                <span style={{ width: 16, textAlign: 'center' }}>⇥</span>Log out
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <main style={{ overflowY: 'auto' }}>
+        {children}
+      </main>
+    </div>
+  );
+}
+
 Object.assign(window, {
   Crest, Eyebrow, Tag, Stat, Hairline,
   foyerApi, foyerLoad, useFoyerData, foyerSignOut,
   visitorKey, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour,
+  AppShell,
 });
