@@ -9,6 +9,7 @@ struct SummaryView: View {
     var pastSessionId: String? = nil
 
     @State private var store = SessionStore.shared
+    @State private var player = AudioPlayer()
     @State private var openVisitor: VisitorResult?
     @Environment(\.dismiss) private var dismiss
 
@@ -19,6 +20,9 @@ struct SummaryView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    if let url = store.lastRecordedAudioURL {
+                        playbackBar(url: url)
+                    }
                     content
                     Spacer().frame(height: 130)
                 }
@@ -32,7 +36,11 @@ struct SummaryView: View {
             if let id = pastSessionId {
                 store.openPastSession(id: id)
             }
+            if let url = store.lastRecordedAudioURL {
+                player.load(url: url)
+            }
         }
+        .onDisappear { player.stop() }
     }
 
     private var header: some View {
@@ -59,6 +67,65 @@ struct SummaryView: View {
         case .ready:
             visitorList
         }
+    }
+
+    // Local playback bar — only shown when we have an audioURL on hand
+    // (i.e. the fresh-recording flow). Lets the agent compare mic placement
+    // by hearing the just-captured audio.
+    private func playbackBar(url: URL) -> some View {
+        HStack(spacing: 14) {
+            Button { player.playPause() } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                    .frame(width: 34, height: 34)
+                    .background(FoyerTheme.gold, in: Circle())
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: "Recorded audio · tap to play")
+                progressTrack
+                HStack {
+                    Text(timeString(player.currentTime))
+                        .font(.system(size: 9, design: .monospaced)).tracking(1.0)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Spacer()
+                    Text(timeString(player.duration))
+                        .font(.system(size: 9, design: .monospaced)).tracking(1.0)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+            }
+        }
+        .padding(14)
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(FoyerTheme.hairline, lineWidth: 1))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
+    }
+
+    private var progressTrack: some View {
+        GeometryReader { geo in
+            let fraction = player.duration > 0 ? min(1, player.currentTime / player.duration) : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(FoyerTheme.hairline).frame(height: 3)
+                Capsule().fill(FoyerTheme.gold).frame(width: geo.size.width * fraction, height: 3)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { val in
+                        guard player.duration > 0 else { return }
+                        let f = max(0, min(1, val.location.x / geo.size.width))
+                        player.seek(to: f * player.duration)
+                    }
+            )
+        }
+        .frame(height: 14)
+    }
+
+    private func timeString(_ t: TimeInterval) -> String {
+        guard t.isFinite else { return "0:00" }
+        let total = Int(t)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var processingCard: some View {

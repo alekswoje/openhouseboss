@@ -24,6 +24,9 @@ final class SessionStore {
     var listError: String?
     // Address typed in SetupView, used by uploadAndProcess.
     var pendingAddress: String?
+    // Local m4a from the last recording — kept so SummaryView can offer
+    // playback for QA-ing mic placement. Cleared on reset.
+    var lastRecordedAudioURL: URL?
 
     private var pollTask: Task<Void, Never>?
 
@@ -33,6 +36,7 @@ final class SessionStore {
         cancel()
         phase = .uploading
         session = nil
+        lastRecordedAudioURL = audioURL
         let address = pendingAddress
         pendingAddress = nil
         Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>")")
@@ -135,5 +139,6 @@ final class SessionStore {
         session = nil
         phase = .idle
         pendingAddress = nil
+        lastRecordedAudioURL = nil
     }
 }

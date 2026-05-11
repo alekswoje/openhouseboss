@@ -22,6 +22,7 @@
 		A9FD41F941A91A0BB7101205 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = B550150CDEF72AE1714252D7 /* Log.swift */; };
 		C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88172970AE449A66CFAE784B /* RecordView.swift */; };
 		D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */; };
+		D630737EBAA8096E73D8081A /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */; };
 		DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */; };
 /* End PBXBuildFile section */
 
@@ -29,6 +30,7 @@
 		14804FB0F6B1FF7D9A98509F /* SummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryView.swift; sourceTree = "<group>"; };
 		22C2623D371CC35BE5C79E0F /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		2AF9EB1C202D2DA5DB88A1EC /* VisitorDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisitorDetailView.swift; sourceTree = "<group>"; };
+		3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		45A14FF6B9071E2F1778CD44 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		486C86D53F7F13F83881027C /* FollowupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowupView.swift; sourceTree = "<group>"; };
 		49A00317B74209CC35C75028 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
@@ -41,7 +43,7 @@
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
-		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFE577A9E7DBCF6DCC8F6928 /* OpenHouseBossApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHouseBossApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -58,6 +60,7 @@
 			isa = PBXGroup;
 			children = (
 				45A14FF6B9071E2F1778CD44 /* APIClient.swift */,
+				3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */,
 				BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */,
 				49A00317B74209CC35C75028 /* Config.swift */,
 				486C86D53F7F13F83881027C /* FollowupView.swift */,
@@ -144,6 +147,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				318599127FDC9978A2EEFE2E /* APIClient.swift in Sources */,
+				D630737EBAA8096E73D8081A /* AudioPlayer.swift in Sources */,
 				D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */,
 				6A28EBEABC7ACEE2205D25C5 /* Config.swift in Sources */,
 				8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */,
@@ -234,7 +238,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = YJ85MR8WLM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "OpenHouseBoss/Generated-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -310,7 +313,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = YJ85MR8WLM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "OpenHouseBoss/Generated-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
