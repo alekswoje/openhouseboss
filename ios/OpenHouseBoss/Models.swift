@@ -67,11 +67,21 @@ struct ScriptSummary: Codable, Hashable, Identifiable {
     let name: String
     let description: String
     let stepCount: Int
+    var isPreset: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, name, description
         case stepCount = "step_count"
+        case isPreset = "is_preset"
     }
+}
+
+// Step shape the iOS editor produces when creating a custom script.
+struct ScriptStepDraft: Codable, Hashable, Identifiable {
+    var id: String = UUID().uuidString
+    var label: String = ""
+    var quote: String = ""
+    var intent: String = ""
 }
 
 struct StepCoverage: Codable, Hashable, Identifiable {

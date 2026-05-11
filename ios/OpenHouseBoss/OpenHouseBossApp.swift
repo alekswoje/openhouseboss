@@ -25,6 +25,7 @@ enum AppRoute: Hashable {
     case visitorsAll
     case kiosk
     case scriptDetail(scriptId: String)
+    case scriptEdit
 }
 
 enum HomeTab: Hashable, CaseIterable {
@@ -104,6 +105,7 @@ struct RootView: View {
         case .visitorsAll:                 AllVisitorsView()
         case .kiosk:                       KioskSignInView()
         case .scriptDetail(let id):        ScriptDetailView(scriptId: id)
+        case .scriptEdit:                  ScriptEditView()
         }
     }
 }

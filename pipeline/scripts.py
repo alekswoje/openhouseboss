@@ -1,14 +1,17 @@
-"""Preset open-house scripts + a tiny helper for looking them up by id.
+"""Preset + user-created open-house scripts.
 
 A script is a structured walkthrough of what the agent intends to say at each
 stage of an open house. After the session is transcribed and diarized, we hand
 the script + transcript to Claude and get back a per-step coverage report.
 
-For now we ship one preset (the user's own buyer/seller flow). Down the road
-we'll add PDF upload + parsing so agents can bring their own — same data
-shape, just generated at upload time instead of hardcoded here.
+We ship one preset (Aleks's buyer/seller flow) and persist user-created
+scripts to disk under `scripts_data/`. Both kinds appear in /scripts and can
+be referenced by id when starting a session.
 """
 
+import json
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
@@ -216,6 +219,23 @@ ALEKS_SCRIPT = Script(
 
 PRESETS: list[Script] = [ALEKS_SCRIPT]
 
+# User-created scripts live in this directory; one JSON file per script.
+USER_SCRIPTS_DIR = Path("scripts_data")
+USER_SCRIPTS_DIR.mkdir(exist_ok=True)
+
+
+def _load_user_scripts() -> list[Script]:
+    """Read all user-created scripts from disk. Cheap — there shouldn't be
+    more than a handful per agent."""
+    scripts: list[Script] = []
+    for f in sorted(USER_SCRIPTS_DIR.glob("*.json")):
+        try:
+            scripts.append(Script(**json.loads(f.read_text())))
+        except Exception:
+            # Ignore malformed files rather than 500 on /scripts list.
+            continue
+    return scripts
+
 
 def get_script(script_id: Optional[str]) -> Optional[Script]:
     if not script_id:
@@ -223,17 +243,59 @@ def get_script(script_id: Optional[str]) -> Optional[Script]:
     for s in PRESETS:
         if s.id == script_id:
             return s
+    # User script: load directly by id (= filename stem).
+    user_file = USER_SCRIPTS_DIR / f"{script_id}.json"
+    if user_file.exists():
+        try:
+            return Script(**json.loads(user_file.read_text()))
+        except Exception:
+            return None
     return None
 
 
+def save_user_script(name: str, description: str, steps: list[dict]) -> Script:
+    """Persist a new user-created script and return it with a generated id.
+    Steps come in as plain dicts so this works with the FastAPI form payload."""
+    script_id = f"user_{uuid.uuid4().hex[:10]}"
+    parsed_steps = []
+    for i, s in enumerate(steps):
+        parsed_steps.append(ScriptStep(
+            id=s.get("id") or f"step_{i+1}",
+            section=s.get("section") or "Custom",
+            label=s.get("label") or f"Step {i+1}",
+            quote=s.get("quote") or "",
+            intent=s.get("intent") or "",
+        ))
+    script = Script(
+        id=script_id, name=name, description=description, steps=parsed_steps,
+    )
+    (USER_SCRIPTS_DIR / f"{script_id}.json").write_text(
+        json.dumps(script.model_dump(), indent=2)
+    )
+    return script
+
+
+def delete_user_script(script_id: str) -> bool:
+    """Remove a user-created script. Returns False if not found or if the
+    caller tries to delete a preset."""
+    if script_id in {s.id for s in PRESETS}:
+        return False
+    f = USER_SCRIPTS_DIR / f"{script_id}.json"
+    if f.exists():
+        f.unlink()
+        return True
+    return False
+
+
 def list_scripts_summary() -> list[dict]:
-    """Compact list for the iOS Setup picker."""
-    return [
-        {
+    """Compact list for the iOS Scripts tab — presets + user scripts."""
+    items = []
+    for s in PRESETS + _load_user_scripts():
+        items.append({
             "id": s.id,
             "name": s.name,
             "description": s.description,
             "step_count": len(s.steps),
-        }
-        for s in PRESETS
-    ]
+            "is_preset": s.id in {p.id for p in PRESETS},
+        })
+    return items

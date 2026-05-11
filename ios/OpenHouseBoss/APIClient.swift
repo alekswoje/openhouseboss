@@ -70,13 +70,46 @@ actor APIClient {
         return try JSONDecoder().decode(Session.self, from: data)
     }
 
-    // GET /scripts — list of preset scripts the agent can attach.
+    // GET /scripts — presets + user-created.
     func listScripts() async throws -> [ScriptSummary] {
         let url = Config.backendURL.appendingPathComponent("scripts")
         let (data, response) = try await self.session.data(from: url)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let scripts: [ScriptSummary] }
         return try JSONDecoder().decode(Wrapper.self, from: data).scripts
+    }
+
+    // POST /scripts — create a new user script with steps.
+    func createScript(name: String, description: String, steps: [ScriptStepDraft]) async throws -> ScriptSummary {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let stepDicts = steps.map { s -> [String: String] in
+            ["label": s.label, "quote": s.quote, "intent": s.intent]
+        }
+        let body: [String: Any] = [
+            "name": name, "description": description, "steps": stepDicts,
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct CreatedScript: Codable {
+            let id: String, name: String, description: String
+            let steps: [Step]
+            struct Step: Codable { let id, label: String }
+        }
+        let created = try JSONDecoder().decode(CreatedScript.self, from: data)
+        return ScriptSummary(
+            id: created.id, name: created.name, description: created.description,
+            stepCount: created.steps.count, isPreset: false
+        )
+    }
+
+    func deleteScript(id: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/\(id)"))
+        req.httpMethod = "DELETE"
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
     }
 
     // GET /sessions — compact list for the home screen.

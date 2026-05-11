@@ -18,7 +18,7 @@ from pipeline.analyze import analyze_visitor
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
 from pipeline.script_coverage import grade_against_script
-from pipeline.scripts import get_script, list_scripts_summary
+from pipeline.scripts import get_script, list_scripts_summary, save_user_script, delete_user_script
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
 
@@ -183,6 +183,28 @@ def get_script_detail(script_id: str):
     if s is None:
         raise HTTPException(404, f"Script {script_id} not found")
     return s.model_dump()
+
+
+@app.post("/scripts")
+async def create_script(payload: dict):
+    """Persist a new user-created script. Body shape:
+    { "name": str, "description": str, "steps": [{label, quote, intent}, ...] }"""
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = (payload.get("description") or "").strip()
+    steps = payload.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        raise HTTPException(400, "at least one step is required")
+    script = save_user_script(name=name, description=description, steps=steps)
+    return script.model_dump()
+
+
+@app.delete("/scripts/{script_id}")
+def remove_script(script_id: str):
+    if not delete_user_script(script_id):
+        raise HTTPException(400, "Cannot delete that script (preset or unknown)")
+    return {"deleted": script_id}
 
 
 @app.post("/sessions/{session_id}/reprocess")

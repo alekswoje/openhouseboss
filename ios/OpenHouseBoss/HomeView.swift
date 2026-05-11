@@ -1,54 +1,98 @@
 import SwiftUI
+import UIKit
 
-// MARK: – HomeShell — TabView-driven with a custom animated tab bar
+// MARK: – HomeShell — paged ScrollView with live-tracking tab underline
 
-// Swipeable tab container. Uses TabView under the hood so iOS handles the
-// horizontal drag + paged transition for free. We hide the system bar and
-// draw our own at the bottom, with a cyan underline that animates between
-// the active tab using matchedGeometryEffect.
+// Replaces TabView so we can read the horizontal scroll offset as the user
+// swipes and animate the bottom-bar underline continuously (Instagram-style),
+// instead of jumping at the end of the swipe.
 struct HomeShell: View {
     @Environment(AppRouter.self) private var router
-    @Namespace private var tabIndicator
+    @State private var pageFraction: CGFloat = 0   // 0..(N-1), continuous
+
+    private let tabs = HomeTab.allCases
 
     var body: some View {
-        @Bindable var router = router
-
-        ZStack(alignment: .bottom) {
-            FoyerTheme.bgDeep.ignoresSafeArea()
-
-            TabView(selection: $router.tab) {
-                SessionsTabContent()
-                    .tag(HomeTab.sessions)
-                VisitorsTabContent()
-                    .tag(HomeTab.visitors)
-                ScriptsTabContent()
-                    .tag(HomeTab.scripts)
-                ProfileTabContent()
-                    .tag(HomeTab.profile)
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                FoyerTheme.bgDeep.ignoresSafeArea()
+                paged(width: geo.size.width)
+                tabBar(totalWidth: geo.size.width)
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea(edges: .bottom)
-            .animation(.easeInOut(duration: 0.28), value: router.tab)
-
-            customTabBar
         }
         .toolbar(.hidden, for: .navigationBar)
     }
 
-    private var customTabBar: some View {
-        VStack(spacing: 0) {
+    private func paged(width: CGFloat) -> some View {
+        @Bindable var router = router
+        let pos = Binding<HomeTab?>(
+            get: { router.tab },
+            set: { if let t = $0 { router.tab = t } }
+        )
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(tabs, id: \.self) { t in
+                    page(t)
+                        .frame(width: width)
+                        .id(t)
+                }
+            }
+            .scrollTargetLayout()
+            .background(
+                GeometryReader { proxy in
+                    let minX = proxy.frame(in: .named("hscroll")).minX
+                    Color.clear.preference(
+                        key: ScrollOffsetKey.self,
+                        value: -minX / max(width, 1)
+                    )
+                }
+            )
+        }
+        .coordinateSpace(name: "hscroll")
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: pos)
+        .onPreferenceChange(ScrollOffsetKey.self) { pageFraction = $0 }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    @ViewBuilder
+    private func page(_ t: HomeTab) -> some View {
+        switch t {
+        case .sessions: SessionsTabContent()
+        case .visitors: VisitorsTabContent()
+        case .scripts:  ScriptsTabContent()
+        case .profile:  ProfileTabContent()
+        }
+    }
+
+    private func tabBar(totalWidth: CGFloat) -> some View {
+        let n = CGFloat(tabs.count)
+        let inset: CGFloat = 4
+        let tabWidth = (totalWidth - inset * 2) / n
+        let underlineW: CGFloat = 28
+        let underlineX = inset + tabWidth * pageFraction + tabWidth / 2 - underlineW / 2
+
+        return VStack(spacing: 0) {
             Rectangle()
                 .fill(FoyerTheme.border)
                 .frame(height: 0.5)
 
-            HStack(spacing: 0) {
-                ForEach(HomeTab.allCases, id: \.self) { t in
-                    tabButton(t)
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: 0) {
+                    ForEach(tabs, id: \.self) { t in
+                        tabButton(t)
+                    }
                 }
+                .padding(.top, 10)
+                .padding(.bottom, 24)
+                .padding(.horizontal, inset)
+
+                Capsule()
+                    .fill(FoyerTheme.gold)
+                    .frame(width: underlineW, height: 2.5)
+                    .offset(x: underlineX, y: 0)
             }
-            .padding(.top, 10)
-            .padding(.bottom, 24)
-            .padding(.horizontal, 4)
             .background(FoyerTheme.bg)
         }
     }
@@ -57,31 +101,52 @@ struct HomeShell: View {
         @Bindable var router = router
         let active = router.tab == t
         return Button {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+            withAnimation(.easeInOut(duration: 0.28)) {
                 router.tab = t
             }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: t.icon)
                     .font(.system(size: 18, weight: active ? .semibold : .regular))
+                    .scaleEffect(active ? 1.05 : 1)
                 Text(t.label)
                     .font(.system(size: 10, weight: .medium))
                     .tracking(0.3)
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.textMuted)
-            .overlay(alignment: .top) {
-                if active {
-                    Capsule()
-                        .fill(FoyerTheme.gold)
-                        .frame(width: 28, height: 2.5)
-                        .offset(y: -10)
-                        .matchedGeometryEffect(id: "tabIndicator", in: tabIndicator)
-                }
-            }
             .contentShape(Rectangle())
+            .animation(.easeInOut(duration: 0.2), value: active)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// Bubbles the live horizontal scroll offset (in pages) up through the view
+// tree so the tab bar's underline can animate continuously as the user
+// swipes, not just at the end.
+struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+// MARK: – Edge swipe-back, restored
+
+// SwiftUI's NavigationStack disables the interactive pop gesture when the
+// navigation bar is hidden (which we do on every detail screen). This
+// extension hooks the underlying UINavigationController and re-enables it
+// whenever there's more than one view on the stack, so swipe-from-left-edge
+// to dismiss works again on Summary, Visitor, Followup, etc.
+extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
+    override open func viewDidLoad() {
+        super.viewDidLoad()
+        interactivePopGestureRecognizer?.delegate = self
+    }
+
+    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        return viewControllers.count > 1
     }
 }
 
@@ -425,28 +490,52 @@ struct ScriptsTabContent: View {
     @State private var store = SessionStore.shared
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                if store.availableScripts.isEmpty {
-                    emptyHint
-                } else {
-                    Eyebrow(text: "Available")
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 6)
-                    VStack(spacing: 10) {
-                        ForEach(store.availableScripts) { s in
-                            scriptCard(s)
+        ZStack(alignment: .topTrailing) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    if store.availableScripts.isEmpty {
+                        emptyHint
+                    } else {
+                        Eyebrow(text: "Available")
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 6)
+                        VStack(spacing: 10) {
+                            ForEach(store.availableScripts) { s in
+                                scriptCard(s)
+                            }
                         }
+                        .padding(.horizontal, 20)
                     }
-                    .padding(.horizontal, 20)
+                    Spacer().frame(height: 120)
                 }
-                Spacer().frame(height: 120)
+                .padding(.top, 8)
             }
-            .padding(.top, 8)
+            .background(FoyerTheme.bgDeep)
+            .refreshable { await store.refreshScripts() }
+
+            addButton
         }
-        .background(FoyerTheme.bgDeep)
         .task { await store.refreshScripts() }
+    }
+
+    private var addButton: some View {
+        Button { router.push(.scriptEdit) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("NEW")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .foregroundStyle(FoyerTheme.inkOnGold)
+            .background(FoyerTheme.gold, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 20)
+        .padding(.top, 60)
     }
 
     private var header: some View {
@@ -1463,5 +1552,220 @@ struct KioskSignInView: View {
         }
         SessionStore.shared.pendingKioskGuests = pendingGuests
         dismiss()
+    }
+}
+
+// MARK: – Script editor (create a new custom script)
+
+// Agent flow: name + description up top, then a list of editable step rows.
+// Each step has a label ("Step 1 — Timeline"), the verbatim line they want
+// to say, and a short note on intent. Save POSTs to /scripts.
+struct ScriptEditView: View {
+    @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+    @State private var name: String = ""
+    @State private var description: String = ""
+    @State private var steps: [ScriptStepDraft] = [ScriptStepDraft(label: "Step 1")]
+    @State private var saving = false
+    @State private var saveError: String?
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            FoyerTheme.bgDeep.ignoresSafeArea()
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    BackBar(crumbs: ["Scripts", "New"], onBack: { router.pop() })
+                    title
+                    nameAndDesc
+                    stepsSection
+                    if let err = saveError { errorBanner(err) }
+                    Spacer().frame(height: 140)
+                }
+                .padding(.top, 8)
+            }
+            saveBar
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "Custom script", color: FoyerTheme.gold)
+            Text("New script")
+                .foyerDisplay(28)
+                .foregroundStyle(FoyerTheme.cream)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+    }
+
+    private var nameAndDesc: some View {
+        VStack(spacing: 10) {
+            textField("Script name", text: $name, placeholder: "My buyer flow")
+            textField("Description", text: $description, placeholder: "Lead qualification + rebate close")
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func textField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                TextField("", text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .autocorrectionDisabled()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private var stepsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Eyebrow(text: "Steps · \(steps.count)")
+                Spacer()
+                Button { addStep() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                        Text("ADD STEP")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .tracking(1.4)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(FoyerTheme.gold)
+                    .background(FoyerTheme.goldSoft, in: Capsule())
+                    .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 20)
+
+            VStack(spacing: 10) {
+                ForEach($steps) { $step in
+                    stepCard($step, index: steps.firstIndex(where: { $0.id == step.id }) ?? 0)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+        .padding(.top, 22)
+    }
+
+    private func stepCard(_ step: Binding<ScriptStepDraft>, index: Int) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("STEP \(index + 1)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.gold)
+                    Spacer()
+                    if steps.count > 1 {
+                        Button { removeStep(id: step.id) } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12))
+                                .foregroundStyle(FoyerTheme.terracotta)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                miniField("Label", text: step.label, placeholder: "Establish the timeline")
+                miniField("What you'll say", text: step.quote, placeholder: "So are you getting close to making a move?", multiline: true)
+                miniField("Why it matters", text: step.intent, placeholder: "Sorts active buyers from window-shoppers", multiline: true)
+            }
+            .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private func miniField(_ label: String, text: Binding<String>, placeholder: String, multiline: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Eyebrow(text: label)
+            if multiline {
+                TextField("", text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)),
+                          axis: .vertical)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .lineLimit(2...5)
+            } else {
+                TextField("", text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+            }
+        }
+    }
+
+    private func errorBanner(_ msg: String) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(FoyerTheme.terracotta)
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.cream)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+    }
+
+    private var saveBar: some View {
+        Button(action: save) {
+            Text(saving ? "Saving…" : "Save script")
+        }
+        .buttonStyle(FoyerPrimaryButton())
+        .padding(.horizontal, 20)
+        .padding(.bottom, 36)
+        .disabled(!canSave || saving)
+        .opacity(canSave && !saving ? 1 : 0.4)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        steps.contains { !$0.label.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private func addStep() {
+        withAnimation { steps.append(ScriptStepDraft(label: "Step \(steps.count + 1)")) }
+    }
+
+    private func removeStep(id: String) {
+        withAnimation { steps.removeAll { $0.id == id } }
+    }
+
+    private func save() {
+        saving = true
+        saveError = nil
+        let cleaned = steps.filter { !$0.label.trimmingCharacters(in: .whitespaces).isEmpty }
+        Task {
+            do {
+                _ = try await APIClient.shared.createScript(
+                    name: name.trimmingCharacters(in: .whitespaces),
+                    description: description.trimmingCharacters(in: .whitespaces),
+                    steps: cleaned
+                )
+                await store.refreshScripts()
+                await MainActor.run {
+                    saving = false
+                    router.pop()
+                }
+            } catch {
+                await MainActor.run {
+                    saving = false
+                    saveError = error.localizedDescription
+                }
+            }
+        }
     }
 }
