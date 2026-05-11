@@ -220,6 +220,7 @@ struct FollowupView: View {
         sending = true
         let previous = leadState
         leadState.status = .sent
+        let sessionAddress = store.session?.address
         Task {
             do {
                 let updated = try await APIClient.shared.updateLeadState(
@@ -232,6 +233,26 @@ struct FollowupView: View {
                     leadState = updated
                     sending = false
                 }
+
+                // Best-effort push to Follow Up Boss if connected. Failures
+                // don't roll back the "sent" flip — the email already went
+                // out via Mail.app; the CRM push is bonus. We surface the
+                // error inline so the agent knows to retry from the visitor
+                // detail menu (eventually) or re-send manually in FUB.
+                if FUBCredential.isConnected {
+                    do {
+                        _ = try await APIClient.shared.fubPushLead(
+                            visitor: visitor,
+                            sessionAddress: sessionAddress,
+                            snoozedUntil: updated.snoozedUntilDate
+                        )
+                    } catch {
+                        await MainActor.run {
+                            sendError = "Sent — but FUB push failed: \(error.localizedDescription)"
+                        }
+                    }
+                }
+
                 if popAfter {
                     try? await Task.sleep(for: .seconds(1.2))
                     await MainActor.run { withAnimation { router.pop() } }

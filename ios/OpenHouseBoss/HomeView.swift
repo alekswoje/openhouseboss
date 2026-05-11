@@ -625,6 +625,8 @@ struct ProfileTabContent: View {
     @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
     @State private var defaultScriptSheet = false
+    @State private var fubSheet = false
+    @State private var fubConnectedName: String? = nil
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -633,6 +635,7 @@ struct ProfileTabContent: View {
                 statsCard
                 defaultScriptRow
                 kioskRow
+                fubRow
                 versionLabel
                 Spacer().frame(height: 120)
             }
@@ -640,7 +643,31 @@ struct ProfileTabContent: View {
         }
         .background(FoyerTheme.bgDeep)
         .sheet(isPresented: $defaultScriptSheet) { defaultScriptPicker }
-        .task { await store.refreshScripts() }
+        .sheet(isPresented: $fubSheet) {
+            FUBConnectSheet(connectedName: $fubConnectedName)
+                .presentationDetents([.medium, .large])
+        }
+        .task {
+            await store.refreshScripts()
+            // Reflect Keychain state on the Profile row without forcing a
+            // network call until the agent taps in.
+            if FUBCredential.isConnected, fubConnectedName == nil {
+                fubConnectedName = "Connected"
+            }
+        }
+    }
+
+    private var fubRow: some View {
+        Button { fubSheet = true } label: {
+            settingsRow(
+                icon: "arrow.up.right.square",
+                label: "Follow Up Boss",
+                value: FUBCredential.isConnected ? (fubConnectedName ?? "Connected") : "Not connected"
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
     }
 
     private var header: some View {
@@ -1862,5 +1889,184 @@ struct ScriptEditView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: – Follow Up Boss connect sheet
+
+// Standalone sheet for pasting (or clearing) an FUB API key. Tests the key
+// against /identity before saving so the agent gets immediate feedback if
+// they pasted the wrong thing. The key never leaves the device except to
+// FUB itself — stored in Keychain via FUBCredential.
+struct FUBConnectSheet: View {
+    @Binding var connectedName: String?
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var apiKey: String = ""
+    @State private var testing = false
+    @State private var testError: String?
+    @State private var alreadyConnected: Bool = FUBCredential.isConnected
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FoyerTheme.bgDeep.ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        intro
+                        if alreadyConnected {
+                            connectedCard
+                        } else {
+                            keyField
+                            connectButton
+                        }
+                        if let err = testError {
+                            errorCard(err)
+                        }
+                        howToFind
+                        Spacer(minLength: 24)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                }
+            }
+            .navigationTitle("Follow Up Boss")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "CRM integration", color: FoyerTheme.gold)
+            Text("Push captured leads automatically")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("When you Send a follow-up draft, OpenHouseBoss creates the contact in FUB, attaches the session notes, and schedules a follow-up task.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(3)
+                .padding(.top, 4)
+        }
+        .padding(.top, 6)
+    }
+
+    private var keyField: some View {
+        GlassSurface(cornerRadius: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: "API key", color: FoyerTheme.gold)
+                SecureField(
+                    "",
+                    text: $apiKey,
+                    prompt: Text("Paste from FUB → Settings → API").foregroundStyle(FoyerTheme.textMuted.opacity(0.7))
+                )
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private var connectButton: some View {
+        Button(action: testAndSave) {
+            HStack(spacing: 8) {
+                if testing { ProgressView().tint(FoyerTheme.inkOnGold).scaleEffect(0.8) }
+                Text(testing ? "Connecting…" : "Test & connect")
+            }
+        }
+        .buttonStyle(FoyerPrimaryButton())
+        .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty || testing)
+        .opacity(apiKey.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+    }
+
+    private var connectedCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            GlassSurface(cornerRadius: 12, strong: true) {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(FoyerTheme.sage)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Connected")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text(connectedName ?? "Sending leads to your FUB account.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button(role: .destructive, action: disconnect) {
+                Text("Disconnect")
+            }
+            .buttonStyle(FoyerGhostButton())
+        }
+    }
+
+    private func errorCard(_ msg: String) -> some View {
+        GlassSurface(cornerRadius: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(FoyerTheme.terracotta)
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.cream)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var howToFind: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "Where do I find this?")
+            Text("In Follow Up Boss, click your profile → Settings → API. Create or copy a key with read + write access. The key stays in this device's Keychain — it never goes to our servers.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textDim)
+                .lineSpacing(3)
+        }
+        .padding(.top, 6)
+    }
+
+    private func testAndSave() {
+        let key = apiKey.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return }
+        testing = true
+        testError = nil
+        Task {
+            do {
+                let name = try await APIClient.shared.fubTestKey(key)
+                try FUBCredential.save(key)
+                await MainActor.run {
+                    testing = false
+                    alreadyConnected = true
+                    connectedName = name
+                    apiKey = ""
+                }
+            } catch {
+                await MainActor.run {
+                    testing = false
+                    testError = "That key didn't work: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func disconnect() {
+        FUBCredential.clear()
+        alreadyConnected = false
+        connectedName = nil
     }
 }
