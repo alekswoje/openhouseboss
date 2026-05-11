@@ -180,6 +180,33 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    // POST /leads — adds a manual lead with no audio. The backend creates
+    // a kind="manual" session so the lead flows into the inbox like any
+    // recorded visitor. Returns the new session so callers can route into
+    // it (e.g. to immediately open the follow-up draft for editing).
+    func createManualLead(
+        name: String,
+        email: String,
+        phone: String,
+        tag: String,
+        address: String?
+    ) async throws -> Session {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("leads"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "tag": tag,
+        ]
+        if let a = address, !a.isEmpty { body["address"] = a }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Session.self, from: data)
+    }
+
     // GET /sessions — compact list for the home screen.
     func listSessions() async throws -> [SessionSummary] {
         let url = Config.backendURL.appendingPathComponent("sessions")

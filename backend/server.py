@@ -289,6 +289,87 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
 
 
 _VALID_LEAD_STATUSES = {"drafted", "sent", "replied", "archived"}
+_VALID_LEAD_TAGS = {"Buyer", "Seller", "Browser"}
+
+
+@app.post("/leads")
+def create_manual_lead(payload: dict):
+    """Create a stand-alone lead with no recording — typed in by the agent
+    on the spot. Stored as a one-visitor session with kind="manual" so all
+    downstream code (inbox, FUB push, follow-up flow) works without a
+    parallel data path. The Sessions tab filters these out so they don't
+    clutter the open-house history.
+    """
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    email = (payload.get("email") or "").strip()
+    phone = (payload.get("phone") or "").strip()
+    tag = (payload.get("tag") or "Browser").strip().capitalize()
+    if tag not in _VALID_LEAD_TAGS:
+        tag = "Browser"
+    address = (payload.get("address") or "").strip() or None
+
+    session_id = str(uuid.uuid4())
+    session_dir = SESSIONS_DIR / session_id
+    session_dir.mkdir()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    first_name = name.split()[0] if name else "there"
+    at_clause = f" at {address}" if address else ""
+    template_draft = (
+        f"Hi {first_name},\n\n"
+        f"Great meeting you{at_clause} — thanks for stopping by. "
+        f"I'd love to stay in touch about your home search. "
+        f"Let me know if you'd like to see anything else or have "
+        f"questions about the area.\n\n"
+        f"Talk soon,"
+    )
+
+    session = {
+        "id": session_id,
+        "status": "ready",
+        "kind": "manual",
+        "address": address,
+        "script_id": None,
+        "created_at": now_iso,
+        "completed_at": now_iso,
+        "result": {
+            "agent_speaker": "",
+            "unmatched_speakers": [],
+            "visitors": [{
+                "visitor": {
+                    "name": name,
+                    "email": email,
+                    "phone": phone,
+                    "speaker": None,
+                },
+                "analysis": {
+                    "summary": "Manually added lead — no recording.",
+                    "tag": tag,
+                    "tag_reason": "Tag set by agent at capture.",
+                    "score": 50,
+                    "signals": [],
+                    "follow_up_draft": template_draft,
+                    "words_spoken": 0,
+                },
+                "lead_state": {
+                    "status": "drafted",
+                    "sent_at": None,
+                    "snoozed_until": None,
+                    "updated_at": now_iso,
+                },
+            }],
+            "full_transcript": "",
+            "utterances": [],
+            "script_coverage": None,
+        },
+        "error": None,
+    }
+    with _sessions_lock:
+        _sessions[session_id] = session
+        _persist(session_id)
+    return session
 
 
 @app.post("/sessions/{session_id}/visitors/state")
@@ -397,6 +478,11 @@ def _summarize(s: dict) -> dict:
         "created_at": s["created_at"],
         "completed_at": s.get("completed_at"),
         "visitor_count": len(visitors),
+        # "recorded" (default) for sessions from an audio capture, "manual"
+        # for entries the agent typed in. The Sessions tab filters out
+        # "manual" so the open-house history stays clean; the Leads inbox
+        # shows everything.
+        "kind": s.get("kind") or "recorded",
     }
 
 

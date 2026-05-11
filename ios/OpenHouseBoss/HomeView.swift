@@ -238,8 +238,8 @@ struct SessionsTabContent: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Eyebrow(text: "This month")
                     HStack(spacing: 22) {
-                        statBlock(value: "\(store.pastSessions.count)", label: "Open houses")
-                        statBlock(value: "\(totalGuests)", label: "Guests met")
+                        statBlock(value: "\(openHousesCount)", label: "Open houses")
+                        statBlock(value: "\(totalGuests)", label: "Leads")
                     }
                 }
                 Spacer(minLength: 0)
@@ -254,6 +254,11 @@ struct SessionsTabContent: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 14)
+    }
+
+    // Recorded sessions only — manual leads aren't open houses.
+    private var openHousesCount: Int {
+        store.pastSessions.filter { $0.kind != "manual" }.count
     }
 
     private func statBlock(value: String, label: String) -> some View {
@@ -416,7 +421,7 @@ struct SessionsTabContent: View {
     private func bucketSessions() -> Buckets {
         let cal = Calendar.current
         var b = Buckets()
-        for s in store.pastSessions {
+        for s in store.pastSessions where s.kind != "manual" {
             guard let d = s.createdDate else { b.older.append(s); continue }
             if cal.isDateInToday(d) { b.today.append(s) }
             else if let weekAgo = cal.date(byAdding: .day, value: -7, to: Date()), d > weekAgo {
@@ -445,58 +450,88 @@ struct SessionsTabContent: View {
 
 struct VisitorsTabContent: View {
     @Environment(AppRouter.self) private var router
+    @State private var addLeadSheet = false
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                Button { router.push(.visitorsAll) } label: {
-                    GlassSurface(cornerRadius: 12, strong: true) {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(FoyerTheme.goldSoft)
-                                Image(systemName: "person.2.fill")
-                                    .font(.system(size: 16))
-                                    .foregroundStyle(FoyerTheme.gold)
-                            }
-                            .frame(width: 40, height: 40)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("All visitors")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundStyle(FoyerTheme.cream)
-                                Text("ACROSS EVERY OPEN HOUSE")
-                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                    .tracking(1.4)
-                                    .foregroundStyle(FoyerTheme.textMuted)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(FoyerTheme.textMuted)
-                        }
-                        .padding(16)
-                    }
+        ZStack(alignment: .topTrailing) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    allLeadsCard
+                    Spacer().frame(height: 120)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 20)
-                Spacer().frame(height: 120)
+                .padding(.top, 8)
             }
-            .padding(.top, 8)
+            .background(FoyerTheme.bgDeep)
+            addButton
         }
-        .background(FoyerTheme.bgDeep)
+        .sheet(isPresented: $addLeadSheet) { AddLeadSheet() }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Eyebrow(text: "Database", color: FoyerTheme.gold)
-            Text("Visitors")
+            Text("Leads")
                 .foyerDisplay(38)
                 .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 20)
         .padding(.top, 56)
         .padding(.bottom, 18)
+    }
+
+    // Top-right "NEW" action — mirrors the Sessions tab. Opens the
+    // manual-entry sheet for adding a lead the agent didn't record.
+    private var addButton: some View {
+        Button { addLeadSheet = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("NEW")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .foregroundStyle(FoyerTheme.inkOnGold)
+            .background(FoyerTheme.gold, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 20)
+        .padding(.top, 60)
+    }
+
+    private var allLeadsCard: some View {
+        Button { router.push(.visitorsAll) } label: {
+            GlassSurface(cornerRadius: 12, strong: true) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(FoyerTheme.goldSoft)
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    .frame(width: 40, height: 40)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("All leads")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text("RECORDED + MANUALLY ADDED")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .padding(16)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
     }
 }
 
@@ -1284,7 +1319,7 @@ struct AllVisitorsView: View {
             FoyerTheme.bgDeep.ignoresSafeArea()
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    BackBar(crumbs: ["Visitors"], onBack: { dismiss() }) {
+                    BackBar(crumbs: ["Leads"], onBack: { dismiss() }) {
                         StatusPill(text: "\(filteredRows.count)", tone: .gold)
                     }
                     header
@@ -1318,10 +1353,10 @@ struct AllVisitorsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("All visitors")
+            Text("All leads")
                 .foyerDisplay(32)
                 .foregroundStyle(FoyerTheme.cream)
-            Text("\(rows.count) total · \(SessionStore.shared.pastSessions.count) open houses".uppercased())
+            Text("\(rows.count) total · \(openHouseCount) open houses".uppercased())
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(FoyerTheme.textMuted)
@@ -1329,6 +1364,12 @@ struct AllVisitorsView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 14)
+    }
+
+    // Recorded sessions only — manual leads aren't open houses, so they
+    // shouldn't inflate that count in the inbox header.
+    private var openHouseCount: Int {
+        SessionStore.shared.pastSessions.filter { $0.kind != "manual" }.count
     }
 
     private var searchField: some View {
@@ -2068,5 +2109,203 @@ struct FUBConnectSheet: View {
         FUBCredential.clear()
         alreadyConnected = false
         connectedName = nil
+    }
+}
+
+// MARK: – Add Lead sheet (manual entry)
+
+// Sheet form for capturing a lead the agent didn't record — someone they
+// chatted with at the door, met after the open house ended, got a referral
+// for, etc. Creates a kind="manual" session on the backend with a single
+// visitor and a templated follow-up draft the agent can edit before sending.
+struct AddLeadSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var store = SessionStore.shared
+
+    @State private var name: String = ""
+    @State private var email: String = ""
+    @State private var phone: String = ""
+    @State private var tag: String = "Buyer"
+    @State private var address: String = ""
+    @State private var saving = false
+    @State private var saveError: String?
+    @FocusState private var focused: Bool
+
+    private let tagOptions = ["Buyer", "Seller", "Browser"]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FoyerTheme.bgDeep.ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        intro
+                        field("Name", text: $name, placeholder: "Jane Marchetti", contentType: .name)
+                            .focused($focused)
+                        field("Email", text: $email, placeholder: "jane@example.com", contentType: .emailAddress, keyboard: .emailAddress)
+                        field("Phone", text: $phone, placeholder: "555-0123", contentType: .telephoneNumber, keyboard: .phonePad)
+                        tagPicker
+                        listingPicker
+                        if let err = saveError { errorCard(err) }
+                        Spacer(minLength: 24)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                }
+            }
+            .navigationTitle("Add lead")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) { Text(saving ? "Saving…" : "Save") }
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || saving)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear { focused = true }
+    }
+
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "Manual entry", color: FoyerTheme.gold)
+            Text("Someone you talked to but didn't record")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("They'll land in your Needs action queue with a starter follow-up draft you can edit before sending.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(3)
+                .padding(.top, 2)
+        }
+        .padding(.top, 6)
+    }
+
+    private func field(_ label: String, text: Binding<String>, placeholder: String, contentType: UITextContentType, keyboard: UIKeyboardType = .default) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Eyebrow(text: label, color: FoyerTheme.gold)
+                TextField("",
+                          text: text,
+                          prompt: Text(placeholder).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .textContentType(contentType)
+                    .keyboardType(keyboard)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(keyboard == .emailAddress ? .never : .words)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private var tagPicker: some View {
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow(text: "Tag", color: FoyerTheme.gold)
+                HStack(spacing: 6) {
+                    ForEach(tagOptions, id: \.self) { opt in
+                        Button { tag = opt } label: {
+                            Text(opt)
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .foregroundStyle(tag == opt ? FoyerTheme.inkOnGold : FoyerTheme.cream)
+                                .background(tag == opt ? FoyerTheme.gold : FoyerTheme.bgElev, in: Capsule())
+                                .overlay(Capsule().stroke(tag == opt ? Color.clear : FoyerTheme.border, lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    @ViewBuilder
+    private var listingPicker: some View {
+        let suggestions = store.listings.prefix(4).map { $0.address }
+        GlassSurface(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow(text: "Address (optional)", color: FoyerTheme.gold)
+                TextField("",
+                          text: $address,
+                          prompt: Text("1936 17th Ave NE").foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .autocorrectionDisabled()
+                if !suggestions.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(suggestions, id: \.self) { addr in
+                            Button { address = addr } label: {
+                                Text(addr)
+                                    .font(.system(size: 11))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .foregroundStyle(FoyerTheme.gold)
+                                    .background(FoyerTheme.goldSoft, in: Capsule())
+                                    .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func errorCard(_ msg: String) -> some View {
+        GlassSurface(cornerRadius: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(FoyerTheme.terracotta)
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.cream)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func save() {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmedName.isEmpty else { return }
+        saving = true
+        saveError = nil
+        Task {
+            do {
+                _ = try await APIClient.shared.createManualLead(
+                    name: trimmedName,
+                    email: email.trimmingCharacters(in: .whitespaces),
+                    phone: phone.trimmingCharacters(in: .whitespaces),
+                    tag: tag,
+                    address: address.trimmingCharacters(in: .whitespaces).isEmpty ? nil : address.trimmingCharacters(in: .whitespaces)
+                )
+                await store.refreshSessions()
+                await MainActor.run {
+                    saving = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    saving = false
+                    saveError = error.localizedDescription
+                }
+            }
+        }
     }
 }

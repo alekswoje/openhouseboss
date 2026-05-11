@@ -34,7 +34,7 @@ enum HomeTab: Hashable, CaseIterable {
     var label: String {
         switch self {
         case .sessions: return "Sessions"
-        case .visitors: return "Visitors"
+        case .visitors: return "Leads"
         case .scripts:  return "Scripts"
         case .profile:  return "Profile"
         }

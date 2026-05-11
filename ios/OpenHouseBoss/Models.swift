@@ -32,12 +32,28 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     let createdAt: String
     let completedAt: String?
     let visitorCount: Int
+    // "recorded" (default) for audio-captured sessions, "manual" for leads
+    // the agent typed in. Sessions tab hides "manual"; Leads inbox shows
+    // everything. Decoded with a default so old session payloads (cached
+    // on disk before this field existed) still parse cleanly.
+    var kind: String = "recorded"
 
     enum CodingKeys: String, CodingKey {
-        case id, status, address
+        case id, status, address, kind
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case visitorCount = "visitor_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        status = try c.decode(String.self, forKey: .status)
+        address = try c.decodeIfPresent(String.self, forKey: .address)
+        createdAt = try c.decode(String.self, forKey: .createdAt)
+        completedAt = try c.decodeIfPresent(String.self, forKey: .completedAt)
+        visitorCount = try c.decode(Int.self, forKey: .visitorCount)
+        kind = (try c.decodeIfPresent(String.self, forKey: .kind)) ?? "recorded"
     }
 }
 
