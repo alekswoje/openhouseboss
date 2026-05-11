@@ -35,15 +35,18 @@ final class SessionStore {
         session = nil
         let address = pendingAddress
         pendingAddress = nil
+        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>")")
         pollTask = Task { [weak self] in
             do {
                 let initial = try await APIClient.shared.createSession(
                     audioURL: audioURL, address: address)
+                Log.net("createSession ← id=\(initial.id) status=\(initial.status)")
                 await MainActor.run {
                     self?.session = initial
                     self?.phase = .processing
                 }
                 let final = try await APIClient.shared.pollUntilDone(id: initial.id)
+                Log.net("pollUntilDone ← \(final.status), visitors=\(final.result?.visitors.count ?? 0)")
                 await MainActor.run {
                     self?.session = final
                     if final.status == "error" {
@@ -54,6 +57,7 @@ final class SessionStore {
                 }
                 await self?.refreshSessions()
             } catch {
+                Log.warn("uploadAndProcess failed: \(error.localizedDescription)")
                 await MainActor.run {
                     self?.phase = .failed(error.localizedDescription)
                 }
@@ -99,6 +103,8 @@ final class SessionStore {
 
     // Refresh the home-screen list from GET /sessions.
     func refreshSessions() async {
+        let start = Date()
+        Log.net("refreshSessions → GET /sessions")
         await MainActor.run {
             self.listLoading = true
             self.listError = nil
@@ -109,11 +115,13 @@ final class SessionStore {
                 self.pastSessions = items
                 self.listLoading = false
             }
+            Log.net("refreshSessions ← \(items.count) items in \(Int(Date().timeIntervalSince(start) * 1000))ms")
         } catch {
             await MainActor.run {
                 self.listError = error.localizedDescription
                 self.listLoading = false
             }
+            Log.warn("refreshSessions failed: \(error.localizedDescription)")
         }
     }
 

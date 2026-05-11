@@ -122,7 +122,7 @@ struct FollowupView: View {
                 .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.borderStrong, lineWidth: 1))
         .transition(.move(edge: .top).combined(with: .opacity))
     }

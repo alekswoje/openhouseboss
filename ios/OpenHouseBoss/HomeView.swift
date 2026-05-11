@@ -24,8 +24,11 @@ struct SessionsView: View {
             glassTabBar
         }
         .toolbar(.hidden, for: .navigationBar)
-        .task { await store.refreshSessions() }
-        .refreshable { await store.refreshSessions() }
+        .onAppear { Log.ui("SessionsView appeared") }
+        .task {
+            Log.ui("SessionsView.task fired refreshSessions")
+            await store.refreshSessions()
+        }
         .navigationDestination(isPresented: $goToSetup) { SetupView() }
         .navigationDestination(isPresented: $goToPast) {
             if let id = openedPastId {
@@ -208,6 +211,9 @@ struct SessionsView: View {
         store.pastSessions.filter { $0.status == "ready" }.count
     }
 
+    // Solid background — `.ultraThinMaterial` continuously re-blurs the
+    // content underneath on every scroll frame, which was the main cause of
+    // home-screen scroll lag on real devices.
     private var glassTabBar: some View {
         HStack {
             ForEach(["Sessions", "Visitors", "Insights", "Profile"], id: \.self) { tab in
@@ -219,8 +225,8 @@ struct SessionsView: View {
             }
         }
         .padding(.vertical, 18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28))
-        .overlay(RoundedRectangle(cornerRadius: 28).stroke(FoyerTheme.hairline, lineWidth: 1))
+        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 28))
+        .overlay(RoundedRectangle(cornerRadius: 28).stroke(FoyerTheme.borderStrong, lineWidth: 1))
         .padding(.horizontal, 16)
         .padding(.bottom, 26)
     }
