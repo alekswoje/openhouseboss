@@ -1,10 +1,12 @@
 import SwiftUI
 
-// Sessions home — the agent's first screen when they open the iPhone app.
-// Top stats, today's live session, this week's history. Mirrors ScreenSessions
-// in web/hero-devices design.
+// Sessions home — real list pulled from the backend. Empty state when none
+// exist; tap a row to reopen it in SummaryView; "+" starts a new one.
 struct SessionsView: View {
-    @State private var goToRecorder = false
+    @State private var store = SessionStore.shared
+    @State private var goToSetup = false
+    @State private var goToPast = false
+    @State private var openedPastId: String?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -14,8 +16,7 @@ struct SessionsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header
                     statsRow
-                    todaySection
-                    weekSection
+                    sessionsContent
                     Spacer().frame(height: 120)
                 }
             }
@@ -23,7 +24,14 @@ struct SessionsView: View {
             glassTabBar
         }
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(isPresented: $goToRecorder) { SetupView() }
+        .task { await store.refreshSessions() }
+        .refreshable { await store.refreshSessions() }
+        .navigationDestination(isPresented: $goToSetup) { SetupView() }
+        .navigationDestination(isPresented: $goToPast) {
+            if let id = openedPastId {
+                SummaryView(pastSessionId: id)
+            }
+        }
     }
 
     private var header: some View {
@@ -35,7 +43,10 @@ struct SessionsView: View {
                     .foregroundStyle(FoyerTheme.cream)
             }
             Spacer()
-            Button { goToRecorder = true } label: {
+            Button {
+                store.reset()
+                goToSetup = true
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.black)
@@ -50,9 +61,9 @@ struct SessionsView: View {
 
     private var statsRow: some View {
         HStack(alignment: .top, spacing: 22) {
-            stat(value: "14", label: "Open houses")
-            stat(value: "47", label: "Guests met")
-            stat(value: "$2.4", suffix: "m", label: "In pipeline", suffixGold: true)
+            stat(value: "\(store.pastSessions.count)", label: "Open houses")
+            stat(value: "\(totalGuests)", label: "Guests met")
+            stat(value: "\(readyCount)", label: "Drafts ready")
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
@@ -60,89 +71,141 @@ struct SessionsView: View {
         .overlay(alignment: .bottom) { Hairline() }
     }
 
-    private func stat(value: String, suffix: String? = nil, label: String, suffixGold: Bool = false) -> some View {
+    private func stat(value: String, label: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(value).foyerDisplay(28).foregroundStyle(FoyerTheme.cream)
-                if let s = suffix {
-                    Text(s)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(suffixGold ? FoyerTheme.gold : FoyerTheme.cream)
-                }
-            }
+            Text(value).foyerDisplay(28).foregroundStyle(FoyerTheme.cream)
             Eyebrow(text: label, color: FoyerTheme.gold)
         }
     }
 
-    private var todaySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(text: "Today")
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 4) {
-                            Text("412 W 78th St ").foyerDisplay(19)
-                                .foregroundStyle(FoyerTheme.cream)
-                            Text("Apt 4-A")
-                                .font(.system(size: 19, weight: .medium))
-                                .foregroundStyle(FoyerTheme.gold)
-                        }
-                        Text("SAT 2:00 — 4:00 PM · LIVE NOW")
-                            .font(.system(size: 10, design: .monospaced))
-                            .tracking(1.4)
-                            .foregroundStyle(FoyerTheme.textMuted)
-                    }
-                    Spacer()
-                    HStack(spacing: 6) {
-                        Circle().fill(FoyerTheme.terracotta)
-                            .frame(width: 8, height: 8)
-                            .shadow(color: FoyerTheme.terracotta, radius: 4)
-                        Text("REC")
-                            .font(.system(size: 10, design: .monospaced)).tracking(1.4)
-                            .foregroundStyle(FoyerTheme.terracotta)
-                    }
-                }
-                Text("3 guests · 47 minutes in")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textDim)
-            }
-            .padding(.vertical, 16)
-            .overlay(alignment: .bottom) { Hairline() }
+    @ViewBuilder
+    private var sessionsContent: some View {
+        if let err = store.listError {
+            errorState(err)
+        } else if store.pastSessions.isEmpty && !store.listLoading {
+            emptyState
+        } else {
+            sessionList
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
     }
 
-    private var weekSection: some View {
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow(text: "No sessions yet")
+            Text("Tap + to start your first open house. We'll record, transcribe, identify each guest, and draft a follow-up.")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+                .lineSpacing(3)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 40)
+    }
+
+    private func errorState(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow(text: "Can't reach the backend", color: FoyerTheme.terracotta)
+            Text(message)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("Make sure the server is running at \(Config.backendURL.absoluteString).")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(FoyerTheme.textMuted)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FoyerTheme.terracottaSoft, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(FoyerTheme.terracotta, lineWidth: 1))
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+    }
+
+    private var sessionList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(text: "This week")
-            ForEach(Array(weekSessions.enumerated()), id: \.element.id) { idx, s in
-                HStack(alignment: .center, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(s.address).font(.system(size: 15))
-                            .foregroundStyle(FoyerTheme.cream)
-                        Text("\(s.date) · \(s.guests) GUESTS")
-                            .font(.system(size: 10, design: .monospaced)).tracking(1.4)
-                            .foregroundStyle(FoyerTheme.textMuted)
-                    }
-                    Spacer()
-                    HStack(spacing: 10) {
-                        Text("\(s.hot)")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(FoyerTheme.gold)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(FoyerTheme.textMuted)
-                    }
+            Eyebrow(text: "Recent")
+            ForEach(Array(store.pastSessions.enumerated()), id: \.element.id) { idx, s in
+                Button {
+                    openedPastId = s.id
+                    goToPast = true
+                } label: {
+                    sessionRow(s)
                 }
-                .padding(.vertical, 14)
+                .buttonStyle(.plain)
                 .overlay(alignment: .bottom) {
-                    if idx < weekSessions.count - 1 { Hairline() }
+                    if idx < store.pastSessions.count - 1 { Hairline() }
                 }
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 18)
+    }
+
+    private func sessionRow(_ s: SessionSummary) -> some View {
+        HStack(alignment: .center, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(s.displayTitle)
+                    .font(.system(size: 16))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(formatDate(s.createdDate))
+                        .font(.system(size: 10, design: .monospaced)).tracking(1.4)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    statusChip(s.status)
+                }
+            }
+            Spacer()
+            HStack(spacing: 10) {
+                if s.visitorCount > 0 {
+                    Text("\(s.visitorCount)")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                    Text("GUESTS")
+                        .font(.system(size: 9, design: .monospaced)).tracking(1.4)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+        }
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private func statusChip(_ status: String) -> some View {
+        switch status {
+        case "ready":
+            Text("READY")
+                .font(.system(size: 9, design: .monospaced)).tracking(1.4)
+                .foregroundStyle(FoyerTheme.sage)
+        case "processing":
+            HStack(spacing: 4) {
+                Circle().fill(FoyerTheme.gold).frame(width: 5, height: 5)
+                Text("PROCESSING")
+                    .font(.system(size: 9, design: .monospaced)).tracking(1.4)
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+        case "error":
+            Text("ERROR")
+                .font(.system(size: 9, design: .monospaced)).tracking(1.4)
+                .foregroundStyle(FoyerTheme.terracotta)
+        default:
+            EmptyView()
+        }
+    }
+
+    private func formatDate(_ d: Date?) -> String {
+        guard let d else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "EEE MMM d · h:mm a"
+        return f.string(from: d).uppercased()
+    }
+
+    private var totalGuests: Int {
+        store.pastSessions.reduce(0) { $0 + $1.visitorCount }
+    }
+    private var readyCount: Int {
+        store.pastSessions.filter { $0.status == "ready" }.count
     }
 
     private var glassTabBar: some View {
@@ -160,22 +223,6 @@ struct SessionsView: View {
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(FoyerTheme.hairline, lineWidth: 1))
         .padding(.horizontal, 16)
         .padding(.bottom, 26)
-    }
-
-    private struct WeekRow: Identifiable {
-        let id = UUID()
-        let address: String
-        let date: String
-        let guests: Int
-        let hot: Int
-    }
-
-    private var weekSessions: [WeekRow] {
-        [
-            .init(address: "88 Greene · Loft 6",   date: "SUN MAY 4",  guests: 5, hot: 2),
-            .init(address: "21 Charles · GDN",     date: "SAT MAY 3",  guests: 4, hot: 1),
-            .init(address: "300 E 79 · 12-D",      date: "SUN APR 27", guests: 7, hot: 3),
-        ]
     }
 }
 

@@ -9,11 +9,36 @@ struct VisitorInput: Identifiable, Equatable {
 
 struct Session: Codable, Hashable, Identifiable {
     let id: String
-    var status: String       // "processing" | "ready" | "error"
+    var status: String          // "processing" | "ready" | "error"
+    var address: String?
+    var createdAt: String?
+    var completedAt: String?
     var error: String?
     var result: SessionResult?
 
-    enum CodingKeys: String, CodingKey { case id, status, error, result }
+    enum CodingKeys: String, CodingKey {
+        case id, status, address, error, result
+        case createdAt = "created_at"
+        case completedAt = "completed_at"
+    }
+}
+
+// Compact row returned by GET /sessions. No transcript, no analysis — those
+// are fetched lazily when the user opens a session.
+struct SessionSummary: Codable, Hashable, Identifiable {
+    let id: String
+    let status: String
+    let address: String?
+    let createdAt: String
+    let completedAt: String?
+    let visitorCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, address
+        case createdAt = "created_at"
+        case completedAt = "completed_at"
+        case visitorCount = "visitor_count"
+    }
 }
 
 struct SessionResult: Codable, Hashable {
@@ -74,4 +99,24 @@ extension VisitorResult {
             .prefix(2)
             .joined()
     }
+}
+
+extension SessionSummary {
+    // Best-effort date for sorting/display. Ignored if backend returns
+    // something unexpected.
+    var createdDate: Date? {
+        ISO8601DateFormatter.fractionalSeconds.date(from: createdAt)
+    }
+    var displayTitle: String {
+        if let a = address, !a.isEmpty { return a }
+        return "Session " + String(id.prefix(8))
+    }
+}
+
+private extension ISO8601DateFormatter {
+    static let fractionalSeconds: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 }

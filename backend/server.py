@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -96,6 +96,7 @@ async def create_session(
     audio: Optional[UploadFile] = File(None),
     visitors: Optional[UploadFile] = File(None),
     mock_transcript: Optional[UploadFile] = File(None),
+    address: Optional[str] = Form(None),
 ):
     if not audio and not mock_transcript:
         raise HTTPException(400, "Provide audio or mock_transcript")
@@ -125,6 +126,7 @@ async def create_session(
     session = {
         "id": session_id,
         "status": "processing",
+        "address": (address or "").strip() or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": None,
         "result": None,
@@ -159,13 +161,44 @@ def get_session(session_id: str):
     raise HTTPException(404, f"Session {session_id} not found")
 
 
+def _summarize(s: dict) -> dict:
+    result = s.get("result") or {}
+    visitors = result.get("visitors") or []
+    return {
+        "id": s["id"],
+        "status": s["status"],
+        "address": s.get("address"),
+        "created_at": s["created_at"],
+        "completed_at": s.get("completed_at"),
+        "visitor_count": len(visitors),
+    }
+
+
+def _hydrate_sessions_from_disk() -> None:
+    # Sessions are in-memory by default; on cold start, scan the sessions/
+    # directory so list_sessions returns previously-completed runs too.
+    for entry in SESSIONS_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        path = entry / "session.json"
+        if not path.exists():
+            continue
+        with _sessions_lock:
+            if entry.name in _sessions:
+                continue
+            try:
+                _sessions[entry.name] = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+
 @app.get("/sessions")
 def list_sessions():
+    _hydrate_sessions_from_disk()
     with _sessions_lock:
-        return {"sessions": [
-            {"id": s["id"], "status": s["status"], "created_at": s["created_at"]}
-            for s in _sessions.values()
-        ]}
+        items = [_summarize(s) for s in _sessions.values()]
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"sessions": items}
 
 
 WEB_DIR = Path(__file__).parent.parent / "web"

@@ -4,6 +4,10 @@ import SwiftUI
 // uploading/processing placeholder while the backend works, then swaps to
 // real visitor cards backed by the analysis result.
 struct SummaryView: View {
+    // Pass an id to load a past session; omit to render whatever the store is
+    // currently doing (live upload + processing flow).
+    var pastSessionId: String? = nil
+
     @State private var store = SessionStore.shared
     @State private var openVisitor: VisitorResult?
     @Environment(\.dismiss) private var dismiss
@@ -24,6 +28,11 @@ struct SummaryView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $openVisitor) { v in VisitorDetailView(visitor: v) }
+        .task {
+            if let id = pastSessionId {
+                store.openPastSession(id: id)
+            }
+        }
     }
 
     private var header: some View {

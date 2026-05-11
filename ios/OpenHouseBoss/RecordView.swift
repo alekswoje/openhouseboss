@@ -1,9 +1,12 @@
 import SwiftUI
 
-// Pre-session setup — confirm listing, attach offer, choose source, begin recording.
-// Mirrors ScreenSetup in the design.
+// Pre-session setup — type the property address, then start recording.
+// The address is stashed in SessionStore so the upload call carries it.
 struct SetupView: View {
+    @State private var address: String = ""
     @State private var goLive = false
+    @FocusState private var focused: Bool
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -11,10 +14,10 @@ struct SetupView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
+                    backRow
                     header
-                    propertyCard
-                    offerCard
-                    sourcesSection
+                    addressField
+                    helper
                     Spacer().frame(height: 160)
                 }
             }
@@ -23,170 +26,101 @@ struct SetupView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $goLive) { LiveView() }
+        .onAppear { focused = true }
+    }
+
+    private var backRow: some View {
+        HStack {
+            Button { dismiss() } label: {
+                Text("← Sessions")
+                    .font(.system(size: 11, design: .monospaced)).tracking(1.4)
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(text: "New session · auto-pulled from MLS")
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("Today's ").foyerDisplay(34).foregroundStyle(FoyerTheme.cream)
-                Text("open house")
-                    .font(.system(size: 34, weight: .medium))
-                    .foregroundStyle(FoyerTheme.gold)
-            }
+            Eyebrow(text: "New session")
+            Text("Where are you hosting?")
+                .foyerDisplay(30)
+                .foregroundStyle(FoyerTheme.cream)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 14)
+        .padding(.top, 18)
+        .padding(.bottom, 28)
     }
 
-    private var propertyCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Eyebrow(text: "Property")
-                Spacer()
-                HStack(spacing: 6) {
-                    Circle().fill(FoyerTheme.sage).frame(width: 5, height: 5)
-                    Text("MLS · 4072281")
-                        .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                        .foregroundStyle(FoyerTheme.sage)
-                }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("412 W 78th St").foyerDisplay(22).foregroundStyle(FoyerTheme.cream)
-            }
-            Text("Apartment 4-A")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(FoyerTheme.gold)
-
-            FlowLayout(spacing: 6) {
-                ForEach(["3 BR", "2.5 BA", "1,840 sf", "$1.295M", "Reno 2024", "Doorman"], id: \.self) {
-                    chip($0)
-                }
-            }
-            .padding(.top, 4)
-
-            Hairline().padding(.top, 8)
-            HStack {
-                Text("SAT MAY 10 · 2 — 4 PM")
-                    .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                    .foregroundStyle(FoyerTheme.textMuted)
-                Spacer()
-                Text("Change →")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(FoyerTheme.gold)
-            }
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.hairline, lineWidth: 1)
-        )
-        .padding(.horizontal, 20)
-    }
-
-    private var offerCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Eyebrow(text: "Active offer · attached to session")
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("$2,500 ").foyerDisplay(16).foregroundStyle(FoyerTheme.cream)
-                        Text("buyer rebate")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    Text("AUTO-INCLUDED IN EVERY FOLLOW-UP")
-                        .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                        .foregroundStyle(FoyerTheme.textMuted)
-                }
-                Spacer()
-                Text("EDIT →")
-                    .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                    .foregroundStyle(FoyerTheme.gold)
-            }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(FoyerTheme.goldSoft)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.borderStrong, lineWidth: 1)
-                    )
-            )
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 14)
-    }
-
-    private var sourcesSection: some View {
+    private var addressField: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(text: "Sources")
-            sourceRow(letter: "C", title: "Compass iPad sign-in", sub: "CONNECTED", live: true)
-            sourceRow(letter: nil, title: "iPhone microphone", sub: "ON-DEVICE · ENCRYPTED", live: false)
+            Eyebrow(text: "Address")
+            TextField("", text: $address,
+                      prompt: Text("412 W 78th St · Apt 4-A").foregroundStyle(FoyerTheme.textMuted))
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .focused($focused)
+                .padding(.bottom, 10)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(FoyerTheme.borderStrong).frame(height: 1)
+                }
+            Text("Optional — used to label this session in your history.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textDim)
+                .padding(.top, 4)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 20)
     }
 
-    private func sourceRow(letter: String?, title: String, sub: String, live: Bool) -> some View {
-        HStack(spacing: 12) {
-            Group {
-                if let letter {
-                    Text(letter)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(FoyerTheme.gold)
-                        .frame(width: 28, height: 28)
-                        .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 6))
-                } else {
-                    Image(systemName: "mic")
-                        .font(.system(size: 14))
-                        .foregroundStyle(FoyerTheme.creamDim)
-                        .frame(width: 28, height: 28)
-                        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
-                }
+    private var helper: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow(text: "How it works")
+            VStack(alignment: .leading, spacing: 8) {
+                helperRow("01", "Begin recording — keep your phone in pocket.")
+                helperRow("02", "Talk naturally with each guest who walks in.")
+                helperRow("03", "End session — we transcribe, identify each speaker, and draft a personalized follow-up.")
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13)).foregroundStyle(FoyerTheme.cream)
-                Text(sub).font(.system(size: 9, design: .monospaced)).tracking(1.0)
-                    .foregroundStyle(FoyerTheme.textMuted)
-            }
-            Spacer()
-            if live { Circle().fill(FoyerTheme.sage).frame(width: 6, height: 6) }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.hairline, lineWidth: 0.5))
+        .padding(.horizontal, 20)
+        .padding(.top, 32)
+    }
+
+    private func helperRow(_ num: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(num)
+                .font(.system(size: 11, design: .monospaced)).tracking(1.4)
+                .foregroundStyle(FoyerTheme.gold)
+                .frame(width: 22, alignment: .leading)
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.cream)
+                .lineSpacing(2)
+        }
     }
 
     private var beginButton: some View {
-        VStack(spacing: 10) {
-            Button { goLive = true } label: {
-                HStack(spacing: 10) {
-                    Circle().fill(Color.black)
-                        .frame(width: 10, height: 10)
-                    Text("Begin recording")
-                }
+        Button {
+            let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+            SessionStore.shared.pendingAddress = trimmed.isEmpty ? nil : trimmed
+            goLive = true
+        } label: {
+            HStack(spacing: 10) {
+                Circle().fill(Color.black).frame(width: 10, height: 10)
+                Text("Begin recording")
             }
-            .buttonStyle(FoyerPrimaryButton())
-
-            Text("SAT MAY 10 · 2:00 PM")
-                .font(.system(size: 9, design: .monospaced)).tracking(1.4)
-                .foregroundStyle(FoyerTheme.textMuted)
         }
+        .buttonStyle(FoyerPrimaryButton())
         .padding(.horizontal, 20)
         .padding(.bottom, 36)
-    }
-
-    private func chip(_ t: String) -> some View {
-        Text(t)
-            .font(.system(size: 10, design: .monospaced)).tracking(0.8)
-            .foregroundStyle(FoyerTheme.creamDim)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.borderStrong, lineWidth: 0.5))
     }
 }
 
 // Flow layout — wraps children left-to-right onto multiple lines. Used for
-// stat / tag chip rows where the count varies.
+// signal-chip rows where the count varies.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
 
