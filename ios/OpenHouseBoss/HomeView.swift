@@ -1241,6 +1241,7 @@ struct AllVisitorsView: View {
     @State private var error: String?
     @State private var query: String = ""
     @State private var tagFilter: String = "all"
+    @State private var stateFilter: String = "needs"   // needs | snoozed | done | all
 
     struct VisitorRow: Identifiable {
         let id: String
@@ -1248,6 +1249,7 @@ struct AllVisitorsView: View {
         let sessionId: String
         let sessionAddress: String?
         let sessionDate: String
+        let sessionCreatedAt: Date?
     }
 
     var body: some View {
@@ -1260,6 +1262,7 @@ struct AllVisitorsView: View {
                     }
                     header
                     searchField
+                    stateChips
                     filterChips
                     list
                     Spacer().frame(height: 60)
@@ -1270,6 +1273,20 @@ struct AllVisitorsView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task { await load() }
         .refreshable { await load() }
+        // Re-pull on appear so state changes made on the detail screen are
+        // reflected immediately when the agent comes back to the inbox.
+        .onAppear { Task { await load() } }
+    }
+
+    private var stateChips: some View {
+        HStack(spacing: 6) {
+            ForEach([("needs","Needs action"),("snoozed","Snoozed"),("done","Done"),("all","All")], id: \.0) { kv in
+                GlassChip(text: kv.1, active: stateFilter == kv.0) { stateFilter = kv.0 }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
     }
 
     private var header: some View {
@@ -1324,15 +1341,51 @@ struct AllVisitorsView: View {
     }
 
     private var filteredRows: [VisitorRow] {
-        rows.filter { r in
+        let filtered = rows.filter { r in
             let kind = r.visitor.analysis.tagToken
             let tagOK = tagFilter == "all" || kind == tagFilter
             guard tagOK else { return false }
+            let bucket = stateBucket(r.visitor.leadState)
+            let stateOK = stateFilter == "all" || stateFilter == bucket
+            guard stateOK else { return false }
             let q = query.lowercased().trimmingCharacters(in: .whitespaces)
             if q.isEmpty { return true }
             if r.visitor.visitor.name.lowercased().contains(q) { return true }
             if r.sessionAddress?.lowercased().contains(q) == true { return true }
             return r.visitor.analysis.signals.contains { $0.lowercased().contains(q) }
+        }
+        return filtered.sorted { a, b in
+            // Needs-action first, then snoozed, then done. Within each
+            // bucket: newest session first, ties broken by score desc.
+            let ra = bucketRank(stateBucket(a.visitor.leadState))
+            let rb = bucketRank(stateBucket(b.visitor.leadState))
+            if ra != rb { return ra < rb }
+            let da = a.sessionCreatedAt ?? .distantPast
+            let db = b.sessionCreatedAt ?? .distantPast
+            if da != db { return da > db }
+            return a.visitor.analysis.score > b.visitor.analysis.score
+        }
+    }
+
+    // Collapses (status, snoozedUntil) into a single inbox bucket. Sent +
+    // snoozed-in-future → "snoozed". Drafted or sent-without-snooze →
+    // "needs". Replied + archived → "done".
+    private func stateBucket(_ s: LeadState?) -> String {
+        guard let s else { return "needs" }
+        if s.isSnoozedNow { return "snoozed" }
+        switch s.status {
+        case .drafted:           return "needs"
+        case .sent:              return "needs"
+        case .replied, .archived: return "done"
+        }
+    }
+
+    private func bucketRank(_ bucket: String) -> Int {
+        switch bucket {
+        case "needs":   return 0
+        case "snoozed": return 1
+        case "done":    return 2
+        default:        return 3
         }
     }
 
@@ -1384,9 +1437,12 @@ struct AllVisitorsView: View {
                 }
                 .frame(width: 36, height: 36)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(r.visitor.visitor.name)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(FoyerTheme.cream)
+                    HStack(spacing: 6) {
+                        Text(r.visitor.visitor.name)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                        stateBadge(r.visitor.leadState)
+                    }
                     Text("\(r.sessionDate) · \(r.visitor.analysis.signals.first ?? r.visitor.analysis.tag)".uppercased())
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .tracking(1.2)
@@ -1403,6 +1459,29 @@ struct AllVisitorsView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func stateBadge(_ s: LeadState?) -> some View {
+        if let s {
+            let (label, tone): (String, Color) = {
+                if s.isSnoozedNow { return ("SNOOZED", FoyerTheme.creamDim) }
+                switch s.status {
+                case .drafted:  return ("DRAFT", FoyerTheme.gold)
+                case .sent:     return ("SENT", FoyerTheme.sage)
+                case .replied:  return ("REPLIED", FoyerTheme.sage)
+                case .archived: return ("ARCHIVED", FoyerTheme.textMuted)
+                }
+            }()
+            Text(label)
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(tone)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(tone.opacity(0.12), in: Capsule())
+                .overlay(Capsule().stroke(tone.opacity(0.4), lineWidth: 0.5))
         }
     }
 
@@ -1427,15 +1506,14 @@ struct AllVisitorsView: View {
                         visitor: v,
                         sessionId: summary.id,
                         sessionAddress: summary.address,
-                        sessionDate: dateLabel
+                        sessionDate: dateLabel,
+                        sessionCreatedAt: summary.createdDate
                     ))
                 }
             }
         }
-        collected.sort { a, b in
-            if a.sessionDate != b.sessionDate { return a.sessionDate > b.sessionDate }
-            return a.visitor.analysis.score > b.visitor.analysis.score
-        }
+        // Final ordering happens in filteredRows so state-bucket priority
+        // (needs → snoozed → done) wins over recency.
         rows = collected
         loading = false
     }

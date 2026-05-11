@@ -6,6 +6,14 @@ import SwiftUI
 struct VisitorDetailView: View {
     let visitor: VisitorResult
     @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
+    @State private var leadState: LeadState
+    @State private var stateError: String?
+
+    init(visitor: VisitorResult) {
+        self.visitor = visitor
+        self._leadState = State(initialValue: visitor.leadState ?? .defaultDrafted)
+    }
 
     private var v: VisitorInfo { visitor.visitor }
     private var a: AnalysisResult { visitor.analysis }
@@ -23,6 +31,7 @@ struct VisitorDetailView: View {
                         }
                     }
                     nameBlock
+                    leadStateRow
                     signalsSection
                     summarySection
                     reasonSection
@@ -34,6 +43,131 @@ struct VisitorDetailView: View {
             actionsBar
         }
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    // Inline state chip + menu — the agent's main control surface for moving
+    // a lead through the inbox. Tap opens the action menu; the chip itself
+    // doubles as a status indicator so they don't have to remember whether
+    // they already sent.
+    private var leadStateRow: some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(LeadState.Status.allCases, id: \.self) { s in
+                    Button {
+                        applyStatus(s)
+                    } label: {
+                        Label(statusLabel(s), systemImage: leadState.status == s ? "checkmark" : "")
+                    }
+                }
+                Divider()
+                Button { snooze(days: 1) } label: { Label("Snooze · tomorrow", systemImage: "clock") }
+                Button { snooze(days: 3) } label: { Label("Snooze · 3 days", systemImage: "clock") }
+                Button { snooze(days: 7) } label: { Label("Snooze · 1 week", systemImage: "clock") }
+                if leadState.snoozedUntil != nil {
+                    Button { clearSnooze() } label: { Label("Clear snooze", systemImage: "alarm.slash") }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(statusTone(leadState.status))
+                        .frame(width: 6, height: 6)
+                    Text(currentStateLabel.uppercased())
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.cream)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(FoyerTheme.bgElev, in: Capsule())
+                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+            }
+            if let err = stateError {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+    }
+
+    private var currentStateLabel: String {
+        if leadState.isSnoozedNow, let d = leadState.snoozedUntilDate {
+            return "Snoozed · \(VisitorDetailView.snoozeFmt.string(from: d))"
+        }
+        return statusLabel(leadState.status)
+    }
+
+    private func statusLabel(_ s: LeadState.Status) -> String {
+        switch s {
+        case .drafted:  return "Drafted"
+        case .sent:     return "Sent"
+        case .replied:  return "Replied"
+        case .archived: return "Archived"
+        }
+    }
+
+    private func statusTone(_ s: LeadState.Status) -> Color {
+        switch s {
+        case .drafted:  return FoyerTheme.gold
+        case .sent:     return FoyerTheme.sage
+        case .replied:  return FoyerTheme.sage
+        case .archived: return FoyerTheme.textMuted
+        }
+    }
+
+    private static let snoozeFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    private func applyStatus(_ s: LeadState.Status) {
+        guard s != leadState.status else { return }
+        patch(status: s)
+    }
+
+    private func snooze(days: Int) {
+        let date = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
+        patch(status: leadState.status == .drafted ? .sent : leadState.status,
+              snoozedUntil: ISO8601DateFormatter.fractionalSeconds.string(from: date))
+    }
+
+    private func clearSnooze() {
+        patch(status: leadState.status, snoozedUntil: nil)
+    }
+
+    private func patch(status: LeadState.Status, snoozedUntil: String?? = .none) {
+        guard let sessionId = store.session?.id else {
+            stateError = "Session not loaded — pull to refresh."
+            return
+        }
+        stateError = nil
+        let previous = leadState
+        leadState.status = status
+        if case .some(let val) = snoozedUntil { leadState.snoozedUntil = val }
+        Task {
+            do {
+                let updated = try await APIClient.shared.updateLeadState(
+                    sessionId: sessionId,
+                    visitorName: v.name,
+                    visitorSpeaker: v.speaker,
+                    status: status,
+                    snoozedUntil: snoozedUntil
+                )
+                await MainActor.run { leadState = updated }
+            } catch {
+                await MainActor.run {
+                    leadState = previous
+                    stateError = error.localizedDescription
+                }
+            }
+        }
     }
 
     private var nameBlock: some View {
@@ -150,7 +284,8 @@ struct VisitorDetailView: View {
                 signals: ["Pre-approved $1.4M", "Close in 60 days"],
                 followUpDraft: "Hi Sarah, …",
                 wordsSpoken: 142
-            )
+            ),
+            leadState: nil
         ))
     }
 }

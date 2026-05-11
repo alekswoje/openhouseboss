@@ -5,12 +5,18 @@ import SwiftUI
 struct FollowupView: View {
     let visitor: VisitorResult
     @Environment(AppRouter.self) private var router
+    @State private var store = SessionStore.shared
     @State private var draft: String
-    @State private var sent = false
+    @State private var leadState: LeadState
+    @State private var sending = false
+    @State private var sendError: String?
+
+    private var sent: Bool { leadState.status == .sent || leadState.status == .replied }
 
     init(visitor: VisitorResult) {
         self.visitor = visitor
         self._draft = State(initialValue: visitor.analysis.followUpDraft)
+        self._leadState = State(initialValue: visitor.leadState ?? .defaultDrafted)
     }
 
     var body: some View {
@@ -103,20 +109,33 @@ struct FollowupView: View {
     }
 
     private var actionsBar: some View {
-        HStack(spacing: 10) {
-            Button {} label: { Text("Schedule") }
-                .buttonStyle(FoyerGhostButton())
-                .frame(maxWidth: .infinity)
-            Button(action: sendNow) {
-                HStack(spacing: 8) {
-                    Image(systemName: "paperplane.fill").font(.system(size: 12))
-                    Text("Send now")
-                }
+        VStack(spacing: 8) {
+            if let err = sendError {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(FoyerPrimaryButton())
-            .frame(maxWidth: .infinity)
-            .disabled(visitor.visitor.email.isEmpty || sent)
-            .opacity((visitor.visitor.email.isEmpty || sent) ? 0.5 : 1)
+            HStack(spacing: 10) {
+                Button {} label: { Text("Schedule") }
+                    .buttonStyle(FoyerGhostButton())
+                    .frame(maxWidth: .infinity)
+                Button(action: sendNow) {
+                    HStack(spacing: 8) {
+                        if sending {
+                            ProgressView().tint(FoyerTheme.inkOnGold).scaleEffect(0.8)
+                        } else {
+                            Image(systemName: sent ? "checkmark" : "paperplane.fill")
+                                .font(.system(size: 12))
+                        }
+                        Text(sent ? "Sent" : (sending ? "Sending…" : "Send now"))
+                    }
+                }
+                .buttonStyle(FoyerPrimaryButton())
+                .frame(maxWidth: .infinity)
+                .disabled(visitor.visitor.email.isEmpty || sent || sending)
+                .opacity((visitor.visitor.email.isEmpty || sent || sending) ? 0.5 : 1)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 36)
@@ -140,10 +159,40 @@ struct FollowupView: View {
     }
 
     private func sendNow() {
-        withAnimation { sent = true }
+        // Real send is Phase 2 (mailto:). Phase 1: persist the agent's
+        // "I've handled this lead" intent so it leaves the needs-action
+        // queue in the inbox. The toast still fires for confirmation.
+        guard let sessionId = store.session?.id else {
+            sendError = "Session not loaded — pull to refresh and try again."
+            return
+        }
+        sendError = nil
+        sending = true
+        let previous = leadState
+        leadState.status = .sent
         Task {
-            try? await Task.sleep(for: .seconds(1.6))
-            withAnimation { router.pop() }
+            do {
+                let updated = try await APIClient.shared.updateLeadState(
+                    sessionId: sessionId,
+                    visitorName: visitor.visitor.name,
+                    visitorSpeaker: visitor.visitor.speaker,
+                    status: .sent
+                )
+                await MainActor.run {
+                    leadState = updated
+                    sending = false
+                }
+                try? await Task.sleep(for: .seconds(1.2))
+                await MainActor.run {
+                    withAnimation { router.pop() }
+                }
+            } catch {
+                await MainActor.run {
+                    leadState = previous
+                    sending = false
+                    sendError = error.localizedDescription
+                }
+            }
         }
     }
 }

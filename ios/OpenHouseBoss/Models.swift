@@ -176,7 +176,49 @@ struct Listing: Codable, Hashable, Identifiable {
 struct VisitorResult: Codable, Hashable, Identifiable {
     let visitor: VisitorInfo
     let analysis: AnalysisResult
+    var leadState: LeadState?
     var id: String { visitor.name + ":" + (visitor.speaker ?? "") }
+
+    enum CodingKeys: String, CodingKey {
+        case visitor, analysis
+        case leadState = "lead_state"
+    }
+}
+
+// Where a captured lead sits in the agent's follow-up workflow. The backend
+// is the source of truth — iOS does optimistic updates and PATCHes on change.
+struct LeadState: Codable, Hashable {
+    enum Status: String, Codable, Hashable, CaseIterable {
+        case drafted, sent, replied, archived
+    }
+
+    var status: Status
+    var sentAt: String?
+    var snoozedUntil: String?
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case sentAt = "sent_at"
+        case snoozedUntil = "snoozed_until"
+        case updatedAt = "updated_at"
+    }
+
+    static let defaultDrafted = LeadState(status: .drafted, sentAt: nil, snoozedUntil: nil, updatedAt: nil)
+}
+
+extension LeadState {
+    // Decoded as Date if present + parseable; otherwise nil so callers can
+    // treat "unsnoozed" and "garbage backend value" the same way.
+    var snoozedUntilDate: Date? {
+        guard let s = snoozedUntil else { return nil }
+        return ISO8601DateFormatter.fractionalSeconds.date(from: s)
+            ?? ISO8601DateFormatter().date(from: s)
+    }
+    var isSnoozedNow: Bool {
+        guard let d = snoozedUntilDate else { return false }
+        return d > Date()
+    }
 }
 
 struct VisitorInfo: Codable, Hashable {
@@ -231,7 +273,11 @@ extension SessionSummary {
     }
 }
 
-private extension ISO8601DateFormatter {
+extension ISO8601DateFormatter {
+    // Shared parser/formatter that accepts the millisecond-precision strings
+    // the backend emits. Used by SessionSummary.createdDate and the
+    // LeadState snooze helpers — keep it module-internal so any file that
+    // talks to backend timestamps can reuse it.
     static let fractionalSeconds: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

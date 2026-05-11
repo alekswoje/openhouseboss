@@ -65,12 +65,36 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
             transcript = transcribe_with_speakers(audio_path, speakers_expected=speakers_expected)
 
         identification = identify_agent_and_visitors(transcript, visitors_path)
+
+        # Lead state from a prior run (if this is a reanalyze) — keyed by
+        # (name, speaker) so the agent doesn't lose their "sent / snoozed /
+        # archived" markers just because we re-ran diarization.
+        prior_states: dict[tuple[str, str], dict] = {}
+        with _sessions_lock:
+            prior_visitors = ((_sessions.get(session_id) or {}).get("result") or {}).get("visitors") or []
+        for entry in prior_visitors:
+            v = entry.get("visitor") or {}
+            state = entry.get("lead_state")
+            if state:
+                key = (v.get("name") or "", v.get("speaker") or "")
+                prior_states[key] = state
+
+        now_iso = datetime.now(timezone.utc).isoformat()
         visitors_out = []
         for visitor in identification.matched_visitors:
             analysis = analyze_visitor(transcript, visitor, DEFAULT_TAGS)
+            v_dict = visitor.model_dump(mode="json")
+            key = (v_dict.get("name") or "", v_dict.get("speaker") or "")
+            lead_state = prior_states.get(key) or {
+                "status": "drafted",
+                "sent_at": None,
+                "snoozed_until": None,
+                "updated_at": now_iso,
+            }
             visitors_out.append({
-                "visitor": visitor.model_dump(mode="json"),
+                "visitor": v_dict,
                 "analysis": analysis.model_dump(),
+                "lead_state": lead_state,
             })
 
         # Script coverage — only runs if the agent attached a script to this
@@ -262,6 +286,67 @@ async def reprocess_session(session_id: str, speakers_expected: Optional[int] = 
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
+
+
+_VALID_LEAD_STATUSES = {"drafted", "sent", "replied", "archived"}
+
+
+@app.post("/sessions/{session_id}/visitors/state")
+def update_visitor_state(session_id: str, payload: dict):
+    """Flip lead_state for a single visitor in a session.
+
+    Body: {name, speaker?, status, snoozed_until?}
+    Visitor is matched by (name, speaker) since that's the de facto unique
+    key the iOS app uses too (VisitorResult.id). Status must be one of
+    drafted / sent / replied / archived. snoozed_until is an ISO8601 string
+    or null.
+    """
+    name = (payload.get("name") or "").strip()
+    speaker = payload.get("speaker")
+    speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+    status = (payload.get("status") or "").strip()
+    snoozed_until = payload.get("snoozed_until")
+
+    if not name:
+        raise HTTPException(400, "name is required")
+    if status not in _VALID_LEAD_STATUSES:
+        raise HTTPException(400, f"status must be one of {sorted(_VALID_LEAD_STATUSES)}")
+
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+        if session is None:
+            raise HTTPException(404, f"Session {session_id} not found")
+
+        result = session.get("result")
+        if not result:
+            raise HTTPException(409, "Session has no result yet — wait for processing to finish")
+
+        visitors = result.get("visitors") or []
+        target = None
+        for entry in visitors:
+            v = entry.get("visitor") or {}
+            if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                target = entry
+                break
+        if target is None:
+            raise HTTPException(404, f"Visitor {name!r} (speaker={speaker!r}) not found in session")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        state = dict(target.get("lead_state") or {})
+        state["status"] = status
+        state["updated_at"] = now_iso
+        if status == "sent" and not state.get("sent_at"):
+            state["sent_at"] = now_iso
+        if "snoozed_until" in payload:
+            state["snoozed_until"] = snoozed_until
+        target["lead_state"] = state
+        _persist(session_id)
+        return state
 
 
 @app.get("/sessions/{session_id}/audio")

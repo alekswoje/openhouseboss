@@ -121,6 +121,37 @@ actor APIClient {
         return try JSONDecoder().decode(Wrapper.self, from: data).sessions
     }
 
+    // Flip lead_state for a single visitor in a session. The backend keys on
+    // (name, speaker) — same composite id iOS uses in VisitorResult.id — so
+    // the lookup survives reanalyze runs that regenerate visitor entries.
+    // Pass snoozedUntil = .some(nil) to explicitly clear an existing snooze;
+    // pass .none to leave it untouched.
+    func updateLeadState(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        status: LeadState.Status,
+        snoozedUntil: String?? = .none
+    ) async throws -> LeadState {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(sessionId)/visitors/state"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var body: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "status": status.rawValue,
+        ]
+        if case .some(let val) = snoozedUntil {
+            body["snoozed_until"] = val as Any? ?? NSNull()
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadState.self, from: data)
+    }
+
     func getSession(id: String) async throws -> Session {
         let url = Config.backendURL.appendingPathComponent("sessions/\(id)")
         let (data, response) = try await self.session.data(from: url)
