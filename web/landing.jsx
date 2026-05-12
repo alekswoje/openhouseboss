@@ -57,13 +57,6 @@ const Landing = () => {
                 Download for iPhone
                 <span style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', marginLeft: 4 }}>→</span>
               </button>
-              <button
-                className="btn btn-ghost"
-                style={{ fontSize: 14, color: 'var(--cream-dim)' }}
-                onClick={() => window.foyerToast({ message: 'Tour rolling · 90 seconds', kind: 'info' })}
-              >
-                Watch the 90-second tour
-              </button>
             </div>
             <div style={{ marginTop: 56, display: 'flex', gap: 36, alignItems: 'center', flexWrap: 'wrap' }}>
               <span className="eyebrow" style={{ color: 'var(--text-muted)' }}>Trusted at</span>
