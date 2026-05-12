@@ -364,7 +364,9 @@ private struct IPadSideRail: View {
                 .padding(.bottom, 22)
 
             VStack(spacing: 2) {
-                ForEach(IPadAgentApp.Tab.allCases) { t in
+                // Profile lives behind the bottom-left avatar; no need
+                // to duplicate it in the main nav rail.
+                ForEach(IPadAgentApp.Tab.allCases.filter { $0 != .profile }) { t in
                     navRow(t)
                 }
             }
@@ -401,6 +403,14 @@ private struct IPadSideRail: View {
         .frame(width: railWidth)
         .background(Color(white: 0.04))
         .clipped()
+        // When collapsed, tapping anywhere in the rail expands it. Child
+        // Buttons (nav rows, avatar, brand) consume their own taps and
+        // still call onToggleCollapse from within their actions, so all
+        // taps lead to expansion — including empty space hits here.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if collapsed { onToggleCollapse() }
+        }
         .alert(
             "Delete this session?",
             isPresented: Binding(
@@ -476,7 +486,12 @@ private struct IPadSideRail: View {
         if collapsed {
             // Compact icon-only row — the active fill is a square instead
             // of a wide pill so it reads cleanly in the narrow rail.
-            Button { onSelectTab(t) } label: {
+            // Tapping ALSO expands the rail so the user lands on the new
+            // tab with the labels visible (one tap = navigate + expand).
+            Button {
+                onSelectTab(t)
+                onToggleCollapse()
+            } label: {
                 Image(systemName: active ? t.iconFilled : t.iconOutline)
                     .font(.system(size: 17, weight: active ? .semibold : .regular))
                     .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
@@ -548,9 +563,13 @@ private struct IPadSideRail: View {
     @ViewBuilder
     private var avatar: some View {
         if collapsed {
-            // Centered avatar bubble fills the 68pt rail nicely without
-            // the left-aligned bubble + empty space look from before.
-            Button { onSelectTab(.profile) } label: {
+            // Centered avatar bubble fills the 68pt rail nicely. Tap
+            // expands the rail AND lands on the Profile surface so the
+            // user sees their full account / settings layout right away.
+            Button {
+                onSelectTab(.profile)
+                onToggleCollapse()
+            } label: {
                 avatarBubble
                     .frame(maxWidth: .infinity)
             }
