@@ -4,9 +4,27 @@
 // Shared brand components
 // ============================================================
 
+// Brand mark — the glowing-F image lives at /foyer-mark.png. Single
+// source for the rail, the crest, and any marketing surfaces; switch the
+// image and every surface picks it up.
+const FoyerMark = ({ size = 32, rounded = 7 }) => (
+  <img
+    src="foyer-mark.png"
+    alt="Foyer"
+    width={size}
+    height={size}
+    style={{
+      width: size, height: size,
+      borderRadius: rounded,
+      display: 'block',
+      objectFit: 'cover',
+    }}
+  />
+);
+
 const Crest = ({ size = 22, name = 'Foyer' }) => (
-  <div className="crest" style={{ fontSize: size, gap: size * 0.4 }}>
-    <span className="crest-mark" style={{ width: size * 1.3, height: size * 1.3, fontSize: size * 0.75 }}>F</span>
+  <div className="crest" style={{ fontSize: size, gap: size * 0.4, alignItems: 'center' }}>
+    <FoyerMark size={size * 1.3} rounded={Math.max(4, size * 0.3)} />
     <span>{name}</span>
   </div>
 );
@@ -323,21 +341,17 @@ function AppShell({ active, children, sessionStats }) {
               onClick={(e) => { e.stopPropagation(); toggleCollapsed(); }}
               aria-label="Expand sidebar"
               style={{
-                width: 40, height: 40, borderRadius: 8,
-                background: 'transparent', border: '1px solid var(--gold)', color: 'var(--gold)',
-                display: 'grid', placeItems: 'center',
-                fontFamily: 'var(--sans)', fontWeight: 600, fontSize: 16,
+                width: 40, height: 40,
+                background: 'transparent', border: 0, padding: 0,
                 cursor: 'pointer',
-              }}>F</button>
+                display: 'inline-flex',
+              }}>
+              <FoyerMark size={40} rounded={9} />
+            </button>
           ) : (
             <>
               <a href="#/app" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-                <span style={{
-                  width: 32, height: 32, borderRadius: 7,
-                  display: 'grid', placeItems: 'center',
-                  background: 'transparent', border: '1px solid var(--gold)', color: 'var(--gold)',
-                  fontFamily: 'var(--sans)', fontWeight: 600, fontSize: 13,
-                }}>F</span>
+                <FoyerMark size={32} rounded={7} />
                 <span style={{ fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 16, color: 'var(--cream)', letterSpacing: '-0.02em' }}>Foyer</span>
               </a>
               <button
@@ -461,7 +475,7 @@ function AppShell({ active, children, sessionStats }) {
 }
 
 Object.assign(window, {
-  Crest, Eyebrow, Tag, Stat, Hairline, Icon,
+  Crest, FoyerMark, Eyebrow, Tag, Stat, Hairline, Icon,
   foyerApi, foyerLoad, useFoyerData, foyerSignOut,
   visitorKey, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour,
   AppShell,

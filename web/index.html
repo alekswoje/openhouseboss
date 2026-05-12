@@ -4,6 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Foyer — every open house, quietly remembered.</title>
+  <link rel="icon" type="image/png" href="foyer-mark.png">
+  <link rel="apple-touch-icon" href="foyer-mark.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
@@ -447,13 +449,19 @@
       const Screen = route.El;
       const isKiosk = !!route.kiosk;
 
+      // The floating route-switcher is a demo helper, not part of the
+      // product. Hide it once the agent is inside the app shell — they
+      // navigate via the sidebar there. Still show on marketing pages
+      // (Home, Sign in) for the demo flow.
+      const showRouteNav = !isKiosk && !!route.marketing;
+
       return (
         <>
           <div className="route-frame" data-phase={phase} key={shownHash}>
             <Screen />
           </div>
           <ToastHost toasts={toasts} />
-          {!isKiosk && (
+          {showRouteNav && (
             <nav className="route-nav" aria-label="Foyer demo routes">
               {ROUTES.filter(r => !r.kiosk).map(r => (
                 <a key={r.hash} href={r.hash} className={r.hash === hash ? 'is-active' : ''}>
