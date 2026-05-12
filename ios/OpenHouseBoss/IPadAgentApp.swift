@@ -2062,12 +2062,9 @@ private struct IPadLeads: View {
     // Schedule-send sheet — non-nil means a date picker is up for that lead.
     @State private var scheduleForLead: LeadRow?
 
-    // Draft editor state — `editingDraftFor` is the LeadRow.id currently
-    // in edit mode. The actual text + refine state lives INSIDE the
-    // DraftEditorPane child view so per-keystroke re-renders don't cascade
+    // Draft editor — always editable. The DraftEditorPane child view owns
+    // its text + autosave state so per-keystroke re-renders don't cascade
     // through the parent's lead list / sidebar.
-    @State private var editingDraftFor: String?
-    @State private var draftSaving: Bool = false
 
     // Edit-contact sheet — when non-nil, a modal lets the agent fix the
     // lead's display name / email / phone (often wrong off diarization or
@@ -2085,14 +2082,6 @@ private struct IPadLeads: View {
     // by LeadRow.id. Default is collapsed (3-line clamp) so the agent lands
     // on the draft + actions without scrolling past a wall of text.
     @State private var expandedSummaries: Set<String> = []
-
-    // Inline Refine-with-AI state — lets the agent rewrite the draft
-    // without first clicking Edit. The instruction text and in-flight
-    // status are keyed by LeadRow.id so switching leads doesn't smear
-    // typing or spinners across rows.
-    @State private var inlineRefineText: [String: String] = [:]
-    @State private var inlineRefiningId: String?
-    @State private var inlineRefineError: String?
 
     // Score-explainer popover anchor inside the detail header. SwiftUI
     // popovers are per-view; the boolean lives on the parent so the
@@ -2790,111 +2779,9 @@ private struct IPadLeads: View {
             ?? row.visitor.analysis.followUpDraft
     }
 
-    // Inline refine row shown beneath the static draft display so the agent
-    // doesn't have to enter edit mode just to rewrite. Submitting either
-    // posts to /refine and overwrites the lead's draftOverride server-side,
-    // mirroring what DraftEditorPane does after a Save tap.
-    private func inlineRefineRow(for row: LeadRow, currentBody: String) -> some View {
-        let instruction = inlineRefineText[row.id] ?? ""
-        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        let refining = (inlineRefiningId == row.id)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.gold)
-                Text("Refine with AI")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(FoyerTheme.creamDim)
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                TextField(
-                    "e.g. shorter, add a CTA, more casual",
-                    text: Binding(
-                        get: { inlineRefineText[row.id] ?? "" },
-                        set: { inlineRefineText[row.id] = $0 }
-                    ),
-                    axis: .horizontal
-                )
-                .font(.system(size: 13))
-                .foregroundStyle(FoyerTheme.cream)
-                .tint(FoyerTheme.gold)
-                .submitLabel(.send)
-                .autocorrectionDisabled(false)
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 10))
-                .disabled(refining)
-                .onSubmit { Task { await runInlineRefine(for: row, currentBody: currentBody) } }
-
-                Button { Task { await runInlineRefine(for: row, currentBody: currentBody) } } label: {
-                    HStack(spacing: 6) {
-                        if refining {
-                            ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
-                        } else {
-                            Image(systemName: "wand.and.stars")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        Text(refining ? "Refining…" : "Rewrite")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .foregroundStyle(trimmed.isEmpty ? FoyerTheme.textMuted : FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(
-                        Capsule().fill(trimmed.isEmpty
-                                       ? Color(white: 0.10)
-                                       : FoyerTheme.gold)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(trimmed.isEmpty || refining)
-            }
-            if let err = inlineRefineError, inlineRefiningId == nil {
-                Text(err)
-                    .font(.system(size: 11))
-                    .foregroundStyle(FoyerTheme.terracotta)
-            }
-        }
-    }
-
-    @MainActor
-    private func runInlineRefine(for row: LeadRow, currentBody: String) async {
-        let trimmed = (inlineRefineText[row.id] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        inlineRefiningId = row.id
-        inlineRefineError = nil
-        defer { inlineRefiningId = nil }
-        do {
-            let newBody = try await APIClient.shared.refineDraft(
-                sessionId: row.session.id,
-                visitorName: row.visitor.visitor.name,
-                visitorSpeaker: row.visitor.visitor.speaker,
-                instruction: trimmed,
-                baseBody: currentBody
-            )
-            // Persist as draftOverride so the rewrite survives reloads and
-            // matches what Edit-then-Save would have done.
-            let state = try await APIClient.shared.updateDraft(
-                sessionId: row.session.id,
-                visitorName: row.visitor.visitor.name,
-                visitorSpeaker: row.visitor.visitor.speaker,
-                body: newBody,
-                subject: nil,
-                clear: false
-            )
-            apply(state, to: row)
-            inlineRefineText[row.id] = ""
-        } catch {
-            inlineRefineError = friendlyErrorMessage("Refine failed", error: error)
-        }
-    }
-
     private func followup(_ v: VisitorResult, session: Session) -> some View {
         let row = LeadRow(visitor: v, session: session)
         let isOverridden = (v.leadState?.draftOverride?.body ?? "").isEmpty == false
-        let isEditing = (editingDraftFor == row.id)
         let currentBody = draftBodyFor(row)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -2909,29 +2796,13 @@ private struct IPadLeads: View {
                         .background(Capsule().fill(FoyerTheme.gold.opacity(0.14)))
                 }
                 Spacer()
-                if !isEditing {
-                    if isOverridden {
-                        Button {
-                            Task { await resetDraft(for: row) }
-                        } label: {
-                            Text("Reset to AI")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(FoyerTheme.creamDim)
-                        }
-                        .buttonStyle(.plain)
-                    }
+                if isOverridden {
                     Button {
-                        editingDraftFor = row.id
+                        Task { await resetDraft(for: row) }
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Edit")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundStyle(FoyerTheme.creamDim)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Color(white: 0.08)))
+                        Text("Reset to AI")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
                     }
                     .buttonStyle(.plain)
                 }
@@ -2940,36 +2811,20 @@ private struct IPadLeads: View {
                     .foregroundStyle(FoyerTheme.textMuted)
             }
 
-            if isEditing {
-                // The editor (and its Save/Cancel/Refine controls) lives in
-                // its own subview so keystrokes only re-render the editor,
-                // not the entire Leads screen. Identity is keyed off the
-                // row id so switching leads remounts the editor with the
-                // new initial text instead of stale state.
-                DraftEditorPane(
-                    initialText: currentBody,
-                    sessionId: row.session.id,
-                    visitorName: row.visitor.visitor.name,
-                    visitorSpeaker: row.visitor.visitor.speaker,
-                    onSave: { text in
-                        Task { await saveDraft(for: row, body: text) }
-                    },
-                    onCancel: { editingDraftFor = nil }
-                )
-                .id(row.id)
-            } else {
-                Text(currentBody)
-                    .font(.system(size: 15))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .lineSpacing(6)
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color(white: 0.05))
-                    )
-                inlineRefineRow(for: row, currentBody: currentBody)
-            }
+            // Always-editable: the editor owns its own text state so each
+            // keystroke only re-renders the editor (not the whole Leads
+            // screen). `.id(row.id)` remounts on lead switch so a fresh row
+            // starts from its server-side body instead of stale state.
+            DraftEditorPane(
+                initialText: currentBody,
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                onAutosave: { text in
+                    await autosaveDraft(for: row, body: text)
+                }
+            )
+            .id(row.id)
 
             HStack(spacing: 10) {
                 let state = v.leadState?.status ?? .drafted
@@ -3627,14 +3482,9 @@ private struct IPadLeads: View {
     }
 
     @MainActor
-    private func saveDraft(for row: LeadRow, body: String) async {
+    private func autosaveDraft(for row: LeadRow, body: String) async {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            crmError = "Draft body can't be empty."
-            return
-        }
-        draftSaving = true
-        defer { draftSaving = false }
+        guard !trimmed.isEmpty else { return }
         do {
             let state = try await APIClient.shared.updateDraft(
                 sessionId: row.session.id,
@@ -3645,9 +3495,12 @@ private struct IPadLeads: View {
                 clear: false
             )
             apply(state, to: row)
-            editingDraftFor = nil
         } catch {
-            crmError = "Couldn't save draft: \(error.localizedDescription)"
+            // Surface failures lightly — the agent's typing isn't lost
+            // (still in the editor's local @State), so we don't need a
+            // blocking toast. The Saved pip just won't appear, and the
+            // next keystroke retries.
+            crmError = friendlyErrorMessage("Couldn't autosave draft", error: error)
         }
     }
 
@@ -3663,7 +3516,6 @@ private struct IPadLeads: View {
                 clear: true
             )
             apply(state, to: row)
-            editingDraftFor = nil
         } catch {
             crmError = "Couldn't reset draft: \(error.localizedDescription)"
         }
@@ -4687,41 +4539,42 @@ private struct ManualLeadSheet: View {
 
 // MARK: – Draft editor pane
 //
-// Self-contained editor for the AI-drafted follow-up. Owns the TextEditor
-// text + the "Refine with AI" instruction as @State so keystrokes don't
-// trip a re-render of the entire Leads screen. The parent only learns
-// about the new body when the user taps Save (or Cancel) — the editor
-// passes the text back through the `onSave` callback.
+// Always-editable draft surface. There's no edit/save toggle — every
+// keystroke debounces into a background autosave (~800ms after the agent
+// stops typing) and a small inline status pip shows Saving / Saved so the
+// agent has confidence the change landed. Refine With AI stays in the
+// editor; its rewrite drops into `text`, which triggers the same autosave
+// path that manual typing does.
 
 private struct DraftEditorPane: View {
     let initialText: String
     let sessionId: String
     let visitorName: String
     let visitorSpeaker: String?
-    let onSave: (String) -> Void
-    let onCancel: () -> Void
+    let onAutosave: (String) async -> Void
 
     @State private var text: String
     @State private var instruction: String = ""
     @State private var refining: Bool = false
     @State private var refineError: String?
-    @State private var saving: Bool = false
+    @State private var saveStatus: SaveStatus = .idle
+    @State private var autosaveTask: Task<Void, Never>?
     @FocusState private var instructionFocused: Bool
+
+    private enum SaveStatus { case idle, saving, saved }
 
     init(
         initialText: String,
         sessionId: String,
         visitorName: String,
         visitorSpeaker: String?,
-        onSave: @escaping (String) -> Void,
-        onCancel: @escaping () -> Void
+        onAutosave: @escaping (String) async -> Void
     ) {
         self.initialText = initialText
         self.sessionId = sessionId
         self.visitorName = visitorName
         self.visitorSpeaker = visitorSpeaker
-        self.onSave = onSave
-        self.onCancel = onCancel
+        self.onAutosave = onAutosave
         _text = State(initialValue: initialText)
     }
 
@@ -4739,35 +4592,68 @@ private struct DraftEditorPane: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
+                        .stroke(FoyerTheme.gold.opacity(0.25), lineWidth: 1)
                 )
-
-            refineRow
+                .onChange(of: text) { _, newValue in
+                    scheduleAutosave(newValue)
+                }
 
             HStack(spacing: 10) {
+                saveStatusPill
                 Spacer()
-                Button("Cancel") { onCancel() }
-                    .font(.system(size: 13, weight: .medium))
+            }
+
+            refineRow
+        }
+    }
+
+    @ViewBuilder
+    private var saveStatusPill: some View {
+        switch saveStatus {
+        case .idle:
+            EmptyView()
+        case .saving:
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.55).tint(FoyerTheme.creamDim)
+                Text("Saving…")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(FoyerTheme.creamDim)
-                    .buttonStyle(.plain)
-                    .disabled(saving || refining)
-                Button {
-                    saving = true
-                    onSave(text)
-                } label: {
-                    HStack(spacing: 6) {
-                        if saving {
-                            ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
-                        }
-                        Text(saving ? "Saving…" : "Save draft")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 16).padding(.vertical, 9)
-                    .background(Capsule().fill(FoyerTheme.gold))
-                }
-                .buttonStyle(.plain)
-                .disabled(saving || refining)
+            }
+        case .saved:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.sage)
+                Text("Saved")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private func scheduleAutosave(_ candidate: String) {
+        autosaveTask?.cancel()
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Blank drafts are a no-op — Send needs SOMETHING in the body, so
+        // just hold and wait for more typing instead of persisting empty.
+        guard !trimmed.isEmpty else {
+            saveStatus = .idle
+            return
+        }
+        autosaveTask = Task { [candidate] in
+            try? await Task.sleep(for: .milliseconds(800))
+            if Task.isCancelled { return }
+            await MainActor.run { saveStatus = .saving }
+            await onAutosave(candidate)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) { saveStatus = .saved }
+            }
+            try? await Task.sleep(for: .seconds(1.4))
+            if Task.isCancelled { return }
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.35)) { saveStatus = .idle }
             }
         }
     }

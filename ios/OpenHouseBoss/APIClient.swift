@@ -1208,36 +1208,100 @@ final class AuthStore {
     static let shared = AuthStore()
 
     nonisolated static let tokenKey = "auth_token"
+    private static let cachedUserKey = "auth_cached_user"
+    private static let welcomedUserIdsKey = "auth_welcomed_user_ids"
 
     var currentUser: AuthUser?
-    var loading = true        // true while we verify a saved token on launch
+    var loading: Bool
     var lastError: String?
 
     var token: String? { Keychain.get(Self.tokenKey) }
     var isSignedIn: Bool { currentUser != nil }
 
-    private init() {}
+    // True the first time this user-id is welcomed. Flip to false after the
+    // welcome overlay has run once for them so we say "Welcome back" on every
+    // subsequent launch.
+    var isFirstWelcome: Bool {
+        guard let uid = currentUser?.id else { return true }
+        let welcomed = UserDefaults.standard.stringArray(forKey: Self.welcomedUserIdsKey) ?? []
+        return !welcomed.contains(uid)
+    }
 
-    // Called from RootView on app launch — if we have a saved token, verify
-    // it with the backend so a revoked/expired one doesn't keep the user
-    // stuck on a stale "signed in" state. If no token, just clear loading
-    // and let LoginView take over.
+    func markWelcomed() {
+        guard let uid = currentUser?.id else { return }
+        var welcomed = UserDefaults.standard.stringArray(forKey: Self.welcomedUserIdsKey) ?? []
+        guard !welcomed.contains(uid) else { return }
+        welcomed.append(uid)
+        UserDefaults.standard.set(welcomed, forKey: Self.welcomedUserIdsKey)
+    }
+
+    private init() {
+        // Seed currentUser from the cached profile so the UI can render
+        // immediately on cold launch — before /auth/me round-trips. If the
+        // token is missing or revoked we'll clear this in restore().
+        if Keychain.get(Self.tokenKey) != nil,
+           let data = UserDefaults.standard.data(forKey: Self.cachedUserKey),
+           let cached = try? JSONDecoder().decode(AuthUser.self, from: data) {
+            self.currentUser = cached
+            // Already signed in optimistically — no splash gate needed.
+            self.loading = false
+        } else {
+            self.loading = true
+        }
+    }
+
+    private static func cacheUser(_ user: AuthUser?) {
+        if let user, let data = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(data, forKey: cachedUserKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: cachedUserKey)
+        }
+    }
+
+    // Called from RootView on app launch. If we have a saved token, refresh
+    // /auth/me in the background to pick up profile changes — but only treat
+    // an authoritative 401/403 as "sign out". Transient errors (network,
+    // 5xx, timeout) keep the cached session so the agent isn't logged out
+    // by a flaky connection.
     func restore() async {
         guard token != nil else {
-            await MainActor.run { self.loading = false }
+            await MainActor.run {
+                self.currentUser = nil
+                Self.cacheUser(nil)
+                self.loading = false
+            }
             return
         }
         do {
             let user = try await APIClient.shared.fetchMe()
             await MainActor.run {
                 self.currentUser = user
+                Self.cacheUser(user)
                 self.loading = false
             }
         } catch {
-            Keychain.remove(Self.tokenKey)
-            await MainActor.run {
-                self.currentUser = nil
-                self.loading = false
+            // Only wipe credentials on definitive auth failures. Everything
+            // else (offline, slow Render, brief Cloudflare 502) keeps the
+            // user signed in with the cached profile.
+            let isAuthFailure: Bool = {
+                if case let APIError.http(status, _) = error, status == 401 || status == 403 {
+                    return true
+                }
+                return false
+            }()
+            if isAuthFailure {
+                Keychain.remove(Self.tokenKey)
+                await MainActor.run {
+                    self.currentUser = nil
+                    Self.cacheUser(nil)
+                    self.loading = false
+                }
+            } else {
+                await MainActor.run {
+                    // Keep the cached user (if any) so the UI doesn't bounce
+                    // back to the login screen on a transient hiccup.
+                    self.loading = false
+                }
             }
         }
     }
@@ -1257,12 +1321,14 @@ final class AuthStore {
             let user = try await APIClient.shared.fetchMe()
             await MainActor.run {
                 self.currentUser = user
+                Self.cacheUser(user)
                 self.loading = false
             }
         } catch {
             Keychain.remove(Self.tokenKey)
             await MainActor.run {
                 self.currentUser = nil
+                Self.cacheUser(nil)
                 self.loading = false
                 if let asError = error as? ASWebAuthenticationSessionError, asError.code == .canceledLogin {
                     // User backed out — not an error worth surfacing.
@@ -1276,6 +1342,7 @@ final class AuthStore {
 
     func signOut() {
         Keychain.remove(Self.tokenKey)
+        Self.cacheUser(nil)
         currentUser = nil
     }
 }
