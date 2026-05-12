@@ -26,6 +26,8 @@
 		9FAA8326243F5997E8634DA9 /* OpenHouseBossWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3988A31ECC5ABDE712E61764 /* OpenHouseBossWidgetsBundle.swift */; };
 		A046864C4B521610B3DB16F8 /* RecordingLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8247ED02EC4FF7ECE5498E73 /* RecordingLiveActivity.swift */; };
 		A4D57073C40D6CD9E5878FEE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A15107E5607D6C8A1CB330C5 /* Assets.xcassets */; };
+		BB11FF22DD33EE44AA550002 /* foyer-loading.gif in Resources */ = {isa = PBXBuildFile; fileRef = BB11FF22DD33EE44AA550001 /* foyer-loading.gif */; };
+		BB11FF22DD33EE44AA660002 /* FoyerBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB11FF22DD33EE44AA660001 /* FoyerBrand.swift */; };
 		A9FD41F941A91A0BB7101205 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = B550150CDEF72AE1714252D7 /* Log.swift */; };
 		C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88172970AE449A66CFAE784B /* RecordView.swift */; };
 		CCE85596A80EAFE5C598CD60 /* StopRecordingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */; };
@@ -80,6 +82,8 @@
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A15107E5607D6C8A1CB330C5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		BB11FF22DD33EE44AA550001 /* foyer-loading.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = "foyer-loading.gif"; sourceTree = "<group>"; };
+		BB11FF22DD33EE44AA660001 /* FoyerBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoyerBrand.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
 		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -112,6 +116,8 @@
 			children = (
 				45A14FF6B9071E2F1778CD44 /* APIClient.swift */,
 				A15107E5607D6C8A1CB330C5 /* Assets.xcassets */,
+				BB11FF22DD33EE44AA550001 /* foyer-loading.gif */,
+				BB11FF22DD33EE44AA660001 /* FoyerBrand.swift */,
 				3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */,
 				BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */,
 				49A00317B74209CC35C75028 /* Config.swift */,
@@ -225,6 +231,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A4D57073C40D6CD9E5878FEE /* Assets.xcassets in Resources */,
+				BB11FF22DD33EE44AA550002 /* foyer-loading.gif in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -240,6 +247,7 @@
 				D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */,
 				6A28EBEABC7ACEE2205D25C5 /* Config.swift in Sources */,
 				8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */,
+				BB11FF22DD33EE44AA660002 /* FoyerBrand.swift in Sources */,
 				DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */,
 				36A2F83B5677D376932A1CB0 /* IPadAgentApp.swift in Sources */,
 				1083B061DCE584035504F74C /* LiveView.swift in Sources */,

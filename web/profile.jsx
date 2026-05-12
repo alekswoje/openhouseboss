@@ -1,4 +1,4 @@
-/* global React, AppShell, foyerApi, useFoyerData, Icon */
+/* global React, AppShell, foyerApi, useFoyerData, Icon, FoyerLoader */
 
 // ============================================================
 // Profile / Settings — Gmail connect + future agent prefs. Matches
@@ -175,7 +175,7 @@ function ProfilePage() {
             </div>
             <div style={{ flex: 1 }}>
               {gmailLoading ? (
-                <div style={{ color: PC.textDim, fontSize: 13 }}>Loading…</div>
+                <FoyerLoader size={40} rounded={8} />
               ) : gmail?.connected ? (
                 <>
                   <div style={{ fontSize: 15, fontWeight: 500, color: PC.cream, display: 'inline-flex', alignItems: 'center', gap: 8 }}>

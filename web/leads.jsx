@@ -1,4 +1,4 @@
-/* global React, AppShell, foyerApi, useFoyerData, fmtRelative, Icon */
+/* global React, AppShell, foyerApi, useFoyerData, fmtRelative, Icon, FoyerLoader */
 
 // ============================================================
 // Leads inbox — desktop port of the iPad lead-detail experience.
@@ -802,7 +802,7 @@ function LeadsInbox() {
         </div>
         <div style={{ background: C.bg }}>
           {loading
-            ? <div style={{ padding: 56, color: C.textDim }}>Loading…</div>
+            ? <div style={{ display: 'grid', placeItems: 'center', padding: 80 }}><FoyerLoader size={96} /></div>
             : error
               ? <div style={{ padding: 56, color: C.terracotta }}>{error}</div>
               : active

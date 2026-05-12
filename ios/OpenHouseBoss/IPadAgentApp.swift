@@ -448,21 +448,13 @@ private struct IPadSideRail: View {
             // centered element fits cleanly in the 68pt rail; no crowded
             // chevron-next-to-mark situation.
             Button(action: onToggleCollapse) {
-                Text("F")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.gold)
-                    .frame(width: 32, height: 32)
-                    .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+                FoyerBrandMark(size: 36, cornerRadius: 8)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.plain)
         } else {
             HStack(spacing: 10) {
-                Text("F")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.gold)
-                    .frame(width: 32, height: 32)
-                    .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+                FoyerBrandMark(size: 36, cornerRadius: 8)
                 Text("Foyer")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
@@ -2158,7 +2150,8 @@ private struct IPadLeads: View {
 
             if loading && allLeads.isEmpty {
                 Spacer()
-                ProgressView().tint(FoyerTheme.gold)
+                FoyerLoadingView(size: 96, cornerRadius: 14)
+                    .frame(maxWidth: .infinity)
                 Spacer()
             } else if filteredLeads.isEmpty {
                 emptyList
@@ -2341,7 +2334,7 @@ private struct IPadLeads: View {
             .refreshable { await load() }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if loading {
-            ProgressView().tint(FoyerTheme.gold)
+            FoyerLoadingView(size: 120, cornerRadius: 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             emptyContent
@@ -5944,13 +5937,7 @@ private struct IPadRecord: View {
 
     private var processingPane: some View {
         VStack(spacing: 22) {
-            ZStack {
-                Circle().stroke(FoyerTheme.gold.opacity(0.25), lineWidth: 1.5)
-                    .frame(width: 110, height: 110)
-                ProgressView()
-                    .tint(FoyerTheme.gold)
-                    .scaleEffect(1.3)
-            }
+            FoyerLoadingView(size: 140, cornerRadius: 18)
             VStack(spacing: 6) {
                 Text("Processing the session")
                     .font(.system(size: 22, weight: .semibold))
@@ -6241,10 +6228,10 @@ private struct IPadSessionDetail: View {
     private var loadingState: some View {
         HStack {
             Spacer()
-            ProgressView().tint(FoyerTheme.gold)
+            FoyerLoadingView(size: 120, cornerRadius: 16)
             Spacer()
         }
-        .padding(.top, 80)
+        .padding(.top, 60)
     }
 
     private func header(_ session: Session) -> some View {

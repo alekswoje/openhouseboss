@@ -29,6 +29,34 @@ const Crest = ({ size = 22, name = 'Foyer' }) => (
   </div>
 );
 
+// Animated brand-mark GIF — drop this wherever the page would have shown a
+// generic spinner. The native <img> tag handles GIF animation; we just frame
+// it consistently and trim with border-radius so it matches the iPad app's
+// FoyerLoadingView. Pass `label` to show a small caption underneath.
+const FoyerLoader = ({ size = 96, rounded = 14, label, padding = 0 }) => (
+  <div style={{
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+    padding,
+  }}>
+    <img
+      src="foyer-loading.gif"
+      alt="Loading"
+      width={size}
+      height={size}
+      style={{
+        width: size, height: size,
+        borderRadius: rounded,
+        objectFit: 'cover',
+        display: 'block',
+      }} />
+    {label && (
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>
+        {label}
+      </div>
+    )}
+  </div>
+);
+
 const Eyebrow = ({ children, num }) => (
   <div className="eyebrow" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
     {num && <span style={{ display: 'inline-block', width: 22, height: 1, background: 'var(--gold)' }}></span>}
@@ -512,7 +540,7 @@ function AppShell({ active, children, sessionStats }) {
 }
 
 Object.assign(window, {
-  Crest, FoyerMark, Eyebrow, Tag, Stat, Hairline, Icon,
+  Crest, FoyerMark, FoyerLoader, Eyebrow, Tag, Stat, Hairline, Icon,
   foyerApi, foyerLoad, useFoyerData, foyerSignOut,
   visitorKey, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour,
   AppShell,
