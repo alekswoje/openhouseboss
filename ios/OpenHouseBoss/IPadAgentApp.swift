@@ -4521,6 +4521,9 @@ private struct IPadProfile: View {
                 templatesCard
                 scriptsCard
                 fubCard
+                #if DEBUG
+                devModeCard
+                #endif
                 signOutCard
                 Spacer().frame(height: 80)
             }
@@ -5045,6 +5048,36 @@ private struct IPadProfile: View {
         }
         .buttonStyle(.plain)
     }
+
+    #if DEBUG
+    // Dev-only knobs for friends-and-family testing. Visible only in Debug
+    // builds — the whole card disappears when the app ships. Delete this
+    // computed property + DevMode.swift to fully strip the feature.
+    private var devModeCard: some View {
+        @Bindable var settings = DevSettings.shared
+        return VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "wrench.and.screwdriver",
+                title: "Developer",
+                subtitle: "Pre-launch testing knobs — not visible in shipped builds."
+            )
+            Toggle(isOn: $settings.fasterSnapshots) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("1-minute snapshot cadence")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text("Fires a light pipeline pass every 60 seconds during recording instead of waiting 5+ minutes between updates. Burns API credits faster — use only for testing.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(FoyerTheme.gold)
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+    #endif
 
     private var sendAsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -5959,6 +5992,17 @@ private struct IPadRecord: View {
                     .tracking(2.0)
                     .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
             }
+            #if DEBUG
+            if DevSettings.shared.anyEnabled {
+                Text("DEV")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.6)
+                    .foregroundStyle(FoyerTheme.gold)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(FoyerTheme.gold.opacity(0.15)))
+                    .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+            }
+            #endif
             snapshotPill
             Spacer()
             Text(timeString)

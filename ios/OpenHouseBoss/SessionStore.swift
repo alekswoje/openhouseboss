@@ -188,7 +188,16 @@ final class SessionStore {
         pendingSpeakersExpected = nil
         pendingScriptId = nil
         pendingKioskGuests = []
-        let schedule = SessionStore.liveSnapshotSchedule
+        // Dev-mode override (Debug only) lets the user run faster snapshot
+        // ticks at a friends-and-family test gathering — see DevMode.swift.
+        // Falls back to the production schedule on release builds and when
+        // the toggle is off.
+        var schedule = SessionStore.liveSnapshotSchedule
+        #if DEBUG
+        if let dev = DevSettings.shared.snapshotScheduleOverride {
+            schedule = dev
+        }
+        #endif
         liveSnapshotTask = Task { [weak self] in
             guard let self else { return }
             let started = Date()
