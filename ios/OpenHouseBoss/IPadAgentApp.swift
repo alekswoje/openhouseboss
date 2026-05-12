@@ -257,7 +257,18 @@ struct IPadAgentApp: View {
         // the side rail. The pre-filter only sticks on EXPLICIT routes —
         // tapping a recent session, or "Open in Leads" from Session Detail —
         // so visiting the Leads tab from the rail always lands on All leads.
-        if t == .leads { activeSessionId = nil }
+        if t == .leads {
+            activeSessionId = nil
+            // Leads has its own internal 340pt list sidebar — collapse the
+            // main rail so the reading column has breathing room. We don't
+            // persist this to UserDefaults; the agent's saved preference is
+            // restored on launch and they can still expand manually.
+            if !sidebarCollapsed {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                    sidebarCollapsed = true
+                }
+            }
+        }
         tab = t
     }
 
@@ -2064,6 +2075,25 @@ private struct IPadLeads: View {
     // confirmation.
     @State private var showLeadsAgent: Bool = false
 
+    // Per-lead expansion state for the "What we heard" summary block — keyed
+    // by LeadRow.id. Default is collapsed (3-line clamp) so the agent lands
+    // on the draft + actions without scrolling past a wall of text.
+    @State private var expandedSummaries: Set<String> = []
+
+    // Inline Refine-with-AI state — lets the agent rewrite the draft
+    // without first clicking Edit. The instruction text and in-flight
+    // status are keyed by LeadRow.id so switching leads doesn't smear
+    // typing or spinners across rows.
+    @State private var inlineRefineText: [String: String] = [:]
+    @State private var inlineRefiningId: String?
+    @State private var inlineRefineError: String?
+
+    // Score-explainer popover anchor inside the detail header. SwiftUI
+    // popovers are per-view; the boolean lives on the parent so the
+    // header sub-view can read/toggle it without losing identity on
+    // re-render.
+    @State private var showScoreInfo: Bool = false
+
     private var filteredLeads: [LeadRow] {
         guard let id = filterSessionId else { return allLeads }
         return allLeads.filter { $0.session.id == id }
@@ -2346,16 +2376,22 @@ private struct IPadLeads: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 // Name + score on the same baseline so the column reads as
-                // a quick triage list.
+                // a quick triage list. Score reads as "X / 100" so the
+                // number isn't ambiguous on its own.
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(v.displayName)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(FoyerTheme.cream)
                         .lineLimit(1)
                     Spacer()
-                    Text("\(v.analysis.score)")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
+                    HStack(spacing: 2) {
+                        Text("\(v.analysis.score)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
+                        Text("/100")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
                 }
                 // Address line — which open house this lead came from. Once
                 // we wire up the MLS API we'll turn this into a chevron-able
@@ -2369,6 +2405,28 @@ private struct IPadLeads: View {
                             .font(.system(size: 11))
                             .foregroundStyle(FoyerTheme.creamDim)
                             .lineLimit(1)
+                    }
+                }
+                // Contact line — surface email or phone in the list so the
+                // agent can see at a glance whether the lead is reachable
+                // without having to open the detail pane. Inlined (rather
+                // than calling primaryContact) because the surrounding
+                // view body is already complex enough that SwiftUI's type
+                // checker chokes on the helper call.
+                let contactIcon: String? = !v.visitor.email.isEmpty ? "envelope"
+                    : (!v.visitor.phone.isEmpty ? "phone" : nil)
+                let contactText: String = !v.visitor.email.isEmpty ? v.visitor.email
+                    : v.visitor.phone
+                if let icon = contactIcon {
+                    HStack(spacing: 4) {
+                        Image(systemName: icon)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.creamDim.opacity(0.7))
+                        Text(contactText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 // Tag + state pill row.
@@ -2467,13 +2525,22 @@ private struct IPadLeads: View {
         }
     }
 
+    // Pick the best contact line for the list row. Email wins because it's
+    // the channel we actually send through; phone is the fallback so the
+    // agent at least sees they have SOMETHING to reach this person on.
+    private func primaryContact(_ v: VisitorResult) -> (icon: String, text: String)? {
+        if !v.visitor.email.isEmpty { return ("envelope", v.visitor.email) }
+        if !v.visitor.phone.isEmpty { return ("phone", v.visitor.phone) }
+        return nil
+    }
+
     @ViewBuilder
     private var content: some View {
         if let row = current {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 36) {
                     visitorHeader(row)
-                    summary(row.visitor)
+                    summary(row)
                     followup(row.visitor, session: row.session)
                     scheduledSection(row)
                     historySection(row)
@@ -2538,9 +2605,22 @@ private struct IPadLeads: View {
                             .background(
                                 Capsule().fill(tagColor(v.analysis.tagToken).opacity(0.12))
                             )
-                        Text("Score \(v.analysis.score)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(FoyerTheme.creamDim)
+                        Button { showScoreInfo.toggle() } label: {
+                            HStack(spacing: 4) {
+                                Text("Score \(v.analysis.score) / 100")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(FoyerTheme.creamDim)
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(FoyerTheme.textMuted)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.05)))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showScoreInfo, arrowEdge: .top) {
+                            scoreInfoPopover(v.analysis.score)
+                        }
                         if let state = v.leadState, state.status != .drafted {
                             statusPill(state.status)
                         }
@@ -2600,16 +2680,89 @@ private struct IPadLeads: View {
         .foregroundStyle(FoyerTheme.creamDim)
     }
 
-    private func summary(_ v: VisitorResult) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("What we heard")
-                .font(.system(size: 13, weight: .medium))
+    // Explains what the 0–100 lead score means. Reasoning behind the
+    // current score band is included so the agent can sanity-check the
+    // model's call without leaving the detail pane.
+    private func scoreInfoPopover(_ score: Int) -> some View {
+        let band: (label: String, color: Color, blurb: String) = {
+            switch score {
+            case 80...:
+                return ("Hot lead",
+                        FoyerTheme.gold,
+                        "Strong buying or selling signals — likely a near-term opportunity.")
+            case 50..<80:
+                return ("Warm lead",
+                        FoyerTheme.sage,
+                        "Some intent signals but key details (timeline, budget, pre-approval) are missing.")
+            default:
+                return ("Cold lead",
+                        FoyerTheme.terracotta,
+                        "Minimal engagement or unclear intent — likely a casual browser.")
+            }
+        }()
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("\(score) / 100")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(band.color)
+                Text(band.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(band.color)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(band.color.opacity(0.14)))
+            }
+            Text(band.blurb)
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(3)
+            Divider().background(FoyerTheme.hairline)
+            Text("How it's scored")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.6)
                 .foregroundStyle(FoyerTheme.textDim)
+            Text("Foyer's AI rates each lead 0–100 by analyzing what they said during the open house: budget mentions, timeline, pre-approval, motivation, and engagement depth. Higher means more buying or selling intent.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(3)
+        }
+        .padding(16)
+        .frame(width: 320)
+        .background(Color(white: 0.07))
+    }
+
+    private func summary(_ row: LeadRow) -> some View {
+        let v = row.visitor
+        let expanded = expandedSummaries.contains(row.id)
+        return VStack(alignment: .leading, spacing: 14) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    if expanded { expandedSummaries.remove(row.id) }
+                    else { expandedSummaries.insert(row.id) }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("What we heard")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Spacer()
+                    if !expanded {
+                        Text("Show more")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             Text(v.analysis.summary)
-                .font(.system(size: 17))
+                .font(.system(size: 15))
                 .foregroundStyle(FoyerTheme.cream)
-                .lineSpacing(6)
-            if !v.analysis.signals.isEmpty {
+                .lineSpacing(5)
+                .lineLimit(expanded ? nil : 3)
+            if expanded && !v.analysis.signals.isEmpty {
                 FlowLayout(spacing: 6) {
                     ForEach(v.analysis.signals, id: \.self) { s in
                         Text(s)
@@ -2621,7 +2774,7 @@ private struct IPadLeads: View {
                             )
                     }
                 }
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
         }
     }
@@ -2629,6 +2782,107 @@ private struct IPadLeads: View {
     private func draftBodyFor(_ row: LeadRow) -> String {
         row.visitor.leadState?.draftOverride?.body
             ?? row.visitor.analysis.followUpDraft
+    }
+
+    // Inline refine row shown beneath the static draft display so the agent
+    // doesn't have to enter edit mode just to rewrite. Submitting either
+    // posts to /refine and overwrites the lead's draftOverride server-side,
+    // mirroring what DraftEditorPane does after a Save tap.
+    private func inlineRefineRow(for row: LeadRow, currentBody: String) -> some View {
+        let instruction = inlineRefineText[row.id] ?? ""
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refining = (inlineRefiningId == row.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("Refine with AI")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(FoyerTheme.creamDim)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                TextField(
+                    "e.g. shorter, add a CTA, more casual",
+                    text: Binding(
+                        get: { inlineRefineText[row.id] ?? "" },
+                        set: { inlineRefineText[row.id] = $0 }
+                    ),
+                    axis: .horizontal
+                )
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .submitLabel(.send)
+                .autocorrectionDisabled(false)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 10))
+                .disabled(refining)
+                .onSubmit { Task { await runInlineRefine(for: row, currentBody: currentBody) } }
+
+                Button { Task { await runInlineRefine(for: row, currentBody: currentBody) } } label: {
+                    HStack(spacing: 6) {
+                        if refining {
+                            ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
+                        } else {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        Text(refining ? "Refining…" : "Rewrite")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(trimmed.isEmpty ? FoyerTheme.textMuted : FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(
+                        Capsule().fill(trimmed.isEmpty
+                                       ? Color(white: 0.10)
+                                       : FoyerTheme.gold)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(trimmed.isEmpty || refining)
+            }
+            if let err = inlineRefineError, inlineRefiningId == nil {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+        }
+    }
+
+    @MainActor
+    private func runInlineRefine(for row: LeadRow, currentBody: String) async {
+        let trimmed = (inlineRefineText[row.id] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        inlineRefiningId = row.id
+        inlineRefineError = nil
+        defer { inlineRefiningId = nil }
+        do {
+            let newBody = try await APIClient.shared.refineDraft(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                instruction: trimmed,
+                baseBody: currentBody
+            )
+            // Persist as draftOverride so the rewrite survives reloads and
+            // matches what Edit-then-Save would have done.
+            let state = try await APIClient.shared.updateDraft(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                body: newBody,
+                subject: nil,
+                clear: false
+            )
+            apply(state, to: row)
+            inlineRefineText[row.id] = ""
+        } catch {
+            inlineRefineError = friendlyErrorMessage("Refine failed", error: error)
+        }
     }
 
     private func followup(_ v: VisitorResult, session: Session) -> some View {
@@ -2708,6 +2962,7 @@ private struct IPadLeads: View {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(Color(white: 0.05))
                     )
+                inlineRefineRow(for: row, currentBody: currentBody)
             }
 
             HStack(spacing: 10) {

@@ -115,14 +115,16 @@ actor APIClient {
     // DO NOT use this for non-idempotent ops like send_email — they
     // would silently double-send. Use the single-shot path for those
     // and surface failures to the user.
-    // Two-phase timeout: the first attempt eats the cold start (45s is
-    // enough for Render's typical wake-up + a Haiku call), then later
-    // attempts run on a hot dyno and only need a short timeout. Total
-    // worst case: 45 + 15 + 15 ≈ 75s of waiting, not 6 minutes.
+    // Backend runs on Render's paid plan (no cold starts), so the dyno is
+    // always warm. We still retry on transient 502/503/504 because
+    // Cloudflare can briefly fail to reach the origin, but per-attempt
+    // timeouts are tight: Haiku rewrites finish in 1-3s on a warm worker,
+    // so anything past ~20s means something's really wrong and a retry
+    // is overdue. Worst case total: 20 + 1 + 8 + 1 + 8 ≈ 38s, not minutes.
     private func coldStartPOST(
         request original: URLRequest,
-        firstTimeout: TimeInterval = 45,
-        retryTimeout: TimeInterval = 15,
+        firstTimeout: TimeInterval = 20,
+        retryTimeout: TimeInterval = 8,
         maxAttempts: Int = 3
     ) async throws -> (Data, URLResponse) {
         var lastError: Error?
@@ -166,19 +168,14 @@ actor APIClient {
         throw lastError ?? URLError(.unknown)
     }
 
-    // Cold-start-tolerant GET. Render's free tier can take 30-60s to wake
-    // up an idle service, so the first request after the app launches often
-    // blows past the snappy 8s default. This helper:
-    //   - sets a generous per-request timeout (45s) on a freshly-built
-    //     URLRequest so we don't inherit the session default,
-    //   - retries up to `maxAttempts` times when the network surfaces a
-    //     transient error (timeout, connection lost, can't connect, DNS),
-    //   - waits a short backoff between attempts.
-    // Authoritative server errors (4xx/5xx) are NOT retried — they're
-    // forwarded to the caller via `validate`.
+    // Resilient GET — short timeout per attempt + retry on transient
+    // network errors so a single dropped packet doesn't show as an empty
+    // Home/Leads screen. Backend is on Render's paid plan (always warm),
+    // so we don't need huge timeouts. Authoritative server errors
+    // (4xx/5xx) are NOT retried — they're forwarded via `validate`.
     private func coldStartGET(
         path: String,
-        timeout: TimeInterval = 45,
+        timeout: TimeInterval = 15,
         maxAttempts: Int = 3
     ) async throws -> (Data, URLResponse) {
         var lastError: Error?
@@ -219,18 +216,14 @@ actor APIClient {
         throw lastError ?? URLError(.unknown)
     }
 
-    // Fire-and-forget ping that wakes Render's free-tier service before
-    // the user actually touches anything. The whole point is to overlap
-    // the cold-start with the splash + login screen, so by the time the
-    // user signs in and lands on Home, the backend is hot. We ignore the
-    // result — this is best-effort, not authoritative — and use a long
-    // timeout so the wake-up has room to complete (60s is more than
-    // enough for any plausible Render cold start).
+    // Fire-and-forget ping that pre-touches the backend during the splash.
+    // The dyno is always warm (paid plan), but a fresh deploy still has to
+    // import Python modules on the first hit; doing that during the splash
+    // means the user's first real action is fast. Cheap insurance — runs
+    // detached, errors ignored.
     func warmup() async {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("healthz"))
-        req.timeoutInterval = 60
-        // No auth — /healthz is public so we don't need a token to wake
-        // the dyno. Calling pre-login should still work.
+        req.timeoutInterval = 10
         _ = try? await self.session.data(for: req)
     }
 
@@ -497,12 +490,12 @@ actor APIClient {
     }
 
     func getSession(id: String) async throws -> Session {
-        // Cold-start tolerant: the Leads inbox fans out one of these per
-        // session in parallel on launch, so if any single one trips the
-        // default timeout the row goes missing. Retry with backoff so the
-        // first user-visible inbox is complete.
+        // Leads inbox fans out one of these per session in parallel on
+        // launch, so a single drop would leave a row missing. Retry with
+        // a short timeout — backend is always warm so each call lands in
+        // a couple seconds.
         let (data, response) = try await coldStartGET(
-            path: "sessions/\(id)", timeout: 30, maxAttempts: 3
+            path: "sessions/\(id)", timeout: 15, maxAttempts: 3
         )
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
@@ -644,13 +637,11 @@ actor APIClient {
         ))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Gmail send is synchronous on the backend (with its own 20s timeout
-        // talking to Google) and can ride a Render cold-start wake-up. The
-        // global 8s session timeout is way too tight for this path — bump
-        // per-request so a real send doesn't surface as "request timed out".
-        // 120s is generous enough that even a worst-case Render wake-up
-        // (~50s) + Gmail call (~20s) completes inside the window.
-        req.timeoutInterval = 120
+        // Gmail send is synchronous on the backend (with its own 20s
+        // timeout talking to Google) and Render's paid dyno is always
+        // warm, so 30s is plenty: ~1s to hit the worker, up to 20s for
+        // Google, a few seconds to write state and respond.
+        req.timeoutInterval = 30
         authorize(&req)
 
         var payload: [String: Any] = [
