@@ -278,6 +278,28 @@ struct DraftOverride: Codable, Hashable {
 
 // MARK: – Follow-up templates
 
+// Offers / campaigns the agent has authored. Each has a short `name`
+// (no spaces — used as the @reference token in refine instructions and
+// in the leads-AI agent) and a body with the actual marketing copy.
+struct Offer: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String       // @-reference identifier, e.g. "buyerCredit"
+    var headline: String   // short label shown in lists, e.g. "$2,500 buyer credit"
+    var body: String       // full text the AI weaves into emails
+    var createdAt: String?
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, headline, body
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct OffersEnvelope: Codable, Hashable {
+    var offers: [Offer]
+}
+
 struct FollowupTemplate: Codable, Hashable, Identifiable {
     var id: String
     var name: String

@@ -20,7 +20,7 @@ import UIKit
 // APIClient.updateLeadState. No SampleData references here.
 struct IPadAgentApp: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case home, record, kiosk, leads, listings, profile
+        case home, record, kiosk, leads, offers, listings, profile
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -28,6 +28,7 @@ struct IPadAgentApp: View {
             case .record:   return "Record"
             case .kiosk:    return "Kiosk"
             case .leads:    return "Leads"
+            case .offers:   return "Offers"
             case .listings: return "Listings"
             case .profile:  return "Profile"
             }
@@ -38,6 +39,7 @@ struct IPadAgentApp: View {
             case .record:   return "waveform"
             case .kiosk:    return "person.badge.plus"
             case .leads:    return "tray"
+            case .offers:   return "tag"
             case .listings: return "square.grid.2x2"
             case .profile:  return "person.crop.circle"
             }
@@ -48,6 +50,7 @@ struct IPadAgentApp: View {
             case .record:   return "waveform.circle.fill"
             case .kiosk:    return "person.badge.plus.fill"
             case .leads:    return "tray.fill"
+            case .offers:   return "tag.fill"
             case .listings: return "square.grid.2x2.fill"
             case .profile:  return "person.crop.circle.fill"
             }
@@ -345,6 +348,8 @@ struct IPadAgentApp: View {
             )
         case .leads:
             IPadLeads(store: store, initialFilter: activeSessionId)
+        case .offers:
+            IPadOffers()
         case .listings:
             IPadListings(
                 store: store,
@@ -4673,7 +4678,7 @@ private struct DraftEditorPane: View {
             }
             HStack(spacing: 8) {
                 TextField(
-                    "e.g. shorter, add a CTA, more casual",
+                    "e.g. shorter, add a CTA, mention @offerName",
                     text: $instruction,
                     axis: .horizontal
                 )
@@ -4997,7 +5002,7 @@ private struct LeadsAgentSheet: View {
                 )
                 .overlay(alignment: .topLeading) {
                     if input.isEmpty {
-                        Text("e.g. \"Send our $2,500 buyer credit offer to every buyer lead\" or \"Who are my hottest sellers right now?\"")
+                        Text("e.g. \"Send @buyerCredit to every buyer lead\" or \"Who are my hottest sellers right now?\" — reference an offer with @name (define them in the Offers tab).")
                             .font(.system(size: 13))
                             .foregroundStyle(FoyerTheme.textMuted)
                             .padding(.horizontal, 17).padding(.top, 19)
@@ -5271,6 +5276,363 @@ private struct LeadsAgentSheet: View {
             sendResult = result
         } catch {
             errorMessage = "Bulk send failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: – Offers / campaigns
+
+// The Offers tab lets the agent author short marketing angles ("$2,500
+// buyer credit", "Saturday 1pm tour", etc.) that the AI can weave into
+// outbound emails on demand. Each offer has a short @-reference name
+// (used in Refine instructions and the inbox AI: "add @buyerCredit to
+// this email" or "send @buyerCredit to all buyer leads") plus a longer
+// body that's the actual marketing copy.
+
+private struct IPadOffers: View {
+    @State private var offers: [Offer] = []
+    @State private var loading: Bool = true
+    @State private var loadError: String?
+    @State private var editingOffer: Offer?
+    @State private var showCreate: Bool = false
+    @State private var pendingDelete: Offer?
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 28) {
+                header
+                if loading && offers.isEmpty {
+                    HStack {
+                        Spacer()
+                        FoyerLoadingView(size: 64, cornerRadius: 10)
+                        Spacer()
+                    }
+                    .padding(.top, 60)
+                } else if offers.isEmpty {
+                    emptyState
+                } else {
+                    grid
+                }
+                if let loadError {
+                    Text(loadError)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                }
+            }
+            .padding(.horizontal, 44)
+            .padding(.top, 36)
+            .padding(.bottom, 120)
+        }
+        .refreshable { await load() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .task { await load() }
+        .sheet(isPresented: $showCreate) {
+            OfferEditorSheet(
+                existing: nil,
+                onCancel: { showCreate = false },
+                onSaved: { offer in
+                    offers.append(offer)
+                    showCreate = false
+                }
+            )
+        }
+        .sheet(item: $editingOffer) { offer in
+            OfferEditorSheet(
+                existing: offer,
+                onCancel: { editingOffer = nil },
+                onSaved: { updated in
+                    if let idx = offers.firstIndex(where: { $0.id == updated.id }) {
+                        offers[idx] = updated
+                    }
+                    editingOffer = nil
+                }
+            )
+        }
+        .alert(
+            "Delete this offer?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { offer in
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button("Delete", role: .destructive) {
+                Task { await performDelete(offer) }
+            }
+        } message: { offer in
+            Text("Permanently remove @\(offer.name). Any future @reference to it will be ignored. This can't be undone.")
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Offers")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.5)
+                Text("Reusable marketing angles. Reference with @name in any AI prompt to weave them into emails.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineSpacing(3)
+            }
+            Spacer()
+            Button { showCreate = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("New offer")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 16).padding(.vertical, 11)
+                .background(Capsule().fill(FoyerTheme.gold))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "tag")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+            Text("No offers yet")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text("Create a $2,500 buyer credit, a free CMA, an open-house preview — anything you want the AI to mention on demand.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textMuted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .lineSpacing(3)
+            Button { showCreate = true } label: {
+                Text("Create your first offer")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(Capsule().fill(FoyerTheme.gold))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(white: 0.04))
+        )
+    }
+
+    private var grid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 16)], spacing: 16) {
+            ForEach(offers) { offer in
+                offerCard(offer)
+            }
+        }
+    }
+
+    private func offerCard(_ offer: Offer) -> some View {
+        Button { editingOffer = offer } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("@\(offer.name)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .tracking(0.4)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(FoyerTheme.gold.opacity(0.12)))
+                    Spacer()
+                    Button {
+                        pendingDelete = offer
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.terracotta.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                }
+                if !offer.headline.isEmpty {
+                    Text(offer.headline)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(2)
+                }
+                Text(offer.body)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(4)
+                    .lineLimit(5)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(white: 0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(FoyerTheme.hairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            offers = try await APIClient.shared.listOffers()
+        } catch {
+            loadError = "Couldn't load offers: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func performDelete(_ offer: Offer) async {
+        do {
+            try await APIClient.shared.deleteOffer(id: offer.id)
+            offers.removeAll { $0.id == offer.id }
+            pendingDelete = nil
+        } catch {
+            loadError = "Couldn't delete: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct OfferEditorSheet: View {
+    let existing: Offer?
+    var onCancel: () -> Void
+    var onSaved: (Offer) -> Void
+
+    @State private var name: String
+    @State private var headline: String
+    @State private var bodyText: String
+    @State private var submitting: Bool = false
+    @State private var errorMessage: String?
+
+    init(existing: Offer?, onCancel: @escaping () -> Void, onSaved: @escaping (Offer) -> Void) {
+        self.existing = existing
+        self.onCancel = onCancel
+        self.onSaved = onSaved
+        _name = State(initialValue: existing?.name ?? "")
+        _headline = State(initialValue: existing?.headline ?? "")
+        _bodyText = State(initialValue: existing?.body ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("@reference name").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        TextField("e.g. buyerCredit", text: $name)
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .tint(FoyerTheme.gold)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .padding(.vertical, 14).padding(.horizontal, 14)
+                            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+                        Text("Letters, digits, underscores only. Used as @\(name.isEmpty ? "name" : name) in Refine and Inbox AI prompts.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Headline (short label)").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        TextField("e.g. $2,500 buyer credit", text: $headline)
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .tint(FoyerTheme.gold)
+                            .padding(.vertical, 14).padding(.horizontal, 14)
+                            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Body").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        TextEditor(text: $bodyText)
+                            .font(.system(size: 15))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .tint(FoyerTheme.gold)
+                            .scrollContentBackground(.hidden)
+                            .padding(12)
+                            .frame(minHeight: 180)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color(white: 0.06))
+                            )
+                        Text("The marketing copy the AI will weave into emails. Describe what the offer is, who qualifies, any deadline, and what action you want the lead to take.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .lineSpacing(2)
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle(existing == nil ? "New offer" : "Edit offer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { Task { await save() } } label: {
+                        if submitting { ProgressView() } else { Text("Save") }
+                    }
+                    .foregroundStyle(canSave ? FoyerTheme.gold : FoyerTheme.textMuted)
+                    .disabled(!canSave || submitting)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var canSave: Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedName.isEmpty && !trimmedBody.isEmpty
+    }
+
+    @MainActor
+    private func save() async {
+        submitting = true
+        errorMessage = nil
+        defer { submitting = false }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedHeadline = headline.trimmingCharacters(in: .whitespaces)
+        let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let offer: Offer
+            if let existing {
+                offer = try await APIClient.shared.updateOffer(
+                    id: existing.id, name: trimmedName,
+                    headline: trimmedHeadline, body: trimmedBody
+                )
+            } else {
+                offer = try await APIClient.shared.createOffer(
+                    name: trimmedName, headline: trimmedHeadline, body: trimmedBody
+                )
+            }
+            onSaved(offer)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

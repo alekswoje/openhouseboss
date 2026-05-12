@@ -303,6 +303,42 @@ def set_my_force_templates(
 
 
 # --------------------------------------------------------------------------
+# Offers / campaigns (per user)
+# --------------------------------------------------------------------------
+
+
+@app.get("/me/offers")
+def list_my_offers(current_user: dict = Depends(auth_lib.get_current_user)):
+    return {"offers": auth_lib.list_offers_for(current_user["id"])}
+
+
+@app.post("/me/offers")
+def create_my_offer(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.create_offer(current_user["id"], payload)
+
+
+@app.patch("/me/offers/{offer_id}")
+def update_my_offer(
+    offer_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.update_offer(current_user["id"], offer_id, payload)
+
+
+@app.delete("/me/offers/{offer_id}")
+def delete_my_offer(
+    offer_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    auth_lib.delete_offer(current_user["id"], offer_id)
+    return {"deleted": offer_id}
+
+
+# --------------------------------------------------------------------------
 # Leads AI agent — ask questions, propose batch sends
 # --------------------------------------------------------------------------
 
@@ -370,8 +406,17 @@ def leads_agent_chat(
 
     leads = _collect_user_leads(current_user["id"])
     agent_name = (current_user.get("name") or "").strip()
+    # Resolve @offerName references the agent dropped in their message —
+    # lets them say "send @buyerCredit to all buyer leads" and have the
+    # offer copy materialize in every recipient's body.
+    resolved_offers = _resolve_offer_mentions(current_user["id"], message)
     try:
-        result = query_leads_agent(message=message, leads=leads, agent_name=agent_name)
+        result = query_leads_agent(
+            message=message,
+            leads=leads,
+            agent_name=agent_name,
+            offers=resolved_offers,
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"AI agent failed: {exc}")
     if not isinstance(result, dict) or "kind" not in result:
@@ -1247,6 +1292,14 @@ def refine_visitor_draft(
         tag = analysis.get("tag") or ""
         display_name = visitor.get("name") or name
 
+    # Resolve any @offerName references the agent dropped in the
+    # instruction. Each resolved offer becomes a context block the LLM
+    # can weave into the rewrite. Unknown @names are left alone — the
+    # LLM will treat them as literal text and the agent can fix the
+    # typo. Returns the instruction (unchanged) + a list of resolved
+    # offer dicts to feed into refine_draft as context.
+    resolved_offers = _resolve_offer_mentions(current_user["id"], instruction)
+
     new_body = refine_draft(
         current_body=base_body,
         instruction=instruction,
@@ -1254,8 +1307,37 @@ def refine_visitor_draft(
         visitor_summary=summary,
         visitor_tag=tag,
         address=address,
+        offers=resolved_offers,
     )
-    return {"body": new_body}
+    return {"body": new_body, "resolved_offers": [
+        {"id": o.get("id"), "name": o.get("name"), "headline": o.get("headline")}
+        for o in resolved_offers
+    ]}
+
+
+_OFFER_MENTION_RE = _re.compile(r"@([A-Za-z0-9_]{1,40})")
+
+
+def _resolve_offer_mentions(user_id: str, text: str) -> list[dict]:
+    """Find @offerName tokens in `text` and pull the full offer dict for
+    each one. Returns a list (preserving first-seen order, deduplicated)
+    so the LLM gets each offer's headline + body exactly once even if
+    the agent wrote the same @name twice.
+    """
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[dict] = []
+    for match in _OFFER_MENTION_RE.finditer(text):
+        name = match.group(1)
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        offer = auth_lib.get_offer_by_name(user_id, name)
+        if offer is not None:
+            out.append(offer)
+    return out
 
 
 @app.patch("/sessions/{session_id}/visitors/contact")

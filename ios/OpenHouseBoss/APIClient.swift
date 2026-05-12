@@ -985,6 +985,43 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    // MARK: – Offers / campaigns
+
+    func listOffers() async throws -> [Offer] {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/offers"))
+        req.httpMethod = "GET"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(OffersEnvelope.self, from: data).offers
+    }
+
+    func createOffer(name: String, headline: String, body: String) async throws -> Offer {
+        let req = try crmRequest("me/offers", method: "POST", body: [
+            "name": name, "headline": headline, "body": body,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Offer.self, from: data)
+    }
+
+    func updateOffer(id: String, name: String, headline: String, body: String) async throws -> Offer {
+        let req = try crmRequest("me/offers/\(id)", method: "PATCH", body: [
+            "name": name, "headline": headline, "body": body,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Offer.self, from: data)
+    }
+
+    func deleteOffer(id: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/offers/\(id)"))
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
     func setForceTemplates(_ force: Bool) async throws -> Bool {
         let req = try crmRequest("me/force_templates", method: "POST", body: ["force": force])
         let (data, response) = try await self.session.data(for: req)

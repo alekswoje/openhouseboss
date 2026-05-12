@@ -24,6 +24,7 @@ import json
 
 from anthropic import Anthropic
 
+from .analyze import _scrub_placeholders
 from .identify import _extract_json
 
 MODEL = "claude-sonnet-4-6"
@@ -57,7 +58,12 @@ def _summarize_leads_for_llm(leads: list[dict]) -> str:
     return "\n".join(blocks)
 
 
-def query_leads_agent(message: str, leads: list[dict], agent_name: str = "") -> dict:
+def query_leads_agent(
+    message: str,
+    leads: list[dict],
+    agent_name: str = "",
+    offers: list[dict] | None = None,
+) -> dict:
     """Run one turn of the leads-agent conversation.
 
     `leads` items must each have: visitor{name,email,phone,speaker},
@@ -89,6 +95,29 @@ def query_leads_agent(message: str, leads: list[dict], agent_name: str = "") -> 
     lead_block = _summarize_leads_for_llm(leads)
     agent_clause = f"The agent's name is {agent_name}." if agent_name else ""
 
+    # Resolved @offerName mentions become a context block the LLM can
+    # weave into per-recipient bodies. Mentioned by name + headline +
+    # body so the model knows when the offer actually fits the lead.
+    offer_block = ""
+    if offers:
+        chunks = []
+        for o in offers:
+            name = (o.get("name") or "").strip()
+            headline = (o.get("headline") or "").strip()
+            ob = (o.get("body") or "").strip()
+            line = f"@{name}"
+            if headline:
+                line += f" — {headline}"
+            chunks.append(line + "\n" + ob)
+        offer_block = (
+            "\n\nThe agent's instruction references these offers — weave "
+            "the relevant material into each recipient's body. Don't quote "
+            "verbatim unless the offer body already reads like email copy, "
+            "and don't leave the @reference token in the output.\n\n"
+            + "\n\n".join(chunks)
+            + "\n"
+        )
+
     client = Anthropic()
     response = client.messages.create(
         model=MODEL,
@@ -106,8 +135,13 @@ def query_leads_agent(message: str, leads: list[dict], agent_name: str = "") -> 
             "Bodies must be SHORT (3-4 sentences, under 70 words), mobile-"
             "friendly, end with a single ask. Address recipients by first "
             "name. Reference what they said when natural. No greeting "
-            "boilerplate, no 'I hope this finds you well'. Sign off with the "
-            "agent's name on its own line.\n\n"
+            "boilerplate, no 'I hope this finds you well'. DO NOT include "
+            "any sign-off, signature line, or agent name — the email client "
+            "appends the agent's signature automatically. End each body "
+            "with the ask sentence. NEVER use bracketed placeholders like "
+            "[Agent Name], [Address], [Phone], etc. — they get sent as-is "
+            "and embarrass the agent. If you don't know a value, leave it "
+            "out.\n\n"
             "Skip leads with no email and report them in `skipped`. Do NOT "
             "invent leads, do NOT include duplicates. Use ONLY the leads "
             "below — refer to them by their visitor name + speaker + "
@@ -132,8 +166,17 @@ def query_leads_agent(message: str, leads: list[dict], agent_name: str = "") -> 
             "}\n\n"
             "Leads (one per line, [idx] is for your bookkeeping only):\n"
             + lead_block
+            + offer_block
         ),
         messages=[{"role": "user", "content": message}],
     )
     text = _extract_json(response.content[0].text)
-    return json.loads(text)
+    parsed = json.loads(text)
+    # Defensive: even with prompt guidance, models occasionally drop a
+    # [Bracketed Placeholder] into a per-recipient body. Scrub them so a
+    # bulk send doesn't push [Agent Name] into 30 inboxes.
+    if parsed.get("kind") == "plan":
+        for r in parsed.get("recipients") or []:
+            if isinstance(r, dict) and isinstance(r.get("body"), str):
+                r["body"] = _scrub_placeholders(r["body"])
+    return parsed

@@ -557,6 +557,112 @@ def delete_template(user_id: str, template_id: str) -> None:
     raise HTTPException(404, "User not found")
 
 
+# --------------------------------------------------------------------------
+# Offers / campaigns (per user)
+# --------------------------------------------------------------------------
+# Stored on the user record as `offers: [{id, name, headline, body, ...}]`.
+# Offers describe a marketing angle the agent wants to push — e.g. "$2,500
+# buyer credit", "Saturday 1pm tour" — and can be referenced by name in
+# AI refine instructions ("add @buyerCredit to this email") or in the
+# leads-AI agent ("send @buyerCredit to all buyer leads"). `name` is a
+# short identifier (no spaces) the agent uses as the @reference; the LLM
+# sees `headline` + `body` for context.
+
+def list_offers_for(user_id: str) -> list[dict]:
+    user = get_user_by_id(user_id)
+    return list((user or {}).get("offers") or [])
+
+
+def get_offer_by_name(user_id: str, name: str) -> dict | None:
+    """Case-insensitive lookup by `name` — used to resolve @reference
+    tokens the agent puts in free-text instructions."""
+    target = (name or "").strip().lower()
+    if not target:
+        return None
+    for o in list_offers_for(user_id):
+        if (o.get("name") or "").strip().lower() == target:
+            return o
+    return None
+
+
+def _validate_offer_payload(payload: dict) -> dict:
+    name = (payload.get("name") or "").strip()
+    headline = (payload.get("headline") or "").strip()
+    body = (payload.get("body") or "").strip()
+    if not name:
+        raise HTTPException(400, "Offer name is required")
+    # @-reference must be a single word — strip spaces and special chars
+    # so the LLM-side mention parser has something stable to match.
+    import re as _re
+    safe = _re.sub(r"[^A-Za-z0-9_]+", "", name)
+    if not safe:
+        raise HTTPException(400, "Offer name must contain letters or digits")
+    if not body:
+        raise HTTPException(400, "Offer body is required")
+    return {"name": safe, "headline": headline, "body": body}
+
+
+def create_offer(user_id: str, payload: dict) -> dict:
+    import uuid as _uuid
+    fields = _validate_offer_payload(payload)
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            # Names are unique per agent so @reference is unambiguous.
+            existing = (u.get("offers") or [])
+            if any((o.get("name") or "").lower() == fields["name"].lower() for o in existing):
+                raise HTTPException(400, f"Offer @{fields['name']} already exists")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            offer = {
+                "id": str(_uuid.uuid4()),
+                "name": fields["name"],
+                "headline": fields["headline"],
+                "body": fields["body"],
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            u["offers"] = existing + [offer]
+            _save_users(data)
+            return offer
+    raise HTTPException(404, "User not found")
+
+
+def update_offer(user_id: str, offer_id: str, payload: dict) -> dict:
+    fields = _validate_offer_payload(payload)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = list(u.get("offers") or [])
+            # Reject name collision with a DIFFERENT offer.
+            for o in arr:
+                if (o.get("name") or "").lower() == fields["name"].lower() \
+                        and o.get("id") != offer_id:
+                    raise HTTPException(400, f"Offer @{fields['name']} already exists")
+            for o in arr:
+                if o.get("id") == offer_id:
+                    o["name"] = fields["name"]
+                    o["headline"] = fields["headline"]
+                    o["body"] = fields["body"]
+                    o["updated_at"] = now_iso
+                    u["offers"] = arr
+                    _save_users(data)
+                    return o
+            raise HTTPException(404, "Offer not found")
+    raise HTTPException(404, "User not found")
+
+
+def delete_offer(user_id: str, offer_id: str) -> None:
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = [o for o in (u.get("offers") or []) if o.get("id") != offer_id]
+            u["offers"] = arr
+            _save_users(data)
+            return
+    raise HTTPException(404, "User not found")
+
+
 def send_gmail_email(
     user_id: str,
     to: str,

@@ -116,7 +116,11 @@ def analyze_visitor(
             "a reply — e.g. 'Want me to send the comps?' or 'Open to a 15-minute call "
             "Thursday?'). No long paragraphs, no boilerplate intro, no 'I hope this "
             "finds you well'. Reference exactly one thing they said, then the ask. "
-            "Sign-off is just the agent's name on its own line."
+            "DO NOT include any sign-off, signature line, or agent name — the "
+            "email client appends the agent's signature automatically. End the "
+            "body with the ask sentence. NEVER use bracketed placeholders like "
+            "[Agent Name], [Address], [Phone], etc. — they get sent as-is and "
+            "embarrass the agent. If you don't know a value, leave it out."
             + template_block
             + "\n\n"
             f"Visitor: {visitor.name} (Speaker {visitor.speaker})\n\n"
@@ -136,7 +140,39 @@ def analyze_visitor(
     text = _extract_json(response.content[0].text)
     parsed = json.loads(text)
     parsed["words_spoken"] = words_spoken
+    parsed["follow_up_draft"] = _scrub_placeholders(parsed.get("follow_up_draft") or "")
     return VisitorAnalysis(**parsed)
+
+
+# Bracketed placeholders ([Agent Name], [Address], [Phone Number], etc.)
+# in a drafted email are catastrophic — agents send them as-is and look
+# unprofessional. We tell the LLM not to use them, but LLMs ignore
+# instructions sometimes, so we also strip them defensively. The signed
+# email always has the agent's signature appended client-side, so any
+# closing salutation/agent line the LLM produces is also redundant
+# noise — we leave that alone (it's harmless if removed by the agent).
+import re as _re_placeholders
+
+_BRACKET_PLACEHOLDER_RE = _re_placeholders.compile(r"\[[^\[\]\n]{1,80}\]")
+
+
+def _scrub_placeholders(text: str) -> str:
+    """Remove any [Bracketed] placeholders and tidy the whitespace they
+    leave behind. Bracketed text up to 80 chars is treated as a
+    placeholder — long enough to catch "[Property Address]" but short
+    enough that a legitimate aside in brackets stays. Paragraph breaks
+    in the middle of the email are preserved; only stretches of 3+
+    blank lines (which only happen when a placeholder sat on its own
+    line) get collapsed.
+    """
+    if not text:
+        return text
+    cleaned = _BRACKET_PLACEHOLDER_RE.sub("", text)
+    # Collapse runs of 3+ newlines to 2 (= one blank line between
+    # paragraphs). Anything longer was usually the result of stripping
+    # a sign-off on its own line.
+    cleaned = _re_placeholders.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def refine_draft(
@@ -146,16 +182,21 @@ def refine_draft(
     visitor_summary: str | None = None,
     visitor_tag: str | None = None,
     address: str | None = None,
+    offers: list[dict] | None = None,
 ) -> str:
     """Rewrite an existing follow-up draft according to the agent's
     instruction ("too long", "add a CTA about the 1pm Saturday tour", "more
     casual", etc.).
 
+    `offers` is the list of @offerName references the agent dropped into
+    the instruction, pre-resolved by the caller to the full offer dicts
+    {name, headline, body}. The LLM weaves them into the rewrite as
+    concrete material (the "$2,500 buyer credit" text, etc.) instead of
+    leaving the @reference verbatim.
+
     Kept deliberately tight — we only return the new email body, no JSON
     envelope. The agent will see it slot into the editor where they can
-    still make manual tweaks. We pass the visitor summary + tag for context
-    so the AI keeps the message specific to this lead instead of generic
-    boilerplate.
+    still make manual tweaks.
     """
     body = (current_body or "").strip()
     ask = (instruction or "").strip()
@@ -173,6 +214,29 @@ def refine_draft(
         context_lines.append(f"What we heard: {visitor_summary}")
     context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
 
+    # Inject offer bodies so the LLM has the actual marketing copy on
+    # hand. Mention by @name in the instructions block too so the model
+    # ties the agent's free-text reference to the offer content.
+    offer_block = ""
+    if offers:
+        chunks = []
+        for o in offers:
+            name = (o.get("name") or "").strip()
+            headline = (o.get("headline") or "").strip()
+            ob = (o.get("body") or "").strip()
+            line = f"@{name}"
+            if headline:
+                line += f" — {headline}"
+            chunks.append(line + "\n" + ob)
+        offer_block = (
+            "The agent's instruction mentions these offers — weave their "
+            "content naturally into the rewrite (don't quote them verbatim "
+            "unless the agent explicitly asks for it; don't leave the "
+            "@reference in the output):\n\n"
+            + "\n\n".join(chunks)
+            + "\n\n"
+        )
+
     client = Anthropic()
     response = client.messages.create(
         # Haiku on the fast model so the agent isn't waiting 10s for an
@@ -187,7 +251,11 @@ def refine_draft(
             "4 sentences unless the agent explicitly asks for longer. End with "
             "a single specific ask the lead can reply to. No subject line, no "
             "greetings beyond a short hi/hello, no 'I hope this finds you well' "
-            "boilerplate. Sign-off is the agent's name on its own line. "
+            "boilerplate. DO NOT include any sign-off, signature line, or agent "
+            "name — the email client appends the agent's signature automatically. "
+            "End the body with the ask sentence. NEVER use bracketed placeholders "
+            "like [Agent Name], [Address], [Phone], etc. — they get sent as-is "
+            "and embarrass the agent. If you don't know a value, leave it out. "
             "Return ONLY the rewritten email body as plain text — no JSON, no "
             "quotes around the result, no commentary, no 'Here is the rewrite'."
         ),
@@ -195,6 +263,7 @@ def refine_draft(
             "role": "user",
             "content": (
                 f"{context_block}"
+                f"{offer_block}"
                 f"Current draft:\n{body or '(empty — write from scratch)'}\n\n"
                 f"Agent's instruction: {ask}\n\n"
                 "Rewrite the draft now."
@@ -216,4 +285,4 @@ def refine_draft(
         text.startswith("'") and text.endswith("'")
     ):
         text = text[1:-1].strip()
-    return text
+    return _scrub_placeholders(text)
