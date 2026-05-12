@@ -192,20 +192,19 @@ struct SplashView: View {
             .ignoresSafeArea()
             .animation(.easeOut(duration: 1.2), value: bloom)
 
-            VStack(spacing: 14) {
+            VStack(spacing: 18) {
                 Spacer()
 
-                // Eyebrow above the wordmark — small, monospaced, in gold.
-                Text("OPEN HOUSE")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .tracking(2.4)
-                    .foregroundStyle(FoyerTheme.gold)
+                // Glowing brand mark — same F that runs the loading state
+                // throughout the app, so the splash is unmistakably ours.
+                FoyerBrandMark(size: 92, cornerRadius: 20)
+                    .shadow(color: FoyerTheme.gold.opacity(0.5), radius: 18, y: 0)
                     .opacity(titleIn ? 1 : 0)
-                    .offset(y: titleIn ? 0 : 6)
+                    .scaleEffect(titleIn ? 1.0 : 0.86)
 
                 // Wordmark — large editorial serif.
-                Text("Boss")
-                    .foyerDisplay(64)
+                Text("Foyer")
+                    .foyerDisplay(72)
                     .foregroundStyle(FoyerTheme.cream)
                     .opacity(titleIn ? 1 : 0)
                     .offset(y: titleIn ? 0 : 10)
@@ -259,49 +258,105 @@ struct SplashView: View {
 
 // MARK: – Login (Google Sign-In)
 
-// Pre-auth landing inside the app. Editorial styling that matches the
-// splash: gold radial glow, serif wordmark, single Continue-with-Google
-// button. Tapping the button hands off to AuthStore.signInWithGoogle which
-// opens an ASWebAuthenticationSession on the backend's /auth/google/start.
+// Pre-auth landing inside the app. Editorial styling — gold radial bloom,
+// glowing-F mark, serif "Foyer" wordmark, single Continue-with-Google
+// button. The whole screen is choreographed: the bloom grows in first,
+// the mark fades + scales up, the wordmark slides up, a gold underline
+// draws across, the tagline appears, then the button rises into place
+// and starts a slow ambient glow pulse so it never feels static.
+// Tapping the button hands off to AuthStore.signInWithGoogle which opens
+// an ASWebAuthenticationSession on the backend's /auth/google/start.
 struct LoginView: View {
     @State private var auth = AuthStore.shared
     @State private var isSigningIn = false
+
+    // Choreography flags — each one drives one of the staggered animations.
+    @State private var bloom = false
+    @State private var markIn = false
+    @State private var titleIn = false
+    @State private var underlineWidth: CGFloat = 0
+    @State private var taglineIn = false
+    @State private var ctaIn = false
+    @State private var glowPulse = false
 
     var body: some View {
         ZStack {
             FoyerTheme.bgDeep.ignoresSafeArea()
 
+            // Animated gold bloom — grows from a tight halo to a wide
+            // radial wash as the screen settles. Matches the splash so
+            // the transition into login feels like one continuous moment.
             RadialGradient(
                 colors: [
-                    FoyerTheme.gold.opacity(0.22),
-                    FoyerTheme.gold.opacity(0.08),
+                    FoyerTheme.gold.opacity(0.28),
+                    FoyerTheme.gold.opacity(0.10),
                     .clear,
                 ],
-                center: .top, startRadius: 20, endRadius: 480
+                center: .center,
+                startRadius: 10,
+                endRadius: bloom ? 480 : 80
             )
+            .opacity(bloom ? 1 : 0)
             .ignoresSafeArea()
+            .animation(.easeOut(duration: 1.4), value: bloom)
 
             VStack {
                 Spacer()
-                VStack(spacing: 16) {
-                    Text("OPEN HOUSE")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .tracking(2.4)
-                        .foregroundStyle(FoyerTheme.gold)
-                    Text("Boss")
-                        .foyerDisplay(60)
+                VStack(spacing: 18) {
+                    FoyerBrandMark(size: 88, cornerRadius: 18)
+                        .shadow(color: FoyerTheme.gold.opacity(0.45),
+                                radius: glowPulse ? 28 : 14,
+                                x: 0,
+                                y: 0)
+                        .scaleEffect(markIn ? 1.0 : 0.86)
+                        .opacity(markIn ? 1 : 0)
+
+                    Text("Foyer")
+                        .foyerDisplay(72)
                         .foregroundStyle(FoyerTheme.cream)
+                        .opacity(titleIn ? 1 : 0)
+                        .offset(y: titleIn ? 0 : 14)
+
+                    Capsule()
+                        .fill(FoyerTheme.gold)
+                        .frame(width: underlineWidth, height: 2)
+                        .shadow(color: FoyerTheme.gold.opacity(0.6), radius: 6, y: 0)
+
                     Text("Every open house, quietly remembered.")
-                        .font(.system(size: 14))
+                        .font(.system(size: 15))
                         .foregroundStyle(FoyerTheme.creamDim)
                         .multilineTextAlignment(.center)
-                        .padding(.top, 4)
+                        .padding(.top, 6)
+                        .opacity(taglineIn ? 1 : 0)
+                        .offset(y: taglineIn ? 0 : 8)
                 }
                 Spacer()
                 signInBlock
                     .padding(.horizontal, 28)
                     .padding(.bottom, 60)
+                    .opacity(ctaIn ? 1 : 0)
+                    .offset(y: ctaIn ? 0 : 18)
             }
+        }
+        .onAppear { runIntroAnimation() }
+    }
+
+    // The staggered intro. Delays are tuned so each motion picks up where
+    // the previous one is mid-way through — the screen reads as one
+    // continuous gesture rather than five separate animations.
+    private func runIntroAnimation() {
+        withAnimation(.easeOut(duration: 1.2)) { bloom = true }
+        withAnimation(.spring(response: 0.7, dampingFraction: 0.78).delay(0.15)) {
+            markIn = true
+        }
+        withAnimation(.easeOut(duration: 0.7).delay(0.35)) { titleIn = true }
+        withAnimation(.easeOut(duration: 0.8).delay(0.55)) { underlineWidth = 160 }
+        withAnimation(.easeOut(duration: 0.6).delay(0.75)) { taglineIn = true }
+        withAnimation(.easeOut(duration: 0.6).delay(0.95)) { ctaIn = true }
+        // Slow ambient glow — never finishes, gives the screen a heartbeat
+        // so it doesn't feel frozen while the user looks for the button.
+        withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true).delay(1.3)) {
+            glowPulse = true
         }
     }
 
@@ -329,7 +384,10 @@ struct LoginView: View {
                 .padding(.vertical, 16)
                 .foregroundStyle(FoyerTheme.inkOnGold)
                 .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 14))
-                .shadow(color: FoyerTheme.gold.opacity(0.35), radius: 12, x: 0, y: 6)
+                .shadow(color: FoyerTheme.gold.opacity(glowPulse ? 0.55 : 0.30),
+                        radius: glowPulse ? 22 : 12,
+                        x: 0,
+                        y: 6)
             }
             .buttonStyle(.plain)
             .disabled(isSigningIn || auth.loading)
