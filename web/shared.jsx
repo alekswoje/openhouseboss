@@ -72,11 +72,27 @@ const Hairline = ({ vertical = false, style = {} }) => (
 // parallel. The result is memoized on window.foyerCache so navigating
 // between routes doesn't re-fetch.
 
+// Pulls FastAPI's `{"detail": "..."}` body out of an errored response
+// so the UI can show what actually went wrong instead of a bare status
+// code. Falls through to `${status} ${statusText}` for non-JSON bodies.
+async function _readError(r) {
+  let detail = '';
+  try {
+    const j = await r.clone().json();
+    if (j && typeof j === 'object') {
+      detail = j.detail || j.error || j.message || '';
+    }
+  } catch {
+    try { detail = (await r.text()).slice(0, 280); } catch {}
+  }
+  return detail ? `${detail}` : `${r.status} ${r.statusText}`;
+}
+
 const foyerApi = {
   async get(path) {
     const r = await fetch(path, { credentials: 'include' });
     if (r.status === 401) throw new Error('unauthenticated');
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    if (!r.ok) throw new Error(await _readError(r));
     return r.json();
   },
   async post(path, body) {
@@ -87,7 +103,7 @@ const foyerApi = {
       body: JSON.stringify(body || {}),
     });
     if (r.status === 401) throw new Error('unauthenticated');
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    if (!r.ok) throw new Error(await _readError(r));
     return r.json();
   },
 };
