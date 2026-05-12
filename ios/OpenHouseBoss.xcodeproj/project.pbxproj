@@ -35,6 +35,7 @@
 		D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */; };
 		D630737EBAA8096E73D8081A /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */; };
 		DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */; };
+		A891810C2CF44F57B4F91786 /* VoiceWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91257B83495E4A5585AA05B4 /* VoiceWaveform.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +82,7 @@
 		8247ED02EC4FF7ECE5498E73 /* RecordingLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingLiveActivity.swift; sourceTree = "<group>"; };
 		88172970AE449A66CFAE784B /* RecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordView.swift; sourceTree = "<group>"; };
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		91257B83495E4A5585AA05B4 /* VoiceWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWaveform.swift; sourceTree = "<group>"; };
 		A15107E5607D6C8A1CB330C5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		BB11FF22DD33EE44AA550001 /* foyer-loading.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = "foyer-loading.gif"; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				14804FB0F6B1FF7D9A98509F /* SummaryView.swift */,
 				6E0DF985428F286A7A4014BD /* Theme.swift */,
 				2AF9EB1C202D2DA5DB88A1EC /* VisitorDetailView.swift */,
+				91257B83495E4A5585AA05B4 /* VoiceWaveform.swift */,
 			);
 			path = OpenHouseBoss;
 			sourceTree = "<group>";
@@ -266,6 +269,7 @@
 				53A9D10A2C9014C5D5C8DF92 /* SummaryView.swift in Sources */,
 				325CF9ACBB86889E9D21EACC /* Theme.swift in Sources */,
 				75B80CF41E60950CFD1B894F /* VisitorDetailView.swift in Sources */,
+				A891810C2CF44F57B4F91786 /* VoiceWaveform.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -88,13 +88,14 @@ struct LiveView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 16)
 
-                MicOrb(level: rmsLevel, recording: recorder.isRecording && !paused)
-                    .frame(height: 160)
-
-                SmoothWaveform(levels: recorder.levels,
-                               accent: FoyerTheme.terracotta,
-                               trail: FoyerTheme.gold)
-                    .frame(height: 56)
+                // Single flowing-wave visualization replaces the old
+                // mic-disc + bar-meter pair. The orb is the visual
+                // anchor; multiple sine layers radiate around it and
+                // gently respond to the live mic level.
+                VoiceWaveform(level: rmsLevel,
+                              recording: recorder.isRecording && !paused,
+                              orbSize: 96)
+                    .frame(height: 220)
                     .padding(.horizontal, 18)
                     .padding(.bottom, 16)
             }

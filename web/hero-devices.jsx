@@ -49,6 +49,111 @@ const useStaggered = (schedule) => {
 };
 
 // iPhone — agent recording
+// VoiceWave — flowing sine-wave layers radiating from a glowing center
+// orb. Replaces every old "vertical bar VU meter" instance across the
+// app. Visually: black canvas, multiple gold sine paths at different
+// amplitudes/phases drifting horizontally, a soft gold glow in the
+// middle. No mic icon — the orb itself is the voice metaphor.
+//
+// Usage: <VoiceWave width={300} height={140} /> — sizes itself to its
+// container. Pure CSS animation on each path so it doesn't burn CPU.
+function VoiceWave({ width = 280, height = 140, orbSize = 64, animated = true }) {
+  // Each layer: amplitude (vertical swing), period (px per cycle),
+  // initial phase, stroke opacity, stroke width, scroll speed (s
+  // per cycle — negative scrolls right-to-left). The first three
+  // dominate the silhouette; the rest fill in the depth.
+  const layers = [
+    { amp: 22, period: 95,  phase: 0.0,  opacity: 0.85, sw: 1.6, dur: 7.0 },
+    { amp: 14, period: 70,  phase: 1.1,  opacity: 0.65, sw: 1.4, dur: 5.5 },
+    { amp: 28, period: 130, phase: 2.0,  opacity: 0.45, sw: 1.2, dur: 9.0 },
+    { amp: 10, period: 55,  phase: 2.8,  opacity: 0.55, sw: 1.0, dur: 4.5 },
+    { amp: 18, period: 105, phase: 0.6,  opacity: 0.35, sw: 1.0, dur: 8.0 },
+    { amp:  8, period: 42,  phase: 1.7,  opacity: 0.30, sw: 0.8, dur: 3.8 },
+  ];
+
+  // The wave SVG is rendered 2× wider than the visible area; we shift
+  // each path horizontally to animate flow. That way the wave never
+  // shows a seam where the path ends.
+  const svgWidth = width * 2;
+  const cy = height / 2;
+
+  function buildPath(layer) {
+    let d = `M 0 ${cy}`;
+    for (let x = 0; x <= svgWidth; x += 3) {
+      const y = cy + Math.sin(x / layer.period + layer.phase) * layer.amp;
+      d += ` L ${x.toFixed(1)} ${y.toFixed(2)}`;
+    }
+    return d;
+  }
+
+  return (
+    <div style={{
+      position: 'relative',
+      width, height,
+      overflow: 'hidden',
+      // Soft radial glow behind the orb so the waves feel like they're
+      // emanating from a light source.
+      background: 'radial-gradient(ellipse 50% 80% at center, rgba(196,162,82,0.10), transparent 70%)',
+    }}>
+      {/* Waves — mask to fade out at the edges so the loop is invisible */}
+      <svg
+        width={svgWidth} height={height}
+        viewBox={`0 0 ${svgWidth} ${height}`}
+        style={{
+          position: 'absolute',
+          top: 0, left: -width / 2,
+          WebkitMaskImage: `linear-gradient(to right, transparent 0%, black 10%, black 90%, transparent 100%)`,
+          maskImage: `linear-gradient(to right, transparent 0%, black 10%, black 90%, transparent 100%)`,
+        }}
+        aria-hidden="true">
+        {layers.map((l, i) => (
+          <path
+            key={i}
+            d={buildPath(l)}
+            stroke="var(--gold)"
+            strokeWidth={l.sw}
+            strokeLinecap="round"
+            fill="none"
+            opacity={l.opacity}
+            style={{
+              animation: animated ? `voiceWaveFlow${i % 2} ${l.dur}s linear infinite` : 'none',
+            }}
+          />
+        ))}
+      </svg>
+
+      {/* Center orb — no mic icon, just a gold glow */}
+      <div style={{
+        position: 'absolute',
+        left: '50%', top: '50%',
+        width: orbSize, height: orbSize,
+        marginLeft: -orbSize / 2, marginTop: -orbSize / 2,
+        borderRadius: '50%',
+        background:
+          'radial-gradient(circle at 35% 30%, #fff5d6 0%, var(--gold) 35%, rgba(196,162,82,0.6) 70%, transparent 100%)',
+        boxShadow:
+          '0 0 30px rgba(196,162,82,0.8), 0 0 80px rgba(196,162,82,0.45), inset 0 0 14px rgba(255,250,220,0.4)',
+        animation: animated ? 'voiceWavePulse 2.4s ease-in-out infinite' : 'none',
+      }} />
+
+      <style>{`
+        @keyframes voiceWaveFlow0 {
+          from { transform: translateX(0); }
+          to   { transform: translateX(-50%); }
+        }
+        @keyframes voiceWaveFlow1 {
+          from { transform: translateX(-50%); }
+          to   { transform: translateX(0); }
+        }
+        @keyframes voiceWavePulse {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.06); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // iPhone — RECORDING surface that captures the open house and lets
 // the AI identify each voice without the agent doing anything. The
 // only "typing" you'll see is the AI revealing the names it just
@@ -122,19 +227,10 @@ const HDIPhone = () => {
           </div>
         </div>
 
-        {/* Live waveform — auto-animates, no human input */}
-        <div style={{ marginTop: 12, padding: '12px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
-          <div style={{ display: 'flex', gap: 2.5, alignItems: 'center', height: 28 }}>
-            {Array.from({ length: 32 }).map((_, i) => (
-              <div key={i} style={{
-                width: 3, flex: 1,
-                background: 'var(--gold)',
-                opacity: 0.45 + (i % 3) * 0.18,
-                animation: `hbar${i % 4} 0.9s ease-in-out ${i * 45}ms infinite alternate`,
-                transformOrigin: 'center',
-              }} />
-            ))}
-          </div>
+        {/* Live voice wave — radiating sine layers around a glowing orb.
+            Pure ambient animation, no level meter chrome. */}
+        <div style={{ marginTop: 14, padding: '6px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
+          <VoiceWave width={268} height={92} orbSize={48} />
         </div>
 
         {/* AI-identified speakers — appears row-by-row as the AI tags them */}
@@ -246,40 +342,69 @@ const HDIPhone = () => {
 
 // iPad LANDSCAPE — KIOSK in fullscreen guest mode. Side rail is hidden
 // (locked kiosk), big listing photo on the left, sign-in form on the
-// right that auto-fills itself in a loop so visitors see what the
-// device does without anyone touching it.
+// right that auto-fills itself char-by-char in a loop so visitors see
+// the form filling itself in real time.
 const HDIPad = () => {
-  // Total guests counter that ticks up as the cycle loops.
-  const tickSec = useCount(0, 1000, 0);
-  const guestsIn = 4 + Math.floor(tickSec / 6);
+  // Fast tick (every 60ms) drives the whole cycle. Each phase
+  // computes the typed substring of its target field from this tick.
+  const tickFast = useCount(0, 60, 0);
 
-  // Cycling guest auto-fill. Stage indicates how far the form has
-  // animated:
-  //   0  empty
-  //   1  name typed
-  //   2  email typed
-  //   3  phone typed
-  //   4  agent answered + terms checked
-  //   5  Welcome overlay
-  // Loops back to 0 with the next guest.
+  // Phase durations in ticks (60ms each). Tuned so each name/email/
+  // phone types at ~one char per tick, with pauses between fields to
+  // mimic a real visitor.
+  const T_NAME    = 14;   // ~840ms
+  const T_PAUSE_1 = 6;    // ~360ms
+  const T_EMAIL   = 26;   // ~1560ms
+  const T_PAUSE_2 = 6;
+  const T_PHONE   = 18;
+  const T_PAUSE_3 = 4;
+  const T_AGENT   = 8;
+  const T_SUCCESS = 22;   // hold the Welcome overlay long enough to read
+  const T_TOTAL =
+    T_NAME + T_PAUSE_1 + T_EMAIL + T_PAUSE_2 +
+    T_PHONE + T_PAUSE_3 + T_AGENT + T_SUCCESS;
+
+  const t = tickFast % T_TOTAL;
+  const guestIdx = Math.floor(tickFast / T_TOTAL) % 3;
   const guestRotation = [
     { name: 'Sarah Chen',     email: 'sarah.chen@example.com',  phone: '(212) 555-0101', hasAgent: 'no'  },
     { name: 'Mike Rodriguez', email: 'mike.r@example.com',      phone: '(212) 555-0142', hasAgent: 'no'  },
     { name: 'Jennifer Park',  email: 'jpark.nyc@example.com',   phone: '(212) 555-0173', hasAgent: 'yes' },
   ];
-  const cycleStep = useCount(0, 700, 0);
-  const stepInCycle = cycleStep % 7;           // 0..6
-  const guestIdx = Math.floor(cycleStep / 7) % guestRotation.length;
   const guest = guestRotation[guestIdx];
 
-  // Typed field strings advance one char per ~25ms while their stage
-  // is active. Once the stage advances, the next field starts.
-  const nameTyped  = stepInCycle >= 1 ? guest.name  : '';
-  const emailTyped = stepInCycle >= 2 ? guest.email : '';
-  const phoneTyped = stepInCycle >= 3 ? guest.phone : '';
-  const agentSet   = stepInCycle >= 4;
-  const termsOK    = stepInCycle >= 4;
-  const showSuccess = stepInCycle >= 5;
+  // Total guests counter — ticks up once per completed cycle.
+  const cyclesDone = Math.floor(tickFast / T_TOTAL);
+  const guestsIn = 4 + cyclesDone;
+
+  // Return a typed substring of `target` that fills proportionally
+  // through the [startTick, startTick + duration) window. Before the
+  // window starts: empty. After it ends: full string.
+  function typedSubstring(target, startTick, duration) {
+    if (t < startTick) return '';
+    if (t >= startTick + duration) return target;
+    const localT = t - startTick;
+    return target.slice(0, Math.ceil((localT + 1) / duration * target.length));
+  }
+
+  const nameStart  = 0;
+  const emailStart = T_NAME + T_PAUSE_1;
+  const phoneStart = emailStart + T_EMAIL + T_PAUSE_2;
+  const agentStart = phoneStart + T_PHONE + T_PAUSE_3;
+  const successStart = agentStart + T_AGENT;
+
+  const nameTyped  = typedSubstring(guest.name,  nameStart,  T_NAME);
+  const emailTyped = typedSubstring(guest.email, emailStart, T_EMAIL);
+  const phoneTyped = typedSubstring(guest.phone, phoneStart, T_PHONE);
+  const agentSet   = t >= agentStart;
+  const termsOK    = t >= agentStart;
+  const showSuccess = t >= successStart;
+
+  // Which field has the focus caret right now. Used to put the gold
+  // border + blinking cursor on the field currently being typed.
+  const nameActive  = t >= nameStart  && t < nameStart  + T_NAME;
+  const emailActive = t >= emailStart && t < emailStart + T_EMAIL;
+  const phoneActive = t >= phoneStart && t < phoneStart + T_PHONE;
 
   return (
     <div style={{
@@ -382,10 +507,12 @@ const HDIPad = () => {
             </div>
           </div>
 
-          {/* Form fields — each shows its typed value once its stage hits */}
-          <KioskField label="NAME"  value={nameTyped}  active={stepInCycle === 1} />
-          <KioskField label="EMAIL" value={emailTyped} active={stepInCycle === 2} />
-          <KioskField label="PHONE" value={phoneTyped} active={stepInCycle === 3} />
+          {/* Form fields — each types its target string letter by letter
+              during the field's active window. The blinking caret only
+              shows on the field currently being typed. */}
+          <KioskField label="NAME"  value={nameTyped}  active={nameActive}  />
+          <KioskField label="EMAIL" value={emailTyped} active={emailActive} />
+          <KioskField label="PHONE" value={phoneTyped} active={phoneActive} />
 
           {/* Agent + terms — toggle in when stage hits 4 */}
           <div style={{ marginTop: 6, opacity: agentSet ? 1 : 0.3, transition: 'opacity .35s ease' }}>
@@ -469,15 +596,16 @@ function KioskField({ label, value, active }) {
         marginTop: 5, padding: '9px 12px',
         background: 'rgba(255,255,255,0.04)',
         border: '1px solid ' + (active ? 'var(--gold)' : 'var(--hairline)'),
+        boxShadow: active ? '0 0 0 3px rgba(196, 162, 82, 0.14)' : 'none',
         borderRadius: 8,
         fontSize: 12, color: value ? 'var(--cream)' : 'var(--text-muted)',
         fontFamily: 'var(--sans)', minHeight: 16,
-        transition: 'border-color .35s ease',
+        transition: 'border-color .25s ease, box-shadow .25s ease',
       }}>
-        {value || <span style={{ color: 'var(--text-muted)' }}>…</span>}
-        {active && value && (
+        {value || (active ? '' : <span style={{ color: 'var(--text-muted)' }}>…</span>)}
+        {active && (
           <span style={{
-            display: 'inline-block', width: 1.5, height: 12, marginLeft: 2,
+            display: 'inline-block', width: 1.5, height: 12, marginLeft: 1,
             background: 'var(--gold)', verticalAlign: '-1px',
             animation: 'hdBlink 0.9s steps(2) infinite',
           }} />
@@ -950,4 +1078,4 @@ const HeroDevices = () => {
   );
 };
 
-Object.assign(window, { HeroDevices, HDIPhone, HDIPad, HDLaptop });
+Object.assign(window, { HeroDevices, HDIPhone, HDIPad, HDLaptop, VoiceWave });

@@ -7845,7 +7845,7 @@ private struct IPadRecord: View {
     }
 
     private var voiceVisualizer: some View {
-        VStack(spacing: 36) {
+        VStack(spacing: 24) {
             VStack(spacing: 10) {
                 Text(store.pendingAddress ?? "Open house")
                     .font(.system(size: 26, weight: .semibold))
@@ -7857,10 +7857,13 @@ private struct IPadRecord: View {
                     .font(.system(size: 13))
                     .foregroundStyle(FoyerTheme.textDim)
             }
-            IPadMicOrb(level: rmsLevel, recording: recorder.isRecording && !paused)
-                .frame(height: 240)
-            IPadWaveform(levels: recorder.levels)
-                .frame(height: 80)
+            // Single flowing-wave visualization replaces the previous
+            // mic-disc + bar-meter pair. Same VoiceWaveform component
+            // the iPhone surface uses, scaled up for the iPad canvas.
+            VoiceWaveform(level: rmsLevel,
+                          recording: recorder.isRecording && !paused,
+                          orbSize: 140)
+                .frame(height: 360)
         }
     }
 
