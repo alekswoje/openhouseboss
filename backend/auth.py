@@ -470,8 +470,46 @@ def set_gmail_send_from(user_id: str, address: Optional[str]) -> None:
 # the rest for the LLM (soft mode) or the agent (forced mode) to populate.
 
 def list_templates_for(user_id: str) -> list[dict]:
-    user = get_user_by_id(user_id)
-    return list((user or {}).get("templates") or [])
+    """All of the user's templates. Older records didn't have `enabled` —
+    migrate them on-read so the rest of the codebase can assume the field
+    is always present."""
+    arr = []
+    for t in ((get_user_by_id(user_id) or {}).get("templates") or []):
+        if "enabled" not in t:
+            t["enabled"] = True
+        arr.append(t)
+    return arr
+
+
+def list_enabled_templates_for(user_id: str) -> list[dict]:
+    return [t for t in list_templates_for(user_id) if t.get("enabled", True)]
+
+
+def get_template_by_name(user_id: str, name: str) -> dict | None:
+    target = (name or "").strip().lower()
+    if not target:
+        return None
+    for t in list_templates_for(user_id):
+        if (t.get("name") or "").strip().lower() == target:
+            return t
+    return None
+
+
+def set_template_enabled(user_id: str, template_id: str, enabled: bool) -> dict:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = list(u.get("templates") or [])
+            for t in arr:
+                if t.get("id") == template_id:
+                    t["enabled"] = bool(enabled)
+                    t["updated_at"] = now_iso
+                    u["templates"] = arr
+                    _save_users(data)
+                    return t
+            raise HTTPException(404, "Template not found")
+    raise HTTPException(404, "User not found")
 
 
 def force_templates_for(user_id: str) -> bool:
@@ -498,7 +536,13 @@ def _validate_template_payload(payload: dict) -> dict:
         raise HTTPException(400, "Template name is required")
     if not body:
         raise HTTPException(400, "Template body is required")
-    return {"name": name, "subject": subject, "body": body, "match_hints": hints}
+    enabled = payload.get("enabled")
+    if enabled is None:
+        enabled = True
+    return {
+        "name": name, "subject": subject, "body": body,
+        "match_hints": hints, "enabled": bool(enabled),
+    }
 
 
 def create_template(user_id: str, payload: dict) -> dict:
@@ -511,6 +555,7 @@ def create_template(user_id: str, payload: dict) -> dict:
         "subject": fields["subject"],
         "body": fields["body"],
         "match_hints": fields["match_hints"],
+        "enabled": fields["enabled"],
         "created_at": now_iso,
         "updated_at": now_iso,
     }
@@ -538,6 +583,7 @@ def update_template(user_id: str, template_id: str, payload: dict) -> dict:
                     t["subject"] = fields["subject"]
                     t["body"] = fields["body"]
                     t["match_hints"] = fields["match_hints"]
+                    t["enabled"] = fields["enabled"]
                     t["updated_at"] = now_iso
                     u["templates"] = arr
                     _save_users(data)
@@ -569,13 +615,28 @@ def delete_template(user_id: str, template_id: str) -> None:
 # sees `headline` + `body` for context.
 
 def list_offers_for(user_id: str) -> list[dict]:
-    user = get_user_by_id(user_id)
-    return list((user or {}).get("offers") or [])
+    """Return ALL of the user's offers, including disabled ones. Filtering
+    to enabled-only happens at the call site so list views (the Offers
+    tab) can still display disabled ones with a toggle."""
+    arr = []
+    for o in ((get_user_by_id(user_id) or {}).get("offers") or []):
+        # Migrate old records that pre-date `enabled` — treat them as on.
+        if "enabled" not in o:
+            o["enabled"] = True
+        arr.append(o)
+    return arr
+
+
+def list_enabled_offers_for(user_id: str) -> list[dict]:
+    """Subset used by AI calls — only offers the agent has turned on."""
+    return [o for o in list_offers_for(user_id) if o.get("enabled", True)]
 
 
 def get_offer_by_name(user_id: str, name: str) -> dict | None:
     """Case-insensitive lookup by `name` — used to resolve @reference
-    tokens the agent puts in free-text instructions."""
+    tokens the agent puts in free-text instructions. Matches the whole
+    name only (multi-word matching is handled by the resolver since it
+    has to peek at surrounding text)."""
     target = (name or "").strip().lower()
     if not target:
         return None
@@ -586,20 +647,20 @@ def get_offer_by_name(user_id: str, name: str) -> dict | None:
 
 
 def _validate_offer_payload(payload: dict) -> dict:
+    # Names can be free-form (spaces, punctuation, etc.) — autocomplete on
+    # the client lets the agent reference them unambiguously by tapping
+    # from a picker, so we don't need an ID-shaped slug anymore.
     name = (payload.get("name") or "").strip()
-    headline = (payload.get("headline") or "").strip()
     body = (payload.get("body") or "").strip()
     if not name:
         raise HTTPException(400, "Offer name is required")
-    # @-reference must be a single word — strip spaces and special chars
-    # so the LLM-side mention parser has something stable to match.
-    import re as _re
-    safe = _re.sub(r"[^A-Za-z0-9_]+", "", name)
-    if not safe:
-        raise HTTPException(400, "Offer name must contain letters or digits")
     if not body:
         raise HTTPException(400, "Offer body is required")
-    return {"name": safe, "headline": headline, "body": body}
+    enabled = payload.get("enabled")
+    # Default to enabled on create; preserve explicit `false` on edit.
+    if enabled is None:
+        enabled = True
+    return {"name": name, "body": body, "enabled": bool(enabled)}
 
 
 def create_offer(user_id: str, payload: dict) -> dict:
@@ -608,16 +669,15 @@ def create_offer(user_id: str, payload: dict) -> dict:
     data = _load_users()
     for u in data["users_by_google_sub"].values():
         if u["id"] == user_id:
-            # Names are unique per agent so @reference is unambiguous.
             existing = (u.get("offers") or [])
             if any((o.get("name") or "").lower() == fields["name"].lower() for o in existing):
-                raise HTTPException(400, f"Offer @{fields['name']} already exists")
+                raise HTTPException(400, f"Offer '{fields['name']}' already exists")
             now_iso = datetime.now(timezone.utc).isoformat()
             offer = {
                 "id": str(_uuid.uuid4()),
                 "name": fields["name"],
-                "headline": fields["headline"],
                 "body": fields["body"],
+                "enabled": fields["enabled"],
                 "created_at": now_iso,
                 "updated_at": now_iso,
             }
@@ -634,16 +694,33 @@ def update_offer(user_id: str, offer_id: str, payload: dict) -> dict:
     for u in data["users_by_google_sub"].values():
         if u["id"] == user_id:
             arr = list(u.get("offers") or [])
-            # Reject name collision with a DIFFERENT offer.
             for o in arr:
                 if (o.get("name") or "").lower() == fields["name"].lower() \
                         and o.get("id") != offer_id:
-                    raise HTTPException(400, f"Offer @{fields['name']} already exists")
+                    raise HTTPException(400, f"Offer '{fields['name']}' already exists")
             for o in arr:
                 if o.get("id") == offer_id:
                     o["name"] = fields["name"]
-                    o["headline"] = fields["headline"]
                     o["body"] = fields["body"]
+                    o["enabled"] = fields["enabled"]
+                    o["updated_at"] = now_iso
+                    u["offers"] = arr
+                    _save_users(data)
+                    return o
+            raise HTTPException(404, "Offer not found")
+    raise HTTPException(404, "User not found")
+
+
+def set_offer_enabled(user_id: str, offer_id: str, enabled: bool) -> dict:
+    """Quick toggle without re-validating the whole payload."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = list(u.get("offers") or [])
+            for o in arr:
+                if o.get("id") == offer_id:
+                    o["enabled"] = bool(enabled)
                     o["updated_at"] = now_iso
                     u["offers"] = arr
                     _save_users(data)

@@ -338,6 +338,28 @@ def delete_my_offer(
     return {"deleted": offer_id}
 
 
+@app.post("/me/offers/{offer_id}/enabled")
+def set_my_offer_enabled(
+    offer_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.set_offer_enabled(
+        current_user["id"], offer_id, bool(payload.get("enabled"))
+    )
+
+
+@app.post("/me/templates/{template_id}/enabled")
+def set_my_template_enabled(
+    template_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.set_template_enabled(
+        current_user["id"], template_id, bool(payload.get("enabled"))
+    )
+
+
 # --------------------------------------------------------------------------
 # Leads AI agent — ask questions, propose batch sends
 # --------------------------------------------------------------------------
@@ -406,16 +428,19 @@ def leads_agent_chat(
 
     leads = _collect_user_leads(current_user["id"])
     agent_name = (current_user.get("name") or "").strip()
-    # Resolve @offerName references the agent dropped in their message —
-    # lets them say "send @buyerCredit to all buyer leads" and have the
-    # offer copy materialize in every recipient's body.
-    resolved_offers = _resolve_offer_mentions(current_user["id"], message)
+    # Resolve @-references and gather the agent's full library of enabled
+    # offers + templates so the AI can pick the best fit on its own when
+    # nothing's explicitly @-tagged.
+    ctx = _ai_context(current_user["id"], message)
     try:
         result = query_leads_agent(
             message=message,
             leads=leads,
             agent_name=agent_name,
-            offers=resolved_offers,
+            mentioned_offers=ctx["mentioned_offers"],
+            mentioned_templates=ctx["mentioned_templates"],
+            available_offers=ctx["available_offers"],
+            available_templates=ctx["available_templates"],
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"AI agent failed: {exc}")
@@ -1292,13 +1317,12 @@ def refine_visitor_draft(
         tag = analysis.get("tag") or ""
         display_name = visitor.get("name") or name
 
-    # Resolve any @offerName references the agent dropped in the
-    # instruction. Each resolved offer becomes a context block the LLM
-    # can weave into the rewrite. Unknown @names are left alone — the
-    # LLM will treat them as literal text and the agent can fix the
-    # typo. Returns the instruction (unchanged) + a list of resolved
-    # offer dicts to feed into refine_draft as context.
-    resolved_offers = _resolve_offer_mentions(current_user["id"], instruction)
+    # Resolve any @reference tokens (offers OR templates) the agent put
+    # in the instruction. Also expose ALL enabled offers + templates so
+    # the LLM can pick the best fit on its own when nothing's explicitly
+    # mentioned ("pick the best offer for this lead" works without a
+    # specific @reference).
+    ctx = _ai_context(current_user["id"], instruction)
 
     new_body = refine_draft(
         current_body=base_body,
@@ -1307,37 +1331,104 @@ def refine_visitor_draft(
         visitor_summary=summary,
         visitor_tag=tag,
         address=address,
-        offers=resolved_offers,
+        mentioned_offers=ctx["mentioned_offers"],
+        mentioned_templates=ctx["mentioned_templates"],
+        available_offers=ctx["available_offers"],
+        available_templates=ctx["available_templates"],
     )
     return {"body": new_body, "resolved_offers": [
-        {"id": o.get("id"), "name": o.get("name"), "headline": o.get("headline")}
-        for o in resolved_offers
+        {"id": o.get("id"), "name": o.get("name")}
+        for o in ctx["mentioned_offers"]
     ]}
 
 
-_OFFER_MENTION_RE = _re.compile(r"@([A-Za-z0-9_]{1,40})")
+def _resolve_at_mentions(user_id: str, text: str) -> list[dict]:
+    """Find every `@reference` in `text` and resolve each to either an
+    offer or a template owned by the user.
 
+    Offer + template names are free-form (spaces, punctuation), so we
+    can't just regex out the next word — we'd lose multi-word names. The
+    resolver instead:
+      1. Builds a sorted list of all enabled offer + template names
+         (longest first) for the user.
+      2. For each `@` in the text, walks the candidate names by length
+         and accepts the FIRST one that matches case-insensitively at
+         that position. Longest-first wins so "@$2,500 buyer credit"
+         beats a hypothetical shorter "@$2,500".
+      3. Deduplicates by (kind, id) so an offer mentioned twice only
+         shows up once in the LLM context.
 
-def _resolve_offer_mentions(user_id: str, text: str) -> list[dict]:
-    """Find @offerName tokens in `text` and pull the full offer dict for
-    each one. Returns a list (preserving first-seen order, deduplicated)
-    so the LLM gets each offer's headline + body exactly once even if
-    the agent wrote the same @name twice.
+    Returns a list of {"kind": "offer"|"template", "offer"|"template": dict}.
     """
     if not text:
         return []
-    seen: set[str] = set()
+    offers = auth_lib.list_enabled_offers_for(user_id)
+    templates = auth_lib.list_enabled_templates_for(user_id)
+    # Build a flat candidate list sorted by name length descending so
+    # the longest match wins.
+    candidates: list[tuple[str, str, dict]] = []
+    for o in offers:
+        name = (o.get("name") or "").strip()
+        if name:
+            candidates.append(("offer", name, o))
+    for t in templates:
+        name = (t.get("name") or "").strip()
+        if name:
+            candidates.append(("template", name, t))
+    candidates.sort(key=lambda c: -len(c[1]))
+
+    lower_text = text.lower()
+    seen: set[tuple[str, str]] = set()
     out: list[dict] = []
-    for match in _OFFER_MENTION_RE.finditer(text):
-        name = match.group(1)
-        key = name.lower()
-        if key in seen:
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "@":
+            i += 1
             continue
-        seen.add(key)
-        offer = auth_lib.get_offer_by_name(user_id, name)
-        if offer is not None:
-            out.append(offer)
+        # Try each candidate name at this position, longest first.
+        matched = None
+        for kind, name, obj in candidates:
+            name_lower = name.lower()
+            end = i + 1 + len(name_lower)
+            if end <= n and lower_text[i + 1:end] == name_lower:
+                matched = (kind, name, obj, end)
+                break
+        if matched is None:
+            i += 1
+            continue
+        kind, _name, obj, end = matched
+        key = (kind, obj.get("id") or "")
+        if key not in seen:
+            seen.add(key)
+            out.append({"kind": kind, kind: obj})
+        i = end
     return out
+
+
+def _ai_context(user_id: str, message: str) -> dict:
+    """Gather the pool of offers + templates the LLM should have access
+    to for a refine or leads-agent call. Returns:
+      {
+        "mentioned_offers":    [...],   # explicitly @-referenced
+        "mentioned_templates": [...],   # explicitly @-referenced
+        "available_offers":    [...],   # all enabled, for default consideration
+        "available_templates": [...],   # all enabled, for default consideration
+      }
+    The LLM uses `mentioned_*` as "must include this" instructions and
+    treats `available_*` as "feel free to pick the best one if it fits"
+    options. This is what the user wanted: '@-reference forces it,
+    otherwise the AI picks the best on its own'.
+    """
+    matches = _resolve_at_mentions(user_id, message or "")
+    mentioned_offers = [m["offer"] for m in matches if m["kind"] == "offer"]
+    mentioned_templates = [m["template"] for m in matches if m["kind"] == "template"]
+    return {
+        "mentioned_offers": mentioned_offers,
+        "mentioned_templates": mentioned_templates,
+        "available_offers": auth_lib.list_enabled_offers_for(user_id),
+        "available_templates": auth_lib.list_enabled_templates_for(user_id),
+    }
 
 
 @app.patch("/sessions/{session_id}/visitors/contact")

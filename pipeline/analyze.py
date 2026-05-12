@@ -156,6 +156,103 @@ import re as _re_placeholders
 _BRACKET_PLACEHOLDER_RE = _re_placeholders.compile(r"\[[^\[\]\n]{1,80}\]")
 
 
+def _build_library_block(
+    mentioned_offers: list[dict],
+    mentioned_templates: list[dict],
+    available_offers: list[dict],
+    available_templates: list[dict],
+) -> str:
+    """Build the LLM-facing block describing offers + templates available
+    for this rewrite. Mentioned items are flagged as MUST include; the
+    rest are "use if it fits" so the LLM doesn't have to be told
+    explicitly to consider them.
+
+    Templates are tone/structure references — the LLM should rewrite in
+    that style. Offers are content references — the LLM should weave the
+    actual marketing copy into the email.
+
+    Returns an empty string if there's nothing to inject.
+    """
+    if not (mentioned_offers or mentioned_templates
+            or available_offers or available_templates):
+        return ""
+
+    sections: list[str] = []
+
+    if mentioned_offers:
+        chunks = []
+        for o in mentioned_offers:
+            name = (o.get("name") or "").strip()
+            ob = (o.get("body") or "").strip()
+            chunks.append(f"@{name}\n{ob}")
+        sections.append(
+            "OFFERS THE AGENT REQUIRES YOU TO INCLUDE — weave their "
+            "content naturally into the rewrite (do NOT leave the "
+            "@reference token in the output, do NOT quote verbatim unless "
+            "the offer body already reads like email copy):\n\n"
+            + "\n\n".join(chunks)
+        )
+
+    if mentioned_templates:
+        chunks = []
+        for t in mentioned_templates:
+            name = (t.get("name") or "").strip()
+            body = (t.get("body") or "").strip()
+            chunks.append(f"@{name}\n{body}")
+        sections.append(
+            "TEMPLATES THE AGENT REQUIRES YOU TO USE — base the rewrite "
+            "on the template's structure and phrasing, replacing "
+            "{slot} tokens with concrete values from the lead's context "
+            "or leaving them as [slot] when you can't infer:\n\n"
+            + "\n\n".join(chunks)
+        )
+
+    # `available_*` is everything else the agent has enabled. We pass it
+    # so the LLM can pick the best fit on its own when nothing's
+    # explicitly tagged. Skip items that were already listed above.
+    mentioned_offer_ids = {o.get("id") for o in mentioned_offers}
+    extra_offers = [
+        o for o in available_offers
+        if o.get("id") not in mentioned_offer_ids
+    ]
+    if extra_offers:
+        chunks = []
+        for o in extra_offers:
+            name = (o.get("name") or "").strip()
+            ob = (o.get("body") or "").strip()
+            chunks.append(f"{name}: {ob}")
+        sections.append(
+            "Available offers (the agent has these on file — feel free to "
+            "weave the one that best fits this lead, OR leave them all "
+            "out if none fit):\n\n"
+            + "\n\n".join(chunks)
+        )
+
+    mentioned_template_ids = {t.get("id") for t in mentioned_templates}
+    extra_templates = [
+        t for t in available_templates
+        if t.get("id") not in mentioned_template_ids
+    ]
+    if extra_templates:
+        chunks = []
+        for t in extra_templates:
+            name = (t.get("name") or "").strip()
+            body = (t.get("body") or "").strip()
+            hints = (t.get("match_hints") or "").strip()
+            line = name
+            if hints:
+                line += f" (fits when: {hints})"
+            chunks.append(f"{line}\n{body}")
+        sections.append(
+            "Available templates (the agent has these on file — base the "
+            "rewrite on the best-fitting one's structure if any fits, OR "
+            "ignore them all if none fits naturally):\n\n"
+            + "\n\n".join(chunks)
+        )
+
+    return "\n\n".join(sections) + "\n\n"
+
+
 def _scrub_placeholders(text: str) -> str:
     """Remove any [Bracketed] placeholders and tidy the whitespace they
     leave behind. Bracketed text up to 80 chars is treated as a
@@ -182,17 +279,20 @@ def refine_draft(
     visitor_summary: str | None = None,
     visitor_tag: str | None = None,
     address: str | None = None,
-    offers: list[dict] | None = None,
+    mentioned_offers: list[dict] | None = None,
+    mentioned_templates: list[dict] | None = None,
+    available_offers: list[dict] | None = None,
+    available_templates: list[dict] | None = None,
 ) -> str:
     """Rewrite an existing follow-up draft according to the agent's
     instruction ("too long", "add a CTA about the 1pm Saturday tour", "more
     casual", etc.).
 
-    `offers` is the list of @offerName references the agent dropped into
-    the instruction, pre-resolved by the caller to the full offer dicts
-    {name, headline, body}. The LLM weaves them into the rewrite as
-    concrete material (the "$2,500 buyer credit" text, etc.) instead of
-    leaving the @reference verbatim.
+    `mentioned_offers` / `mentioned_templates` are entries the agent
+    explicitly @-referenced — the LLM MUST work them in. `available_*`
+    are the rest of the agent's enabled library; the LLM can pick from
+    these when nothing's explicitly mentioned (e.g. "pick the best
+    offer for this lead").
 
     Kept deliberately tight — we only return the new email body, no JSON
     envelope. The agent will see it slot into the editor where they can
@@ -214,28 +314,15 @@ def refine_draft(
         context_lines.append(f"What we heard: {visitor_summary}")
     context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
 
-    # Inject offer bodies so the LLM has the actual marketing copy on
-    # hand. Mention by @name in the instructions block too so the model
-    # ties the agent's free-text reference to the offer content.
-    offer_block = ""
-    if offers:
-        chunks = []
-        for o in offers:
-            name = (o.get("name") or "").strip()
-            headline = (o.get("headline") or "").strip()
-            ob = (o.get("body") or "").strip()
-            line = f"@{name}"
-            if headline:
-                line += f" — {headline}"
-            chunks.append(line + "\n" + ob)
-        offer_block = (
-            "The agent's instruction mentions these offers — weave their "
-            "content naturally into the rewrite (don't quote them verbatim "
-            "unless the agent explicitly asks for it; don't leave the "
-            "@reference in the output):\n\n"
-            + "\n\n".join(chunks)
-            + "\n\n"
-        )
+    # Material the LLM can pull from. `mentioned_*` are agent-flagged
+    # MUST-include; `available_*` are background options it can use when
+    # nothing's explicitly @-referenced.
+    library_block = _build_library_block(
+        mentioned_offers=mentioned_offers or [],
+        mentioned_templates=mentioned_templates or [],
+        available_offers=available_offers or [],
+        available_templates=available_templates or [],
+    )
 
     client = Anthropic()
     response = client.messages.create(
@@ -263,7 +350,7 @@ def refine_draft(
             "role": "user",
             "content": (
                 f"{context_block}"
-                f"{offer_block}"
+                f"{library_block}"
                 f"Current draft:\n{body or '(empty — write from scratch)'}\n\n"
                 f"Agent's instruction: {ask}\n\n"
                 "Rewrite the draft now."

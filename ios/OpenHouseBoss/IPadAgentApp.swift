@@ -4062,6 +4062,7 @@ private struct TemplateEditorSheet: View {
     @State private var matchHints: String = ""
     @State private var subject: String = ""
     @State private var bodyText: String = ""
+    @State private var enabled: Bool = true
     @State private var saving: Bool = false
     @State private var deleting: Bool = false
     @State private var errorMessage: String?
@@ -4095,6 +4096,20 @@ private struct TemplateEditorSheet: View {
                             .foregroundStyle(FoyerTheme.textDim)
                     }
                     .padding(.top, -8)
+
+                    Toggle(isOn: $enabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Enabled")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(FoyerTheme.cream)
+                            Text("When off, the AI ignores this template.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                    }
+                    .tint(FoyerTheme.gold)
+                    .padding(.vertical, 12).padding(.horizontal, 14)
+                    .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
 
                     if let err = errorMessage {
                         Text(err)
@@ -4151,6 +4166,7 @@ private struct TemplateEditorSheet: View {
                 matchHints = t.matchHints
                 subject = t.subject
                 bodyText = t.body
+                enabled = t.enabled
             }
         }
     }
@@ -4202,14 +4218,16 @@ private struct TemplateEditorSheet: View {
                     name: name.trimmingCharacters(in: .whitespaces),
                     subject: subject.trimmingCharacters(in: .whitespaces),
                     body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines)
+                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines),
+                    enabled: enabled
                 )
             } else {
                 saved = try await APIClient.shared.createTemplate(
                     name: name.trimmingCharacters(in: .whitespaces),
                     subject: subject.trimmingCharacters(in: .whitespaces),
                     body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines)
+                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines),
+                    enabled: enabled
                 )
             }
             onSaved(saved)
@@ -4715,6 +4733,7 @@ private struct DraftEditorPane: View {
                 .buttonStyle(.plain)
                 .disabled(trimmed.isEmpty || refining)
             }
+            MentionSuggestionsView(text: $instruction)
             if let refineError {
                 Text(refineError)
                     .font(.system(size: 11))
@@ -5002,13 +5021,14 @@ private struct LeadsAgentSheet: View {
                 )
                 .overlay(alignment: .topLeading) {
                     if input.isEmpty {
-                        Text("e.g. \"Send @buyerCredit to every buyer lead\" or \"Who are my hottest sellers right now?\" — reference an offer with @name (define them in the Offers tab).")
+                        Text("e.g. \"Send the $2,500 buyer credit to every buyer lead\" or \"Who are my hottest sellers right now?\" — type @ to reference an offer or template.")
                             .font(.system(size: 13))
                             .foregroundStyle(FoyerTheme.textMuted)
                             .padding(.horizontal, 17).padding(.top, 19)
                             .allowsHitTesting(false)
                     }
                 }
+            MentionSuggestionsView(text: $input)
             HStack {
                 Spacer()
                 Button { Task { await ask() } } label: {
@@ -5438,13 +5458,19 @@ private struct IPadOffers: View {
         Button { editingOffer = offer } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Text("@\(offer.name)")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(FoyerTheme.gold)
-                        .tracking(0.4)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Capsule().fill(FoyerTheme.gold.opacity(0.12)))
-                    Spacer()
+                    Text(offer.name)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: Binding(
+                        get: { offer.enabled },
+                        set: { newValue in Task { await toggleEnabled(offer, enabled: newValue) } }
+                    ))
+                    .labelsHidden()
+                    .tint(FoyerTheme.gold)
+                    .scaleEffect(0.85)
                     Button {
                         pendingDelete = offer
                     } label: {
@@ -5454,18 +5480,20 @@ private struct IPadOffers: View {
                     }
                     .buttonStyle(.plain)
                 }
-                if !offer.headline.isEmpty {
-                    Text(offer.headline)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.cream)
-                        .lineLimit(2)
-                }
                 Text(offer.body)
                     .font(.system(size: 13))
-                    .foregroundStyle(FoyerTheme.creamDim)
+                    .foregroundStyle(offer.enabled
+                                     ? FoyerTheme.creamDim
+                                     : FoyerTheme.textMuted)
                     .lineSpacing(4)
                     .lineLimit(5)
                     .multilineTextAlignment(.leading)
+                if !offer.enabled {
+                    Text("Disabled — AI won't use this offer")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .tracking(0.5)
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -5477,8 +5505,23 @@ private struct IPadOffers: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(FoyerTheme.hairline, lineWidth: 1)
             )
+            .opacity(offer.enabled ? 1 : 0.55)
         }
         .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func toggleEnabled(_ offer: Offer, enabled: Bool) async {
+        do {
+            let updated = try await APIClient.shared.setOfferEnabled(
+                id: offer.id, enabled: enabled
+            )
+            if let idx = offers.firstIndex(where: { $0.id == offer.id }) {
+                offers[idx] = updated
+            }
+        } catch {
+            loadError = "Couldn't update: \(error.localizedDescription)"
+        }
     }
 
     @MainActor
@@ -5511,8 +5554,8 @@ private struct OfferEditorSheet: View {
     var onSaved: (Offer) -> Void
 
     @State private var name: String
-    @State private var headline: String
     @State private var bodyText: String
+    @State private var enabled: Bool
     @State private var submitting: Bool = false
     @State private var errorMessage: String?
 
@@ -5521,8 +5564,8 @@ private struct OfferEditorSheet: View {
         self.onCancel = onCancel
         self.onSaved = onSaved
         _name = State(initialValue: existing?.name ?? "")
-        _headline = State(initialValue: existing?.headline ?? "")
         _bodyText = State(initialValue: existing?.body ?? "")
+        _enabled = State(initialValue: existing?.enabled ?? true)
     }
 
     var body: some View {
@@ -5530,30 +5573,17 @@ private struct OfferEditorSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("@reference name").font(.system(size: 11, weight: .medium))
+                        Text("Offer name").font(.system(size: 11, weight: .medium))
                             .foregroundStyle(FoyerTheme.textDim)
-                        TextField("e.g. buyerCredit", text: $name)
+                        TextField("e.g. $2,500 buyer credit", text: $name)
                             .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(FoyerTheme.cream)
                             .tint(FoyerTheme.gold)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
                             .padding(.vertical, 14).padding(.horizontal, 14)
                             .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
-                        Text("Letters, digits, underscores only. Used as @\(name.isEmpty ? "name" : name) in Refine and Inbox AI prompts.")
+                        Text("Type @ in any AI prompt to reference this offer by name.")
                             .font(.system(size: 11))
                             .foregroundStyle(FoyerTheme.textMuted)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Headline (short label)").font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(FoyerTheme.textDim)
-                        TextField("e.g. $2,500 buyer credit", text: $headline)
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream)
-                            .tint(FoyerTheme.gold)
-                            .padding(.vertical, 14).padding(.horizontal, 14)
-                            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -5575,6 +5605,20 @@ private struct OfferEditorSheet: View {
                             .foregroundStyle(FoyerTheme.textMuted)
                             .lineSpacing(2)
                     }
+
+                    Toggle(isOn: $enabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Enabled")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(FoyerTheme.cream)
+                            Text("When off, the AI ignores this offer even if you @reference it.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                    }
+                    .tint(FoyerTheme.gold)
+                    .padding(.vertical, 14).padding(.horizontal, 14)
+                    .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
 
                     if let errorMessage {
                         Text(errorMessage)
@@ -5616,18 +5660,17 @@ private struct OfferEditorSheet: View {
         errorMessage = nil
         defer { submitting = false }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let trimmedHeadline = headline.trimmingCharacters(in: .whitespaces)
         let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let offer: Offer
             if let existing {
                 offer = try await APIClient.shared.updateOffer(
                     id: existing.id, name: trimmedName,
-                    headline: trimmedHeadline, body: trimmedBody
+                    body: trimmedBody, enabled: enabled
                 )
             } else {
                 offer = try await APIClient.shared.createOffer(
-                    name: trimmedName, headline: trimmedHeadline, body: trimmedBody
+                    name: trimmedName, body: trimmedBody, enabled: enabled
                 )
             }
             onSaved(offer)
@@ -8379,6 +8422,208 @@ private struct IPadWaveform: View {
                 current + (target - current) * 0.85
             }
         }
+    }
+}
+
+// MARK: – @-mention autocomplete picker
+//
+// Reusable picker that surfaces below an input field when the user types
+// `@`. It pulls offers + templates from the backend, filters them by
+// the partial text after `@`, and on tap replaces the partial token
+// with the full name. Behaves like Cursor's @file picker.
+//
+// Why not just match against a fixed regex? Offer / template names are
+// free-form (spaces, punctuation), so the regex would have to know all
+// names ahead of time. Easier to keep the list in-memory on iOS and let
+// the picker handle disambiguation visually — the agent never has to
+// type a full name, just tap the suggestion.
+
+struct MentionItem: Identifiable, Hashable {
+    let id: String
+    let kind: Kind
+    let name: String
+    let preview: String   // short snippet shown in the picker row
+
+    enum Kind: Hashable { case offer, template }
+
+    static func from(_ offer: Offer) -> MentionItem {
+        MentionItem(
+            id: "offer:\(offer.id)",
+            kind: .offer,
+            name: offer.name,
+            preview: offer.body
+        )
+    }
+
+    static func from(_ template: FollowupTemplate) -> MentionItem {
+        MentionItem(
+            id: "template:\(template.id)",
+            kind: .template,
+            name: template.name,
+            preview: template.body
+        )
+    }
+}
+
+// Shared, app-lifetime cache of the agent's mention library. Refreshed
+// lazily so individual input fields don't each fire their own load.
+@MainActor
+@Observable
+final class MentionLibrary {
+    static let shared = MentionLibrary()
+    private init() {}
+
+    var offers: [Offer] = []
+    var templates: [FollowupTemplate] = []
+    private var loaded: Bool = false
+    private var loading: Task<Void, Never>?
+
+    var items: [MentionItem] {
+        offers.filter(\.enabled).map(MentionItem.from)
+            + templates.filter(\.enabled).map(MentionItem.from)
+    }
+
+    func ensureLoaded() async {
+        if loaded { return }
+        if loading != nil {
+            await loading?.value
+            return
+        }
+        loading = Task { @MainActor in
+            do {
+                async let o = APIClient.shared.listOffers()
+                async let t = APIClient.shared.listTemplates()
+                let envelope = try await t
+                self.offers = try await o
+                self.templates = envelope.templates
+                self.loaded = true
+            } catch {
+                // Best-effort — picker just stays empty if we can't load.
+            }
+        }
+        await loading?.value
+        loading = nil
+    }
+
+    func reload() async {
+        loaded = false
+        loading = nil
+        await ensureLoaded()
+    }
+}
+
+// Parses the "active @-token" from a buffer of text. Returns (start,
+// query) where `start` is the index of the `@` and `query` is the text
+// between `@` and the end of the buffer. Returns nil if no unclosed
+// token is currently in progress (i.e. text doesn't end in an `@`-
+// initiated word).
+//
+// Rules:
+//   - The `@` must be at the start of the buffer OR preceded by
+//     whitespace, so an email address (`a@b.com`) doesn't trigger.
+//   - Everything from `@` to the END of the buffer counts as the query.
+//     This is what makes free-form names work — typing "@buyer credit"
+//     keeps the picker open through the space.
+struct ActiveMention {
+    let start: String.Index
+    let query: String
+}
+
+func activeMention(in text: String) -> ActiveMention? {
+    guard let atIdx = text.lastIndex(of: "@") else { return nil }
+    // Boundary check: `@` must follow whitespace or be at start.
+    if atIdx != text.startIndex {
+        let before = text[text.index(before: atIdx)]
+        if !before.isWhitespace && before != "\n" {
+            return nil
+        }
+    }
+    let query = String(text[text.index(after: atIdx)...])
+    return ActiveMention(start: atIdx, query: query)
+}
+
+// View shown directly below an input field; given the current text and
+// a write-back binding, it filters MentionLibrary against the active
+// @-token and renders tap-to-insert rows.
+struct MentionSuggestionsView: View {
+    @Binding var text: String
+    var onInsert: (() -> Void)? = nil
+    @State private var library = MentionLibrary.shared
+
+    var body: some View {
+        Group {
+            if let mention = activeMention(in: text), !filtered(mention.query).isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(filtered(mention.query).prefix(6)) { item in
+                        Button {
+                            insert(item, replacing: mention)
+                        } label: {
+                            row(item)
+                        }
+                        .buttonStyle(.plain)
+                        if item.id != filtered(mention.query).prefix(6).last?.id {
+                            Rectangle().fill(FoyerTheme.hairline).frame(height: 1)
+                        }
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(white: 0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(FoyerTheme.hairline, lineWidth: 1)
+                )
+                .padding(.top, 6)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .task { await library.ensureLoaded() }
+    }
+
+    private func filtered(_ q: String) -> [MentionItem] {
+        let qLower = q.trimmingCharacters(in: .whitespaces).lowercased()
+        let all = library.items
+        if qLower.isEmpty { return all }
+        return all.filter { $0.name.lowercased().contains(qLower) }
+    }
+
+    private func row(_ item: MentionItem) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: item.kind == .offer ? "tag.fill" : "doc.text.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(item.kind == .offer ? FoyerTheme.gold : FoyerTheme.sage)
+                .frame(width: 18)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                Text(item.preview)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(item.kind == .offer ? "OFFER" : "TEMPLATE")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(0.6)
+                .foregroundStyle(FoyerTheme.textMuted)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private func insert(_ item: MentionItem, replacing mention: ActiveMention) {
+        // Replace from the `@` to the end of the buffer with the full
+        // canonical name plus a trailing space so the agent can keep
+        // typing right after.
+        var rewritten = String(text[..<mention.start])
+        rewritten += "@\(item.name) "
+        text = rewritten
+        onInsert?()
     }
 }
 

@@ -24,7 +24,7 @@ import json
 
 from anthropic import Anthropic
 
-from .analyze import _scrub_placeholders
+from .analyze import _build_library_block, _scrub_placeholders
 from .identify import _extract_json
 
 MODEL = "claude-sonnet-4-6"
@@ -62,7 +62,10 @@ def query_leads_agent(
     message: str,
     leads: list[dict],
     agent_name: str = "",
-    offers: list[dict] | None = None,
+    mentioned_offers: list[dict] | None = None,
+    mentioned_templates: list[dict] | None = None,
+    available_offers: list[dict] | None = None,
+    available_templates: list[dict] | None = None,
 ) -> dict:
     """Run one turn of the leads-agent conversation.
 
@@ -95,28 +98,12 @@ def query_leads_agent(
     lead_block = _summarize_leads_for_llm(leads)
     agent_clause = f"The agent's name is {agent_name}." if agent_name else ""
 
-    # Resolved @offerName mentions become a context block the LLM can
-    # weave into per-recipient bodies. Mentioned by name + headline +
-    # body so the model knows when the offer actually fits the lead.
-    offer_block = ""
-    if offers:
-        chunks = []
-        for o in offers:
-            name = (o.get("name") or "").strip()
-            headline = (o.get("headline") or "").strip()
-            ob = (o.get("body") or "").strip()
-            line = f"@{name}"
-            if headline:
-                line += f" — {headline}"
-            chunks.append(line + "\n" + ob)
-        offer_block = (
-            "\n\nThe agent's instruction references these offers — weave "
-            "the relevant material into each recipient's body. Don't quote "
-            "verbatim unless the offer body already reads like email copy, "
-            "and don't leave the @reference token in the output.\n\n"
-            + "\n\n".join(chunks)
-            + "\n"
-        )
+    library_block = _build_library_block(
+        mentioned_offers=mentioned_offers or [],
+        mentioned_templates=mentioned_templates or [],
+        available_offers=available_offers or [],
+        available_templates=available_templates or [],
+    )
 
     client = Anthropic()
     response = client.messages.create(
@@ -166,7 +153,7 @@ def query_leads_agent(
             "}\n\n"
             "Leads (one per line, [idx] is for your bookkeeping only):\n"
             + lead_block
-            + offer_block
+            + ("\n\n" + library_block if library_block else "")
         ),
         messages=[{"role": "user", "content": message}],
     )

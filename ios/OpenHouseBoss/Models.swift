@@ -278,21 +278,45 @@ struct DraftOverride: Codable, Hashable {
 
 // MARK: – Follow-up templates
 
-// Offers / campaigns the agent has authored. Each has a short `name`
-// (no spaces — used as the @reference token in refine instructions and
-// in the leads-AI agent) and a body with the actual marketing copy.
+// Offers / campaigns the agent has authored. Free-form `name` doubles
+// as the @reference token in AI prompts — autocomplete on the client
+// makes spaces and punctuation unambiguous to type. `enabled` is the
+// agent-facing toggle for whether AI calls should consider this offer.
 struct Offer: Codable, Hashable, Identifiable {
     var id: String
-    var name: String       // @-reference identifier, e.g. "buyerCredit"
-    var headline: String   // short label shown in lists, e.g. "$2,500 buyer credit"
-    var body: String       // full text the AI weaves into emails
+    var name: String
+    var body: String           // marketing copy the AI weaves into emails
+    var enabled: Bool
     var createdAt: String?
     var updatedAt: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, headline, body
+        case id, name, body, enabled
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    // Older payloads pre-date `enabled` and won't decode cleanly with
+    // a non-optional Bool. Custom init treats a missing key as true so
+    // legacy offers behave like they always have.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        body = try c.decode(String.self, forKey: .body)
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? true
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
+
+    init(id: String, name: String, body: String, enabled: Bool = true,
+         createdAt: String? = nil, updatedAt: String? = nil) {
+        self.id = id
+        self.name = name
+        self.body = body
+        self.enabled = enabled
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
@@ -306,14 +330,40 @@ struct FollowupTemplate: Codable, Hashable, Identifiable {
     var subject: String
     var body: String
     var matchHints: String
+    var enabled: Bool
     var createdAt: String?
     var updatedAt: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, subject, body
+        case id, name, subject, body, enabled
         case matchHints = "match_hints"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        subject = try c.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        body = try c.decode(String.self, forKey: .body)
+        matchHints = try c.decodeIfPresent(String.self, forKey: .matchHints) ?? ""
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? true
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
+
+    init(id: String, name: String, subject: String, body: String,
+         matchHints: String, enabled: Bool = true,
+         createdAt: String? = nil, updatedAt: String? = nil) {
+        self.id = id
+        self.name = name
+        self.subject = subject
+        self.body = body
+        self.matchHints = matchHints
+        self.enabled = enabled
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 

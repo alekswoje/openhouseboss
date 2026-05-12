@@ -959,18 +959,20 @@ actor APIClient {
         return try JSONDecoder().decode(TemplatesEnvelope.self, from: data)
     }
 
-    func createTemplate(name: String, subject: String, body: String, matchHints: String) async throws -> FollowupTemplate {
+    func createTemplate(name: String, subject: String, body: String, matchHints: String, enabled: Bool = true) async throws -> FollowupTemplate {
         let req = try crmRequest("me/templates", method: "POST", body: [
-            "name": name, "subject": subject, "body": body, "match_hints": matchHints,
+            "name": name, "subject": subject, "body": body,
+            "match_hints": matchHints, "enabled": enabled,
         ])
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(FollowupTemplate.self, from: data)
     }
 
-    func updateTemplate(id: String, name: String, subject: String, body: String, matchHints: String) async throws -> FollowupTemplate {
+    func updateTemplate(id: String, name: String, subject: String, body: String, matchHints: String, enabled: Bool = true) async throws -> FollowupTemplate {
         let req = try crmRequest("me/templates/\(id)", method: "PATCH", body: [
-            "name": name, "subject": subject, "body": body, "match_hints": matchHints,
+            "name": name, "subject": subject, "body": body,
+            "match_hints": matchHints, "enabled": enabled,
         ])
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
@@ -996,22 +998,40 @@ actor APIClient {
         return try JSONDecoder().decode(OffersEnvelope.self, from: data).offers
     }
 
-    func createOffer(name: String, headline: String, body: String) async throws -> Offer {
+    func createOffer(name: String, body: String, enabled: Bool = true) async throws -> Offer {
         let req = try crmRequest("me/offers", method: "POST", body: [
-            "name": name, "headline": headline, "body": body,
+            "name": name, "body": body, "enabled": enabled,
         ])
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Offer.self, from: data)
     }
 
-    func updateOffer(id: String, name: String, headline: String, body: String) async throws -> Offer {
+    func updateOffer(id: String, name: String, body: String, enabled: Bool) async throws -> Offer {
         let req = try crmRequest("me/offers/\(id)", method: "PATCH", body: [
-            "name": name, "headline": headline, "body": body,
+            "name": name, "body": body, "enabled": enabled,
         ])
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Offer.self, from: data)
+    }
+
+    func setOfferEnabled(id: String, enabled: Bool) async throws -> Offer {
+        let req = try crmRequest("me/offers/\(id)/enabled", method: "POST", body: [
+            "enabled": enabled,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Offer.self, from: data)
+    }
+
+    func setTemplateEnabled(id: String, enabled: Bool) async throws -> FollowupTemplate {
+        let req = try crmRequest("me/templates/\(id)/enabled", method: "POST", body: [
+            "enabled": enabled,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FollowupTemplate.self, from: data)
     }
 
     func deleteOffer(id: String) async throws {
