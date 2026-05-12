@@ -154,29 +154,62 @@ function VoiceWave({ width = 280, height = 140, orbSize = 64, animated = true })
   );
 }
 
-// iPhone — RECORDING surface that captures the open house and lets
-// the AI identify each voice without the agent doing anything. The
-// only "typing" you'll see is the AI revealing the names it just
-// pulled out of the diarization stream.
+// iPhone — captures the open house, then ends the session and shows
+// the transcript transcribing with 5 identified speakers. Three
+// phases: RECORDING (live waves + AI identifying speakers) →
+// TRANSCRIBING (spinner + processing) → READY (transcript with 5
+// leads, each their own colored speaker pill).
 const HDIPhone = () => {
-  // Elapsed recording counter that ticks every second.
-  const tickSec = useCount(0, 1000, 0);
-  const totalSec = 14 * 60 + 22 + tickSec;
+  // Master 60ms tick.
+  const tickFast = useCount(0, 60, 0);
+
+  // Phase plan:
+  //   RECORDING  ticks  0..69   (~4.2s) — waves + 4 voices identified
+  //   ENDING     ticks 70..78   (~0.5s) — "STOPPING…" banner
+  //   TRANSCRIBE ticks 79..104  (~1.5s) — spinner overlay
+  //   READY      ticks 105+    — transcript card with 5 speaker lines
+  const T_REC      = 70;
+  const T_ENDING   = 9;
+  const T_TRANS    = 26;
+  const t = tickFast;
+  const recording   = t < T_REC;
+  const ending      = t >= T_REC && t < T_REC + T_ENDING;
+  const transcribing = t >= T_REC + T_ENDING && t < T_REC + T_ENDING + T_TRANS;
+  const ready       = t >= T_REC + T_ENDING + T_TRANS;
+
+  // Elapsed timer — counts up during recording, freezes after.
+  const recSec = recording ? Math.min(60 * 14 + Math.floor(t * 0.06 * 5), 60 * 14 + 22) : (60 * 14 + 22);
+  const totalSec = 14 * 60 + 22 + (recording ? Math.floor(t / 17) : 0);
   const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
   const ss = String(totalSec % 60).padStart(2, '0');
 
-  // Speaker detection timeline — each speaker first appears as
-  // "Speaker N", then is replaced by their real name after another
-  // beat. Drives the "AI identified" animation.
-  const speakerStages = useStaggered([900, 1700, 2500, 3500, 4500, 5500]);
+  // Speaker detection — paced across the recording phase so all 4
+  // appear before STOPPING. After the session ends, transcript
+  // unveils a 5th speaker (Speaker E who arrived late).
   const speakers = [
-    { id: 'A', detectedAt: 1, namedAt: 2, name: 'Sarah Chen',     kind: 'buyer'   },
-    { id: 'B', detectedAt: 3, namedAt: 4, name: 'Mike Rodriguez', kind: 'seller'  },
-    { id: 'C', detectedAt: 5, namedAt: 6, name: 'Jennifer Park',  kind: 'browser' },
+    { id: 'A', detectedAt:  8, namedAt: 14, name: 'Sarah Chen',     kind: 'buyer'   },
+    { id: 'B', detectedAt: 22, namedAt: 28, name: 'Mike Rodriguez', kind: 'seller'  },
+    { id: 'C', detectedAt: 38, namedAt: 44, name: 'Jennifer Park',  kind: 'browser' },
+    { id: 'D', detectedAt: 54, namedAt: 60, name: 'David Lee',      kind: 'buyer'   },
   ];
-  // Cloud upload pulse — flashes a "Saved" indicator every few seconds
-  // to communicate that nothing's stored locally only.
-  const savedPulse = useStaggered([2200, 4400, 6600]);
+  const liveSpeakersIdentified = speakers.filter(s => t >= s.namedAt).length;
+
+  // Transcript lines, revealed one at a time during READY. 5
+  // speakers — the 4 above plus a "late arrival" Elena.
+  const transcriptLines = [
+    { speaker: 'Sarah',    kind: 'buyer',   line: "Pre-approved to $1.4M. We can close in 60 days." },
+    { speaker: 'Mike',     kind: 'seller',  line: "I've been here 15 years — kids are off to college now." },
+    { speaker: 'Jennifer', kind: 'browser', line: "Just curious — my lease runs through 2027." },
+    { speaker: 'David',    kind: 'buyer',   line: "We love the kitchen. Could we see the basement?" },
+    { speaker: 'Elena',    kind: 'browser', line: "What's the HOA like?" },
+  ];
+  // After the READY phase starts, each line appears 9 ticks (~540ms)
+  // after the previous one.
+  const readyTicks = ready ? t - (T_REC + T_ENDING + T_TRANS) : -1;
+  const linesShown = readyTicks < 0 ? 0 : Math.min(5, Math.floor(readyTicks / 8) + 1);
+
+  // Cloud "Saved" pulse — runs during recording.
+  const savedPulse = recording ? Math.floor(t / 28) : Math.floor(T_REC / 28);
 
   return (
     <div style={{
@@ -197,108 +230,181 @@ const HDIPhone = () => {
           <span className="mono">●●●●●</span>
         </div>
 
-        {/* Recording header — pulsing red dot + counter */}
+        {/* Phase banner — flips between Recording / Stopping /
+            Transcribing / Ready. Colors track the lifecycle. */}
         <div style={{
           marginTop: 14, display: 'flex', alignItems: 'center', gap: 8,
           padding: '8px 10px', borderRadius: 10,
-          background: 'rgba(202, 80, 71, 0.10)',
-          border: '1px solid rgba(202, 80, 71, 0.30)',
+          background: ready ? 'rgba(134,166,128,0.10)'
+                    : transcribing ? 'rgba(196,162,82,0.10)'
+                    : ending ? 'rgba(255,255,255,0.04)'
+                    : 'rgba(202, 80, 71, 0.10)',
+          border: '1px solid ' + (ready ? 'rgba(134,166,128,0.32)'
+                    : transcribing ? 'rgba(196,162,82,0.32)'
+                    : ending ? 'var(--hairline)'
+                    : 'rgba(202, 80, 71, 0.30)'),
+          transition: 'background .35s, border-color .35s',
         }}>
           <span style={{
             width: 8, height: 8, borderRadius: '50%',
-            background: 'var(--terracotta)',
-            boxShadow: '0 0 8px var(--terracotta)',
-            animation: 'hdPulse 1.4s ease-in-out infinite',
+            background: ready ? 'var(--sage)'
+                      : transcribing ? 'var(--gold)'
+                      : ending ? 'var(--text-muted)'
+                      : 'var(--terracotta)',
+            boxShadow: ready ? '0 0 8px var(--sage)'
+                      : transcribing ? '0 0 8px var(--gold)'
+                      : ending ? 'none'
+                      : '0 0 8px var(--terracotta)',
+            animation: (recording || transcribing) ? 'hdPulse 1.4s ease-in-out infinite' : 'none',
           }} />
-          <span className="mono" style={{ fontSize: 10, color: 'var(--terracotta)', letterSpacing: '0.18em', fontWeight: 600 }}>
-            RECORDING
+          <span className="mono" style={{
+            fontSize: 10, letterSpacing: '0.18em', fontWeight: 600,
+            color: ready ? 'var(--sage)'
+                 : transcribing ? 'var(--gold)'
+                 : ending ? 'var(--text-dim)'
+                 : 'var(--terracotta)',
+          }}>
+            {ready ? 'SESSION READY' : transcribing ? 'TRANSCRIBING' : ending ? 'STOPPING…' : 'RECORDING'}
           </span>
           <span style={{ flex: 1 }} />
           <span className="mono" style={{ fontSize: 12, color: 'var(--cream)', letterSpacing: '0.06em' }}>
-            {mm}:{ss}
+            {ready ? `${transcriptLines.length} LEADS` : `${mm}:${ss}`}
           </span>
         </div>
 
         {/* Listing title */}
         <div style={{ marginTop: 12 }}>
-          <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>HOSTING</div>
+          <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>
+            {ready ? 'TRANSCRIPT' : 'HOSTING'}
+          </div>
           <div className="serif" style={{ fontSize: 20, color: 'var(--cream)', marginTop: 2, letterSpacing: '-0.01em' }}>
             412 W 78th St
           </div>
         </div>
 
-        {/* Live voice wave — radiating sine layers around a glowing orb.
-            Pure ambient animation, no level meter chrome. */}
-        <div style={{ marginTop: 14, padding: '6px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
-          <VoiceWave width={268} height={92} orbSize={48} />
-        </div>
-
-        {/* AI-identified speakers — appears row-by-row as the AI tags them */}
-        <div style={{ marginTop: 14, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
-            <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.14em' }}>
-              AI IDENTIFIED · {Math.min(speakerStages, speakers.length * 2)}
-            </span>
-          </div>
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {speakers.map((sp, i) => {
-              const detected = speakerStages >= sp.detectedAt;
-              const named    = speakerStages >= sp.namedAt;
-              if (!detected) return null;
-              return (
-                <div key={sp.id} style={{
-                  padding: '8px 10px', borderRadius: 8,
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid var(--hairline)',
-                  display: 'flex', alignItems: 'center', gap: 9,
-                  animation: 'hdSlideIn .45s cubic-bezier(.22,1,.36,1) both',
-                }}>
-                  <div style={{
-                    width: 24, height: 24, borderRadius: '50%',
-                    background: named ? 'var(--gold-soft)' : 'rgba(255,255,255,0.08)',
-                    color: named ? 'var(--gold)' : 'var(--text-muted)',
-                    display: 'grid', placeItems: 'center',
-                    fontFamily: 'var(--sans)', fontSize: 10, fontWeight: 600,
-                    transition: 'background .35s ease, color .35s ease',
-                  }}>
-                    {named ? sp.name.charAt(0) : sp.id}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11.5, color: 'var(--cream)' }}>
-                      {named ? sp.name : `Speaker ${sp.id}`}
-                    </div>
-                    <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-muted)', marginTop: 1, letterSpacing: '0.08em' }}>
-                      {named ? 'IDENTIFIED' : 'DETECTING…'}
-                    </div>
-                  </div>
-                  {named && (
-                    <span className={`tag tag-${sp.kind}`} style={{ fontSize: 7.5, padding: '2px 6px 3px' }}>
-                      <span className="tag-dot" style={{ width: 4, height: 4 }} />{sp.kind}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Auto-save indicator + Stop & save button (cosmetic) */}
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Main content area — wave during recording, spinner during
+            transcribing, transcript when ready. */}
+        {ready ? (
+          // READY — transcript card with 5 speakers, lines fade in
           <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5,
-            padding: '5px 9px', borderRadius: 999,
-            background: 'rgba(134,166,128,0.12)',
-            color: 'var(--sage)',
-            fontSize: 9, fontWeight: 600,
-            opacity: 0.5 + (savedPulse % 2 === 0 ? 0 : 0.5),
-            transition: 'opacity .4s ease',
+            marginTop: 14, flex: 1,
+            overflow: 'hidden',
+            display: 'flex', flexDirection: 'column', gap: 7,
           }}>
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            <span className="mono" style={{ letterSpacing: '0.1em' }}>SAVED · {savedPulse}m AGO</span>
+            {transcriptLines.slice(0, linesShown).map((ln, i) => (
+              <div key={ln.speaker} style={{
+                animation: 'hdSlideIn .35s cubic-bezier(.22,1,.36,1) both',
+                padding: '7px 10px', borderRadius: 8,
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--hairline)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                  <span className={`tag tag-${ln.kind}`} style={{ fontSize: 7.5, padding: '2px 6px 3px' }}>
+                    <span className="tag-dot" style={{ width: 4, height: 4 }} />{ln.speaker}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--cream-dim)' }}>
+                  "{ln.line}"
+                </div>
+              </div>
+            ))}
           </div>
-          <span style={{ flex: 1 }} />
-        </div>
+        ) : transcribing ? (
+          // TRANSCRIBING — wave fades, spinner shows
+          <div style={{ marginTop: 14, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 14 }}>
+            <div style={{
+              width: 38, height: 38, borderRadius: '50%',
+              border: '2px solid rgba(196,162,82,0.18)',
+              borderTopColor: 'var(--gold)',
+              animation: 'hdSpin 0.85s linear infinite',
+            }} />
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+            }}>
+              <div className="mono" style={{ fontSize: 9, color: 'var(--gold)', letterSpacing: '0.14em' }}>
+                SEPARATING VOICES…
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Tagging each guest
+              </div>
+            </div>
+          </div>
+        ) : (
+          // RECORDING / ENDING — live wave + identified speakers
+          <>
+            <div style={{ marginTop: 14, padding: '6px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)', opacity: ending ? 0.5 : 1, transition: 'opacity .35s' }}>
+              <VoiceWave width={268} height={92} orbSize={48} animated={!ending} />
+            </div>
+            <div style={{ marginTop: 14, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
+                <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.14em' }}>
+                  AI IDENTIFIED · {liveSpeakersIdentified}
+                </span>
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {speakers.map(sp => {
+                  const detected = t >= sp.detectedAt;
+                  const named    = t >= sp.namedAt;
+                  if (!detected) return null;
+                  return (
+                    <div key={sp.id} style={{
+                      padding: '7px 10px', borderRadius: 8,
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid var(--hairline)',
+                      display: 'flex', alignItems: 'center', gap: 9,
+                      animation: 'hdSlideIn .45s cubic-bezier(.22,1,.36,1) both',
+                    }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: '50%',
+                        background: named ? 'var(--gold-soft)' : 'rgba(255,255,255,0.08)',
+                        color: named ? 'var(--gold)' : 'var(--text-muted)',
+                        display: 'grid', placeItems: 'center',
+                        fontFamily: 'var(--sans)', fontSize: 9, fontWeight: 600,
+                        transition: 'background .35s ease, color .35s ease',
+                      }}>
+                        {named ? sp.name.charAt(0) : sp.id}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: 'var(--cream)' }}>
+                          {named ? sp.name : `Speaker ${sp.id}`}
+                        </div>
+                        <div className="mono" style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 1, letterSpacing: '0.08em' }}>
+                          {named ? 'IDENTIFIED' : 'DETECTING…'}
+                        </div>
+                      </div>
+                      {named && (
+                        <span className={`tag tag-${sp.kind}`} style={{ fontSize: 7.5, padding: '2px 6px 3px' }}>
+                          <span className="tag-dot" style={{ width: 4, height: 4 }} />{sp.kind}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Status pill below the content. Saved during recording,
+            "5 leads ready" once the transcript lands. */}
+        {!transcribing && (
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '5px 9px', borderRadius: 999,
+              background: 'rgba(134,166,128,0.12)',
+              color: 'var(--sage)',
+              fontSize: 9, fontWeight: 600,
+            }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span className="mono" style={{ letterSpacing: '0.1em' }}>
+                {ready ? `READY · ${linesShown}/${transcriptLines.length} TRANSCRIBED` : `SAVED · ${savedPulse}m AGO`}
+              </span>
+            </div>
+            <span style={{ flex: 1 }} />
+          </div>
+        )}
 
         {/* Tab bar — same as actual app */}
         <div style={{
@@ -342,40 +448,50 @@ const HDIPhone = () => {
 
 // iPad LANDSCAPE — KIOSK in fullscreen guest mode. Side rail is hidden
 // (locked kiosk), big listing photo on the left, sign-in form on the
-// right that auto-fills itself char-by-char in a loop so visitors see
-// the form filling itself in real time.
+// right. ONE guest signs in per carousel visit (no looping within a
+// mount) — the carousel moves to the next device after success holds
+// for a beat. A window-scoped counter rotates the guest on each
+// remount so successive iPad visits show different people.
 const HDIPad = () => {
-  // Fast tick (every 60ms) drives the whole cycle. Each phase
-  // computes the typed substring of its target field from this tick.
-  const tickFast = useCount(0, 60, 0);
-
-  // Phase durations in ticks (60ms each). Tuned so each name/email/
-  // phone types at ~one char per tick, with pauses between fields to
-  // mimic a real visitor.
-  const T_NAME    = 14;   // ~840ms
-  const T_PAUSE_1 = 6;    // ~360ms
-  const T_EMAIL   = 26;   // ~1560ms
-  const T_PAUSE_2 = 6;
-  const T_PHONE   = 18;
-  const T_PAUSE_3 = 4;
-  const T_AGENT   = 8;
-  const T_SUCCESS = 22;   // hold the Welcome overlay long enough to read
-  const T_TOTAL =
-    T_NAME + T_PAUSE_1 + T_EMAIL + T_PAUSE_2 +
-    T_PHONE + T_PAUSE_3 + T_AGENT + T_SUCCESS;
-
-  const t = tickFast % T_TOTAL;
-  const guestIdx = Math.floor(tickFast / T_TOTAL) % 3;
+  // Pick this visit's guest once on mount. Window-scoped counter
+  // increments per remount so the rotation persists across the
+  // carousel's conditional render cycle.
   const guestRotation = [
     { name: 'Sarah Chen',     email: 'sarah.chen@example.com',  phone: '(212) 555-0101', hasAgent: 'no'  },
     { name: 'Mike Rodriguez', email: 'mike.r@example.com',      phone: '(212) 555-0142', hasAgent: 'no'  },
     { name: 'Jennifer Park',  email: 'jpark.nyc@example.com',   phone: '(212) 555-0173', hasAgent: 'yes' },
+    { name: 'David Lee',      email: 'd.lee@example.com',       phone: '(212) 555-0188', hasAgent: 'no'  },
+    { name: 'Elena Morales',  email: 'elena.m@example.com',     phone: '(212) 555-0124', hasAgent: 'yes' },
   ];
+  const [guestIdx] = useHD(() => {
+    const next = (window._foyerIPadVisit ?? 0) % guestRotation.length;
+    window._foyerIPadVisit = (window._foyerIPadVisit ?? 0) + 1;
+    return next;
+  });
   const guest = guestRotation[guestIdx];
 
-  // Total guests counter — ticks up once per completed cycle.
-  const cyclesDone = Math.floor(tickFast / T_TOTAL);
-  const guestsIn = 4 + cyclesDone;
+  // Fast tick (every 60ms) drives a single sign-in. Phase durations
+  // are tuned so the form completes in ~4.5s, then the success
+  // overlay holds until the carousel moves on. No looping.
+  const tickFast = useCount(0, 60, 0);
+
+  const T_NAME    = 12;   // ~720ms
+  const T_PAUSE_1 = 4;
+  const T_EMAIL   = 22;   // ~1320ms
+  const T_PAUSE_2 = 4;
+  const T_PHONE   = 16;
+  const T_PAUSE_3 = 3;
+  const T_AGENT   = 6;
+  const T_SUCCESS_START = T_NAME + T_PAUSE_1 + T_EMAIL + T_PAUSE_2 + T_PHONE + T_PAUSE_3 + T_AGENT;
+
+  // Clamp so the animation freezes on the success overlay until
+  // the carousel unmounts us.
+  const t = Math.min(tickFast, T_SUCCESS_START + 60);
+
+  // The "N SIGNED IN" badge on the listing photo. Bumps the moment
+  // this guest's success overlay fires.
+  const baseSignedIn = 6 + guestIdx;
+  const guestsIn = t >= T_SUCCESS_START ? baseSignedIn + 1 : baseSignedIn;
 
   // Return a typed substring of `target` that fills proportionally
   // through the [startTick, startTick + duration) window. Before the
@@ -391,7 +507,7 @@ const HDIPad = () => {
   const emailStart = T_NAME + T_PAUSE_1;
   const phoneStart = emailStart + T_EMAIL + T_PAUSE_2;
   const agentStart = phoneStart + T_PHONE + T_PAUSE_3;
-  const successStart = agentStart + T_AGENT;
+  const successStart = T_SUCCESS_START;
 
   const nameTyped  = typedSubstring(guest.name,  nameStart,  T_NAME);
   const emailTyped = typedSubstring(guest.email, emailStart, T_EMAIL);
@@ -615,29 +731,11 @@ function KioskField({ label, value, active }) {
   );
 }
 
-// Laptop — web Leads inbox with the AI doing the work. Cycles through
-// leads, drafts the email letter-by-letter (no human typing), then
-// flips a "SCHEDULED" badge on and bumps the "sent this week" counter
-// — communicating that the laptop is the automation cockpit, not a
-// place where the agent writes anything.
+// Laptop — web Leads inbox where the AI drafts a follow-up, then the
+// agent clicks Send and watches it confirm. Cycles through leads so
+// visitors see the full draft → send → sent loop more than once.
 const HDLaptop = () => {
-  // Auto-cycling current lead. Each cycle = ~6s.
-  const cycleStep = useCount(0, 1100, 0);
-  const sel = Math.floor(cycleStep / 7) % 3;
-  const stepInLead = cycleStep % 7;
-  // Step gates:
-  //   0  loading "Drafting personalized follow-up…"
-  //   1+ typing the draft
-  //   5  AI DRAFTED badge + Schedule button auto-clicks
-  //   6  SCHEDULED toast appears
-  const drafting = stepInLead === 0;
-  const aiBadge  = stepInLead >= 5;
-  const scheduled = stepInLead >= 6;
-
-  // Cumulative "scheduled this week" counter — bumps once per cycle.
-  const cyclesDone = Math.floor(cycleStep / 7);
-  const scheduledCount = 8 + cyclesDone;
-
+  // Pick a starting lead on first mount, then auto-advance.
   const guests = [
     { n: 'Sarah Chen',     k: 'buyer',   sub: 'Pre-approved $1.4M', score: 94,
       sum: 'Actively searching the West Side. Sold her Queens place last year. Drawn by the kitchen. Pre-approved to $1.4M, ready to close in 60 days.' },
@@ -646,18 +744,71 @@ const HDLaptop = () => {
     { n: 'Jennifer Park',  k: 'browser', sub: 'Curious renter', score: 38,
       sum: 'Local renter, lease through 2027. Loves the neighborhood but undecided. Open to low-pressure listing updates.' },
   ];
+
+  // 70ms tick drives the whole sequence. Phases per lead:
+  //   T_DRAFT_SPIN  — "Drafting personalized follow-up…" spinner
+  //   T_TYPE        — email body types in letter by letter
+  //   T_AI_BADGE    — "AI DRAFTED" badge has popped, Send button glows
+  //   T_CLICK       — Send button gets the "about to click" highlight
+  //   T_CLICK_FLASH — Send button visibly flashes (the "click")
+  //   T_SENT        — "✓ SENT" toast slides in, lead moves to "Sent"
+  //   T_HOLD        — hold the sent state long enough to read
+  const tickFast = useCount(0, 70, 0);
+  const T_DRAFT_SPIN  = 12;   // ~840ms
+  const T_TYPE        = 36;   // ~2520ms
+  const T_AI_BADGE    = 8;
+  const T_CLICK       = 6;
+  const T_CLICK_FLASH = 4;
+  const T_SENT        = 14;
+  const T_HOLD        = 18;
+  const T_LEAD =
+    T_DRAFT_SPIN + T_TYPE + T_AI_BADGE +
+    T_CLICK + T_CLICK_FLASH + T_SENT + T_HOLD;
+
+  const sel = Math.floor(tickFast / T_LEAD) % guests.length;
+  const t = tickFast % T_LEAD;
+
+  // Phase boundaries
+  const DRAFT_END     = T_DRAFT_SPIN;
+  const TYPE_END      = DRAFT_END + T_TYPE;
+  const AI_BADGE_END  = TYPE_END + T_AI_BADGE;
+  const CLICK_END     = AI_BADGE_END + T_CLICK;
+  const FLASH_END     = CLICK_END + T_CLICK_FLASH;
+  const SENT_END      = FLASH_END + T_SENT;
+
+  const drafting    = t < DRAFT_END;
+  const aiBadge     = t >= TYPE_END;
+  const sendHover   = t >= AI_BADGE_END && t < CLICK_END;
+  const sendFlash   = t >= CLICK_END    && t < FLASH_END;
+  const sent        = t >= FLASH_END;
+  const sentToast   = t >= FLASH_END    && t < SENT_END + 12;
+
+  // Cumulative "sent this week" counter — bumps the moment the click
+  // flash fires (matches the user's mental model: I clicked, count up).
+  const cyclesDone = Math.floor(tickFast / T_LEAD);
+  const sentThisWeek = 8 + cyclesDone + (sent ? 1 : 0);
+
   const g = guests[sel];
   const shownGuests = useStaggered([400, 900, 1400]);
-  const [bodyTyped] = useTyped(
-    drafting ? '' : (
-      g.k === 'buyer'
-        ? "Sarah — great meeting you today. I'd love to share three comps from the block plus a private-showing slot for Saturday morning. Want me to send them over?"
-        : g.k === 'seller'
-        ? "Mike — great meeting you today. I'd love to put together a complimentary CMA for your place — no obligations, just real numbers from this quarter."
-        : "Jennifer — great meeting you today. Totally understand you're early. I'll send a quiet listing update once a week — unsubscribe with one tap."
-    ),
-    800, 22
-  );
+
+  // Type the draft body manually from the tick — useTyped is mount-
+  // anchored and doesn't restart per lead. This way each lead gets
+  // its own fresh char-by-char typing in its TYPE window.
+  const fullBody =
+    g.k === 'buyer'
+      ? "Sarah — great meeting you today. I'd love to share three comps from the block plus a private-showing slot for Saturday morning. Want me to send them over?"
+      : g.k === 'seller'
+      ? "Mike — great meeting you today. I'd love to put together a complimentary CMA for your place — no obligations, just real numbers from this quarter."
+      : "Jennifer — great meeting you today. Totally understand you're early. I'll send a quiet listing update once a week — unsubscribe with one tap.";
+  let typedChars = 0;
+  if (t >= DRAFT_END && t < TYPE_END) {
+    const localT = t - DRAFT_END;
+    typedChars = Math.ceil(localT / T_TYPE * fullBody.length);
+  } else if (t >= TYPE_END) {
+    typedChars = fullBody.length;
+  }
+  const draftText = fullBody.slice(0, typedChars);
+  const draftActive = t >= DRAFT_END && t < TYPE_END;
 
   const navItems = [
     { i: 'home',  l: 'Home' },
@@ -756,7 +907,7 @@ const HDLaptop = () => {
                     background: 'var(--gold-soft)', color: 'var(--gold)',
                     fontSize: 8.5, letterSpacing: '0.1em', fontWeight: 600,
                   }}>
-                    {scheduledCount}/14 SCHEDULED
+                    {sentThisWeek}/14 SENT
                   </span>
                 </div>
                 <div style={{
@@ -770,7 +921,10 @@ const HDLaptop = () => {
                 </div>
                 {guests.map((gg, i) => {
                   const isActive = sel === i;
-                  const isDone = i < sel;          // looped past — "sent"
+                  // A previously-active lead this loop counts as sent.
+                  // The currently-active lead flips to "Sent" the moment
+                  // its send-flash phase ends.
+                  const isDone = i < sel || (isActive && sent);
                   return (
                     <div key={gg.n} style={{
                       display: 'block',
@@ -792,7 +946,7 @@ const HDLaptop = () => {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 11, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{gg.n}</div>
                           <div style={{ fontSize: 8.5, color: isDone ? 'var(--sage)' : 'var(--text-dim)', marginTop: 1 }}>
-                            {isDone ? '✓ Scheduled' : gg.sub}
+                            {isDone ? '✓ Sent' : gg.sub}
                           </div>
                         </div>
                         <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.04em' }}>
@@ -872,40 +1026,101 @@ const HDLaptop = () => {
                     </div>
                   ) : (
                     <>
-                      {bodyTyped}<span style={{
-                        display: 'inline-block', width: 5, height: 11, marginLeft: 1,
-                        background: 'var(--gold)', verticalAlign: '-1px',
-                        animation: 'hdBlink 0.9s steps(2) infinite',
-                      }} />
+                      {draftText}
+                      {draftActive && (
+                        <span style={{
+                          display: 'inline-block', width: 5, height: 11, marginLeft: 1,
+                          background: 'var(--gold)', verticalAlign: '-1px',
+                          animation: 'hdBlink 0.9s steps(2) infinite',
+                        }} />
+                      )}
                     </>
                   )}
                 </div>
 
-                {/* Auto-schedule bar — flips green + ticked when scheduled */}
+                {/* Action row: Archive · Schedule · SEND. The Send
+                    button is the focal point — it glows when the
+                    draft is ready, flashes when the (animated) click
+                    fires, then everything flips to a green "Sent"
+                    state. Animates the agent clicking Send. */}
                 <div style={{
-                  marginTop: 8, padding: '7px 10px',
-                  background: scheduled ? 'rgba(134,166,128,0.14)' : 'var(--gold-soft)',
-                  border: '1px solid ' + (scheduled ? 'rgba(134,166,128,0.45)' : 'rgba(196,162,82,0.4)'),
-                  borderRadius: 6,
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  transition: 'background .35s ease, border-color .35s ease',
+                  marginTop: 10, display: 'flex', alignItems: 'center', gap: 6,
                 }}>
-                  {scheduled ? (
-                    <>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--sage)" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
-                      <span className="mono" style={{ fontSize: 8.5, color: 'var(--sage)', letterSpacing: '0.1em', fontWeight: 600 }}>
-                        SCHEDULED · TMRW 9:14 AM
+                  <span style={{
+                    padding: '4px 8px', borderRadius: 999,
+                    background: 'rgba(255,255,255,0.05)',
+                    color: 'var(--cream-dim)', fontSize: 9, fontWeight: 500,
+                  }}>Archive</span>
+                  <span style={{ flex: 1 }} />
+                  <span style={{
+                    padding: '4px 8px', borderRadius: 999,
+                    background: 'rgba(255,255,255,0.05)',
+                    color: 'var(--cream-dim)', fontSize: 9, fontWeight: 500,
+                  }}>Schedule</span>
+                  {/* Send button — color flips green after send */}
+                  <div style={{
+                    position: 'relative',
+                    padding: sendFlash ? '5px 14px' : '5px 13px',
+                    borderRadius: 999,
+                    background: sent ? 'var(--sage)' : 'var(--gold)',
+                    color: sent ? '#0a1208' : 'var(--ink-on-gold)',
+                    fontSize: 10, fontWeight: 600,
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    boxShadow: sendHover ? '0 0 0 4px rgba(196,162,82,0.32), 0 4px 10px rgba(196,162,82,0.45)'
+                             : sendFlash ? '0 0 0 8px rgba(196,162,82,0.55), 0 6px 12px rgba(196,162,82,0.55)'
+                             : sent      ? '0 0 0 3px rgba(134,166,128,0.28)'
+                             : 'none',
+                    transition: 'all .25s ease',
+                    transform: sendFlash ? 'scale(0.96)' : 'scale(1)',
+                  }}>
+                    {sent ? (
+                      <>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+                        Sent
+                      </>
+                    ) : (
+                      <>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>
+                        Send
+                      </>
+                    )}
+                    {/* Faux "cursor about to click" indicator */}
+                    {sendHover && (
+                      <span style={{
+                        position: 'absolute',
+                        bottom: -10, right: -2,
+                        width: 14, height: 14,
+                        color: 'var(--cream)',
+                        animation: 'hdPulse 0.7s ease-in-out infinite',
+                      }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M5 3l14 9-6 1-3 8z"/>
+                        </svg>
                       </span>
-                    </>
-                  ) : (
-                    <>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" strokeWidth="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>
-                      <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.1em' }}>
-                        AUTO-SCHEDULING…
-                      </span>
-                    </>
-                  )}
+                    )}
+                  </div>
                 </div>
+
+                {/* SENT toast — slides in over the right edge of the
+                    detail pane when the click fires. Self-dismisses
+                    when the cycle moves on. */}
+                {sentToast && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 14, right: 14,
+                    padding: '7px 12px', borderRadius: 999,
+                    background: 'rgba(134,166,128,0.18)',
+                    border: '1px solid rgba(134,166,128,0.45)',
+                    color: 'var(--sage)',
+                    fontSize: 10, fontWeight: 600,
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    boxShadow: '0 4px 12px rgba(134,166,128,0.18)',
+                    animation: 'hdSlideIn .35s cubic-bezier(.22,1,.36,1) both',
+                  }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span className="mono" style={{ letterSpacing: '0.1em' }}>SENT · GMAIL</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -953,15 +1168,28 @@ const HeroDevices = () => {
   const [idx, setIdx] = useHD(0);
   const tRef = useHDRef(null);
 
+  // Per-device dwell times so each animation gets exactly the time it
+  // needs — iPhone has the longest (recording → transcribing → 5
+  // transcript lines), iPad is the shortest (one sign-in then hold
+  // success briefly).
+  const dwellMs = [9500, 6500, 9500];
+
   useHDEf(() => {
-    tRef.current = setInterval(() => setIdx(i => (i + 1) % 3), 8000);
-    return () => clearInterval(tRef.current);
+    function advance() {
+      setIdx(i => {
+        const next = (i + 1) % 3;
+        tRef.current = setTimeout(advance, dwellMs[next]);
+        return next;
+      });
+    }
+    tRef.current = setTimeout(advance, dwellMs[0]);
+    return () => clearTimeout(tRef.current);
   }, []);
 
   const devices = [
-    { id: 'phone',  label: 'iPhone',  caption: 'Records the room. Identifies each voice.' },
-    { id: 'ipad',   label: 'iPad',    caption: 'Hand to a guest. Sign-in flows itself.' },
-    { id: 'laptop', label: 'Laptop',  caption: 'AI drafts and schedules every follow-up.' },
+    { id: 'phone',  label: 'iPhone',  caption: 'Records the room. Tags every voice.' },
+    { id: 'ipad',   label: 'iPad',    caption: 'Hand to a guest. Sign-in does itself.' },
+    { id: 'laptop', label: 'Laptop',  caption: 'AI drafts each follow-up — you hit send.' },
   ];
 
   return (
@@ -1038,7 +1266,8 @@ const HeroDevices = () => {
               {idx === i && (
                 <div key={`bar-${idx}`} style={{
                   position: 'absolute', inset: 0, background: 'var(--gold)',
-                  transformOrigin: 'left center', animation: 'hdBar 8s linear forwards',
+                  transformOrigin: 'left center',
+                  animation: `hdBar ${dwellMs[i]}ms linear forwards`,
                 }} />
               )}
             </div>
@@ -1057,6 +1286,7 @@ const HeroDevices = () => {
         @keyframes hdSlideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes hdFadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes hdPop { 0% { transform: scale(0.6); opacity: 0; } 70% { transform: scale(1.08); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes hdSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes hdLaptopOpen {
           0%   { transform: rotateX(-95deg) translateY(40px); opacity: 0; filter: brightness(0.3); }
           35%  { opacity: 1; }
