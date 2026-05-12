@@ -471,5 +471,27 @@ def send_gmail_email(
         timeout=20,
     )
     if not resp.ok:
-        raise HTTPException(502, f"Gmail send failed: {resp.text}")
+        # Translate Gmail's raw error into something a real estate agent
+        # can actually act on. The most common case in practice is a stale
+        # refresh token (revoked, expired, or pointing at the wrong
+        # account) — we surface "reconnect Gmail" so the iOS / web client
+        # can fall through to the Connect Gmail prompt rather than show a
+        # scary 502.
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
+        message = err.get("message") or resp.text
+        status = err.get("status") or ""
+        if resp.status_code == 401 or "invalid_grant" in message.lower() or status == "UNAUTHENTICATED":
+            # Wipe the broken credential so the next status fetch shows
+            # disconnected — the UI will then offer Connect Gmail.
+            clear_gmail_credential(user_id)
+            raise HTTPException(400, "Gmail not connected")
+        if resp.status_code == 403 or "insufficient" in message.lower():
+            raise HTTPException(400, f"Gmail rejected the send: {message}")
+        # Anything else — quota, malformed message, etc. — surface the
+        # underlying reason rather than bare 502.
+        raise HTTPException(400, f"Gmail send failed: {message}")
     return resp.json()
