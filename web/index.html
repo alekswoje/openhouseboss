@@ -339,6 +339,7 @@
   <script type="text/babel" src="kiosk.jsx"></script>
   <script type="text/babel" src="session-detail.jsx"></script>
   <script type="text/babel" src="leads.jsx"></script>
+  <script type="text/babel" src="profile.jsx"></script>
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect } = React;
@@ -359,6 +360,9 @@
       // Dedicated CRM surface: per-lead detail with notes, tasks,
       // sent-email history, and scheduled-send queue.
       { hash: '#/leads',      label: 'Leads',    El: () => <LeadsInbox /> },
+      // Settings — Gmail connect + account info. Cross-device: the same
+      // refresh token works from the iPad once the agent signs in there.
+      { hash: '#/profile',    label: 'Profile',  El: () => <ProfilePage /> },
     ];
 
     function useHashRoute() {

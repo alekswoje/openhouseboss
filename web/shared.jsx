@@ -453,6 +453,10 @@ function AppShell({ active, children, sessionStats }) {
               boxShadow: '0 30px 80px -20px rgba(0,0,0,0.7)', padding: '6px 0',
               zIndex: 10,
             }}>
+              <a href="#/profile" onClick={(e) => { e.preventDefault(); setMenuOpen(false); window.foyerGo('#/profile'); }}
+                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', fontSize: 13, color: 'var(--cream-dim)', textDecoration: 'none' }}>
+                <Icon name="envelope" size={14} />Profile & Gmail
+              </a>
               <a href="#/" onClick={(e) => { e.preventDefault(); setMenuOpen(false); window.foyerGo('#/'); }}
                  style={{ display: 'block', padding: '10px 16px', fontSize: 13, color: 'var(--cream-dim)', textDecoration: 'none' }}>
                 Marketing site

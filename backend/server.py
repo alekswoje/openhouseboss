@@ -142,19 +142,45 @@ def google_ios(payload: dict):
 # --------------------------------------------------------------------------
 
 @app.get("/auth/gmail/start")
-def gmail_start(user_token: str):
-    """Kicks off the Gmail-send OAuth grant. ASWebAuthenticationSession on
-    iOS can't attach an Authorization header, so the client passes its
-    session JWT as a query param. We decode it here, attach the user_id to
-    the OAuth state, and redirect to Google."""
-    if not user_token:
-        raise HTTPException(401, "Not signed in")
-    payload = auth_lib.decode_session_jwt(user_token)
-    user_id = payload.get("sub", "")
-    user = auth_lib.get_user_by_id(user_id)
+def gmail_start(
+    request: Request,
+    user_token: Optional[str] = None,
+    platform: str = "ios",
+):
+    """Kicks off the Gmail-send OAuth grant. Two callers:
+
+    - iOS via ASWebAuthenticationSession can't send the session cookie, so
+      it passes its JWT as `user_token` and we decode it manually.
+    - Web hits this from a same-origin link, so the `fb_session` cookie
+      arrives automatically and we just delegate to get_current_user.
+
+    The refresh token we capture is keyed on user_id, so once either path
+    completes, the connection is visible from every device that signs in
+    as the same Google account.
+    """
+    if platform not in ("ios", "web"):
+        platform = "ios"
+
+    user: Optional[dict] = None
+    if user_token:
+        payload = auth_lib.decode_session_jwt(user_token)
+        user = auth_lib.get_user_by_id(payload.get("sub", ""))
+    else:
+        # Cookie path — only valid for web. We pull the cookie manually
+        # here because /auth/gmail/start is a top-level navigation (no
+        # custom Authorization header).
+        cookie = request.cookies.get("fb_session")
+        if cookie:
+            try:
+                payload = auth_lib.decode_session_jwt(cookie)
+                user = auth_lib.get_user_by_id(payload.get("sub", ""))
+            except HTTPException:
+                user = None
+
     if user is None:
-        raise HTTPException(401, "User no longer exists")
-    state = auth_lib.encode_gmail_state(user["id"])
+        raise HTTPException(401, "Not signed in")
+
+    state = auth_lib.encode_gmail_state(user["id"], platform=platform)
     return RedirectResponse(auth_lib.build_gmail_authorize_url(state), status_code=302)
 
 
@@ -164,6 +190,7 @@ def gmail_callback(code: str, state: str):
     if state_data.get("kind") != "gmail":
         raise HTTPException(400, "OAuth state was not issued for Gmail")
     user_id = state_data.get("user_id")
+    platform = state_data.get("platform", "ios")
     if not user_id:
         raise HTTPException(400, "OAuth state is missing user_id")
 
@@ -187,6 +214,8 @@ def gmail_callback(code: str, state: str):
             gmail_email = ""
 
     auth_lib.set_gmail_credential(user_id, refresh, gmail_email)
+    if platform == "web":
+        return RedirectResponse(url="/#/profile?gmail=connected", status_code=302)
     return RedirectResponse(
         f"{auth_lib.IOS_CUSTOM_SCHEME}://gmail-connected", status_code=302
     )

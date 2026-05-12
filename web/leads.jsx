@@ -239,7 +239,7 @@ function LeadDetail({ lead, onUpdate, onDelete, onShowToast }) {
     } catch (e) {
       const msg = e.message || String(e);
       if (msg.includes('Gmail not connected')) {
-        setSendErr('Connect Gmail in iPad → Profile to send.');
+        setSendErr('GMAIL_NOT_CONNECTED');
       } else if (msg.includes('No recipient')) {
         setSendErr('This lead has no email on file.');
       } else {
@@ -416,7 +416,15 @@ function LeadDetail({ lead, onUpdate, onDelete, onShowToast }) {
               : <><Icon name="send" size={12} />Send</>}
           </button>
         </div>
-        {sendErr && <div style={{ fontSize: 12, color: C.terracotta, marginTop: 10 }}>{sendErr}</div>}
+        {sendErr === 'GMAIL_NOT_CONNECTED' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, padding: '12px 14px', background: 'rgba(248,113,113,0.08)', borderRadius: 10 }}>
+            <Icon name="envelope" size={14} />
+            <div style={{ flex: 1, fontSize: 13, color: C.cream }}>Gmail isn't connected yet.</div>
+            <a href="#/profile" style={{ ...primaryBtnStyle, textDecoration: 'none', padding: '8px 14px', fontSize: 12 }}>Connect Gmail</a>
+          </div>
+        ) : sendErr ? (
+          <div style={{ fontSize: 12, color: C.terracotta, marginTop: 10 }}>{sendErr}</div>
+        ) : null}
       </div>
 
       {/* Scheduled card */}
