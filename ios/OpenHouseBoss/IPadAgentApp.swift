@@ -797,6 +797,12 @@ private struct IPadHome: View {
                 }
                 if !recorded.isEmpty {
                     sessionFeed
+                } else if store.listLoading {
+                    // Cold-start safety net: show a spinner instead of a
+                    // bare empty page while the first GET /sessions is still
+                    // in flight. Without this, agents with sessions saw a
+                    // misleading "no sessions" state for the 5-30s wake-up.
+                    loadingFeed
                 }
             }
             .padding(.horizontal, 44)
@@ -806,6 +812,17 @@ private struct IPadHome: View {
         .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
+    }
+
+    private var loadingFeed: some View {
+        VStack(spacing: 14) {
+            FoyerLoadingView(size: 64, cornerRadius: 10)
+            Text("Loading your sessions…")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.textDim)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 
     private var greeting: some View {
@@ -2036,6 +2053,26 @@ private struct IPadLeads: View {
     @State private var draftText: [String: String] = [:]
     @State private var draftSaving: Bool = false
 
+    // Edit-contact sheet — when non-nil, a modal lets the agent fix the
+    // lead's display name / email / phone (often wrong off diarization or
+    // the kiosk form).
+    @State private var editingContactFor: LeadRow?
+
+    // AI-refine state for the draft editor. `refineInstruction[id]` holds
+    // the agent's free-text instruction ("shorter", "add a CTA"); per-lead
+    // so switching leads doesn't blow away in-progress instructions.
+    // `refining` gates the spinner / disabled state during the round-trip.
+    @State private var refineInstruction: [String: String] = [:]
+    @State private var refining: Bool = false
+    @State private var refineError: String?
+
+    // Leads AI agent — sheet at the top of the Leads tab. The agent can ask
+    // free-text questions ("how many buyers do I have?") or describe a
+    // batch action ("send our $2,500 buyer credit blast to all buyers");
+    // server returns either an answer or a plan we render with one bulk
+    // confirmation.
+    @State private var showLeadsAgent: Bool = false
+
     private var filteredLeads: [LeadRow] {
         guard let id = filterSessionId else { return allLeads }
         return allLeads.filter { $0.session.id == id }
@@ -2118,6 +2155,29 @@ private struct IPadLeads: View {
                 }
             )
         }
+        .sheet(item: $editingContactFor) { row in
+            EditContactSheet(
+                row: row,
+                onCancel: { editingContactFor = nil },
+                onSaved: { updated in
+                    apply(visitor: updated, to: row)
+                    editingContactFor = nil
+                    showToast("Contact updated")
+                }
+            )
+        }
+        .sheet(isPresented: $showLeadsAgent) {
+            LeadsAgentSheet(
+                onDismiss: { showLeadsAgent = false },
+                onCompleted: { sentCount in
+                    showLeadsAgent = false
+                    if sentCount > 0 {
+                        showToast("Sent \(sentCount) email\(sentCount == 1 ? "" : "s")")
+                        Task { await load() }
+                    }
+                }
+            )
+        }
         .alert(
             "Delete this lead?",
             isPresented: Binding(
@@ -2154,6 +2214,8 @@ private struct IPadLeads: View {
                     .buttonStyle(.plain)
                 }
 
+                askAILauncher
+
                 if !sessionsForFilter.isEmpty {
                     sessionFilterMenu
                 }
@@ -2181,6 +2243,33 @@ private struct IPadLeads: View {
                 .refreshable { await load() }
             }
         }
+    }
+
+    private var askAILauncher: some View {
+        Button { showLeadsAgent = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("Ask your inbox anything…")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(white: 0.07))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(FoyerTheme.gold.opacity(0.18), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var sessionFilterMenu: some View {
@@ -2492,6 +2581,22 @@ private struct IPadLeads: View {
                 if !v.visitor.phone.isEmpty {
                     contactLine(icon: "phone", text: v.visitor.phone)
                 }
+                Button {
+                    editingContactFor = row
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(v.visitor.email.isEmpty && v.visitor.phone.isEmpty
+                             ? "Add contact info"
+                             : "Edit")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Color.white.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -2628,6 +2733,7 @@ private struct IPadLeads: View {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
                     )
+                refineBar(for: row)
             } else {
                 Text(currentBody)
                     .font(.system(size: 15))
@@ -2938,6 +3044,20 @@ private struct IPadLeads: View {
         visitor.leadState = state
         existing = LeadRow(visitor: visitor, session: existing.session)
         allLeads[idx] = existing
+    }
+
+    // Slot a freshly-edited visitor (with possibly-renamed name + updated
+    // email/phone) back into the local list so the UI doesn't have to wait
+    // for the next full reload. LeadRow.id depends on visitor.id which is
+    // (name, speaker) — speaker is stable on rename, so the row's id can
+    // change if the agent renamed the lead. Re-key activeId if so.
+    @MainActor
+    private func apply(visitor updated: VisitorResult, to row: LeadRow) {
+        guard let idx = allLeads.firstIndex(where: { $0.id == row.id }) else { return }
+        let session = allLeads[idx].session
+        let replaced = LeadRow(visitor: updated, session: session)
+        allLeads[idx] = replaced
+        if activeId == row.id { activeId = replaced.id }
     }
 
     private func sectionHeader(_ title: String, count: Int? = nil) -> some View {
@@ -3277,6 +3397,103 @@ private struct IPadLeads: View {
             apply(state, to: row)
         } catch {
             crmError = "Couldn't delete task: \(error.localizedDescription)"
+        }
+    }
+
+    @ViewBuilder
+    private func refineBar(for row: LeadRow) -> some View {
+        let instruction = refineInstruction[row.id] ?? ""
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("Refine with AI")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(FoyerTheme.creamDim)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                TextField(
+                    "e.g. shorter, add a CTA, more casual",
+                    text: Binding(
+                        get: { refineInstruction[row.id] ?? "" },
+                        set: { refineInstruction[row.id] = $0 }
+                    ),
+                    axis: .horizontal
+                )
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .submitLabel(.send)
+                .autocorrectionDisabled(false)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 10))
+                .disabled(refining)
+                .onSubmit {
+                    Task { await runRefine(for: row) }
+                }
+
+                Button { Task { await runRefine(for: row) } } label: {
+                    HStack(spacing: 6) {
+                        if refining {
+                            ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
+                        } else {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        Text(refining ? "Refining…" : "Rewrite")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(trimmed.isEmpty ? FoyerTheme.textMuted : FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(
+                        Capsule().fill(trimmed.isEmpty
+                                       ? Color(white: 0.10)
+                                       : FoyerTheme.gold)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(trimmed.isEmpty || refining)
+            }
+            if let refineError {
+                Text(refineError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    @MainActor
+    private func runRefine(for row: LeadRow) async {
+        let instruction = (refineInstruction[row.id] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { return }
+        let base = (draftText[row.id] ?? draftBodyFor(row))
+        refining = true
+        refineError = nil
+        defer { refining = false }
+        do {
+            let newBody = try await APIClient.shared.refineDraft(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                instruction: instruction,
+                baseBody: base
+            )
+            // Drop the rewrite straight into the editor. Keep editing mode
+            // active so the agent can still tweak before saving — the AI's
+            // rewrite is a draft, not the final word.
+            draftText[row.id] = newBody
+            // Clear the instruction box so the agent isn't tempted to fire
+            // the same instruction twice; they can immediately type the
+            // next refinement.
+            refineInstruction[row.id] = ""
+        } catch {
+            refineError = "Refine failed: \(error.localizedDescription)"
         }
     }
 
@@ -4337,6 +4554,512 @@ private struct ManualLeadSheet: View {
         default:
             let area = s.prefix(3); let mid = s.dropFirst(3).prefix(3); let end = s.dropFirst(6)
             return "(\(area)) \(mid)-\(end)"
+        }
+    }
+}
+
+// MARK: – Edit-contact sheet
+//
+// Lets the agent fix a lead's display name, email, or phone after the fact —
+// diarization often gets names wrong (or the kiosk form had a typo). Keeps
+// the speaker label stable so notes, tasks, schedules etc. don't lose their
+// composite-key anchor on rename.
+
+private struct EditContactSheet: View {
+    let row: IPadLeads.LeadRow
+    var onCancel: () -> Void
+    var onSaved: (VisitorResult) -> Void
+
+    @State private var name: String
+    @State private var email: String
+    @State private var phone: String
+    @State private var submitting: Bool = false
+    @State private var errorMessage: String?
+
+    init(row: IPadLeads.LeadRow, onCancel: @escaping () -> Void, onSaved: @escaping (VisitorResult) -> Void) {
+        self.row = row
+        self.onCancel = onCancel
+        self.onSaved = onSaved
+        _name = State(initialValue: row.visitor.visitor.name)
+        _email = State(initialValue: row.visitor.visitor.email)
+        _phone = State(initialValue: row.visitor.visitor.phone)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    field("Name", value: $name, keyboard: .default)
+                    field("Email", value: $email, keyboard: .emailAddress)
+                    field("Phone", value: $phone, keyboard: .asciiCapableNumberPad)
+                        .onChange(of: phone) { _, new in
+                            let formatted = formatPhone(new)
+                            if formatted != new { phone = formatted }
+                        }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    Text("Diarization sometimes mangles names off audio. Fix it here and the rest of the app (drafts, sends, follow-ups) picks up the new info.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .padding(.top, 6)
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle("Edit contact")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { Task { await save() } } label: {
+                        if submitting { ProgressView() } else { Text("Save") }
+                    }
+                    .foregroundStyle(canSave ? FoyerTheme.gold : FoyerTheme.textMuted)
+                    .disabled(!canSave || submitting)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func field(_ label: String, value: Binding<String>, keyboard: UIKeyboardType) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            TextField("", text: value)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .padding(.vertical, 14).padding(.horizontal, 14)
+                .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    @MainActor
+    private func save() async {
+        submitting = true
+        errorMessage = nil
+        defer { submitting = false }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedEmail = email.trimmingCharacters(in: .whitespaces)
+        let trimmedPhone = phone.trimmingCharacters(in: .whitespaces)
+        do {
+            let updated = try await APIClient.shared.updateVisitorContact(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                newName: trimmedName == row.visitor.visitor.name ? nil : trimmedName,
+                newEmail: trimmedEmail == row.visitor.visitor.email ? nil : trimmedEmail,
+                newPhone: trimmedPhone == row.visitor.visitor.phone ? nil : trimmedPhone
+            )
+            onSaved(updated)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func formatPhone(_ input: String) -> String {
+        let digits = input.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }
+        let s = String(String.UnicodeScalarView(digits.prefix(10)))
+        let n = s.count
+        switch n {
+        case 0:     return ""
+        case 1...3: return "(\(s)"
+        case 4...6:
+            let area = s.prefix(3); let mid = s.dropFirst(3)
+            return "(\(area)) \(mid)"
+        default:
+            let area = s.prefix(3); let mid = s.dropFirst(3).prefix(3); let end = s.dropFirst(6)
+            return "(\(area)) \(mid)-\(end)"
+        }
+    }
+}
+
+// MARK: – Leads AI agent sheet
+//
+// One-shot AI agent over the agent's leads inbox. The user types a
+// question or instruction; the backend either returns an answer (we
+// render it as text) or a concrete plan (subject + per-recipient body for
+// every lead matching the user's filter). A single "Send all" button
+// fires every email in the plan — no per-lead confirmation. The user
+// sees ALL recipients in the preview so the bulk send isn't a surprise.
+
+private struct LeadsAgentSheet: View {
+    var onDismiss: () -> Void
+    var onCompleted: (Int) -> Void
+
+    @State private var input: String = ""
+    @State private var loading: Bool = false
+    @State private var errorMessage: String?
+    @State private var reply: APIClient.LeadsAgentReply?
+    @State private var editableSubject: String = ""
+    @State private var editableRecipients: [APIClient.LeadsAgentRecipient] = []
+    @State private var sending: Bool = false
+    @State private var sendResult: APIClient.LeadsAgentExecuteResult?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    promptCard
+                    if loading {
+                        HStack(spacing: 10) {
+                            FoyerLoadingView(size: 36, cornerRadius: 7)
+                            Text("Thinking through your leads…")
+                                .font(.system(size: 13))
+                                .foregroundStyle(FoyerTheme.textDim)
+                        }
+                        .padding(.vertical, 16)
+                    }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    if let reply, !sending, sendResult == nil {
+                        replyCard(reply)
+                    }
+                    if sending {
+                        HStack(spacing: 10) {
+                            FoyerLoadingView(size: 36, cornerRadius: 7)
+                            Text("Sending — this can take a minute…")
+                                .font(.system(size: 13))
+                                .foregroundStyle(FoyerTheme.textDim)
+                        }
+                        .padding(.vertical, 16)
+                    }
+                    if let sendResult {
+                        sendResultCard(sendResult)
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle("Inbox AI")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        onCompleted(sendResult?.sent ?? 0)
+                        onDismiss()
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var promptCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("ASK OR INSTRUCT")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            TextEditor(text: $input)
+                .font(.system(size: 15))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .frame(minHeight: 100)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(white: 0.07))
+                )
+                .overlay(alignment: .topLeading) {
+                    if input.isEmpty {
+                        Text("e.g. \"Send our $2,500 buyer credit offer to every buyer lead\" or \"Who are my hottest sellers right now?\"")
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .padding(.horizontal, 17).padding(.top, 19)
+                            .allowsHitTesting(false)
+                    }
+                }
+            HStack {
+                Spacer()
+                Button { Task { await ask() } } label: {
+                    HStack(spacing: 6) {
+                        if loading {
+                            ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
+                        } else {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        Text(loading ? "Working…" : "Ask")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(canAsk ? FoyerTheme.inkOnGold : FoyerTheme.textMuted)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(
+                        Capsule().fill(canAsk ? FoyerTheme.gold : Color(white: 0.10))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canAsk)
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(white: 0.04))
+        )
+    }
+
+    private var canAsk: Bool {
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !loading
+    }
+
+    @ViewBuilder
+    private func replyCard(_ r: APIClient.LeadsAgentReply) -> some View {
+        if r.kind == "answer" {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("ANSWER")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(FoyerTheme.gold)
+                Text(r.text ?? "")
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(5)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(white: 0.05))
+            )
+        } else if r.kind == "plan" {
+            planCard(r)
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func planCard(_ r: APIClient.LeadsAgentReply) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "envelope.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("PROPOSED BATCH SEND")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(FoyerTheme.gold)
+                Spacer()
+                Text("\(editableRecipients.count) recipient\(editableRecipients.count == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            if let s = r.summary, !s.isEmpty {
+                Text(s)
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(5)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Subject")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(FoyerTheme.textDim)
+                TextField("", text: $editableSubject)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tint(FoyerTheme.gold)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            if !editableRecipients.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Recipients")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(FoyerTheme.textDim)
+                    VStack(spacing: 8) {
+                        ForEach(editableRecipients) { rcp in
+                            recipientRow(rcp)
+                        }
+                    }
+                }
+            }
+
+            if let skipped = r.skipped, !skipped.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Skipped (\(skipped.count))")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(FoyerTheme.terracotta)
+                    ForEach(skipped, id: \.self) { s in
+                        Text("• \(s.name) — \(s.reason)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                }
+            }
+
+            HStack {
+                Button("Discard") {
+                    reply = nil
+                    editableRecipients = []
+                    editableSubject = ""
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .buttonStyle(.plain)
+                Spacer()
+                Button { Task { await sendAll() } } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Send all \(editableRecipients.count)")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 18).padding(.vertical, 11)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(editableRecipients.isEmpty || sending)
+            }
+            .padding(.top, 4)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(white: 0.05))
+        )
+    }
+
+    private func recipientRow(_ r: APIClient.LeadsAgentRecipient) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(r.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(r.email)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                Spacer()
+                if let addr = r.address, !addr.isEmpty {
+                    Text(addr)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .lineLimit(1)
+                }
+            }
+            Text(r.body)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(4)
+                .lineLimit(4)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func sendResultCard(_ r: APIClient.LeadsAgentExecuteResult) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: r.failed.isEmpty ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(r.failed.isEmpty ? FoyerTheme.sage : FoyerTheme.terracotta)
+                Text(r.failed.isEmpty ? "All sent" : "Partial send")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+            }
+            Text("Delivered \(r.sent) email\(r.sent == 1 ? "" : "s").")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+            if !r.failed.isEmpty {
+                Text("Could not send to:")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                ForEach(r.failed, id: \.self) { f in
+                    Text("• \(f.name) — \(f.reason)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Done") {
+                    onCompleted(r.sent)
+                    onDismiss()
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 16).padding(.vertical, 9)
+                .background(Capsule().fill(FoyerTheme.gold))
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 4)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(white: 0.05))
+        )
+    }
+
+    @MainActor
+    private func ask() async {
+        let msg = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !msg.isEmpty else { return }
+        loading = true
+        errorMessage = nil
+        reply = nil
+        editableRecipients = []
+        editableSubject = ""
+        sendResult = nil
+        defer { loading = false }
+        do {
+            let r = try await APIClient.shared.askLeadsAgent(message: msg)
+            reply = r
+            if r.kind == "plan" {
+                editableSubject = r.subject ?? ""
+                editableRecipients = r.recipients ?? []
+            }
+        } catch {
+            errorMessage = "AI agent failed: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func sendAll() async {
+        guard !editableRecipients.isEmpty else { return }
+        sending = true
+        errorMessage = nil
+        defer { sending = false }
+        do {
+            let result = try await APIClient.shared.executeLeadsAgentPlan(
+                subject: editableSubject,
+                recipients: editableRecipients
+            )
+            sendResult = result
+        } catch {
+            errorMessage = "Bulk send failed: \(error.localizedDescription)"
         }
     }
 }

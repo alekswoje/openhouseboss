@@ -104,12 +104,65 @@ actor APIClient {
         }
     }
 
+    // Cold-start-tolerant GET. Render's free tier can take 30-60s to wake
+    // up an idle service, so the first request after the app launches often
+    // blows past the snappy 8s default. This helper:
+    //   - sets a generous per-request timeout (45s) on a freshly-built
+    //     URLRequest so we don't inherit the session default,
+    //   - retries up to `maxAttempts` times when the network surfaces a
+    //     transient error (timeout, connection lost, can't connect, DNS),
+    //   - waits a short backoff between attempts.
+    // Authoritative server errors (4xx/5xx) are NOT retried — they're
+    // forwarded to the caller via `validate`.
+    private func coldStartGET(
+        path: String,
+        timeout: TimeInterval = 45,
+        maxAttempts: Int = 3
+    ) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            var req = URLRequest(url: Config.backendURL.appendingPathComponent(path))
+            req.timeoutInterval = timeout
+            authorize(&req)
+            do {
+                return try await self.session.data(for: req)
+            } catch let urlErr as URLError {
+                // Retry only on the errors that look like "backend is asleep
+                // or the network just hiccuped" — not on auth/host config
+                // failures the user can't fix by waiting.
+                switch urlErr.code {
+                case .timedOut,
+                     .cannotConnectToHost,
+                     .networkConnectionLost,
+                     .dnsLookupFailed,
+                     .notConnectedToInternet:
+                    lastError = urlErr
+                    if attempt < maxAttempts - 1 {
+                        // 1s, then 2s. Short enough that the user doesn't
+                        // wait forever; long enough that Render's wake-up
+                        // typically completes by the second/third try.
+                        let delay = UInt64((attempt + 1) * 1_000_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
+                        continue
+                    }
+                    throw urlErr
+                default:
+                    throw urlErr
+                }
+            } catch {
+                throw error
+            }
+        }
+        // Unreachable, but the compiler can't tell.
+        throw lastError ?? URLError(.unknown)
+    }
+
     // GET /auth/me — used to (a) verify a Keychain token on launch and (b)
     // pull the user's name/email/picture for the profile screen.
+    // Cold-start tolerant: this is one of the first calls after launch, so
+    // it eats most of Render's free-tier wake-up cost.
     func fetchMe() async throws -> AuthUser {
-        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/me"))
-        authorize(&req)
-        let (data, response) = try await self.session.data(for: req)
+        let (data, response) = try await coldStartGET(path: "auth/me")
         try validate(response: response, data: data)
         return try JSONDecoder().decode(AuthUser.self, from: data)
     }
@@ -325,10 +378,10 @@ actor APIClient {
     }
 
     // GET /sessions — compact list for the home screen.
+    // Cold-start tolerant: this fires from the Home/Leads `.task {}` on
+    // launch and the 8s default would lose to a sleeping Render service.
     func listSessions() async throws -> [SessionSummary] {
-        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
-        authorize(&req)
-        let (data, response) = try await self.session.data(for: req)
+        let (data, response) = try await coldStartGET(path: "sessions")
         try validate(response: response, data: data)
         struct Wrapper: Codable { let sessions: [SessionSummary] }
         return try JSONDecoder().decode(Wrapper.self, from: data).sessions
@@ -367,9 +420,13 @@ actor APIClient {
     }
 
     func getSession(id: String) async throws -> Session {
-        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)"))
-        authorize(&req)
-        let (data, response) = try await self.session.data(for: req)
+        // Cold-start tolerant: the Leads inbox fans out one of these per
+        // session in parallel on launch, so if any single one trips the
+        // default timeout the row goes missing. Retry with backoff so the
+        // first user-visible inbox is complete.
+        let (data, response) = try await coldStartGET(
+            path: "sessions/\(id)", timeout: 30, maxAttempts: 3
+        )
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
     }
@@ -661,6 +718,136 @@ actor APIClient {
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    // MARK: – Leads AI agent
+
+    // The agent's reply to a free-text question or send-instruction. It's
+    // either an `answer` (text we just display) or a `plan` the agent can
+    // review and confirm to fire bulk sends from.
+    struct LeadsAgentRecipient: Codable, Identifiable, Hashable {
+        let sessionId: String
+        let name: String
+        let speaker: String?
+        let email: String
+        let address: String?
+        let body: String
+        var id: String { "\(sessionId):\(name):\(speaker ?? "")" }
+        enum CodingKeys: String, CodingKey {
+            case sessionId = "session_id"
+            case name, speaker, email, address, body
+        }
+    }
+    struct LeadsAgentSkipped: Codable, Hashable {
+        let name: String
+        let reason: String
+    }
+    struct LeadsAgentReply: Codable, Hashable {
+        let kind: String        // "answer" | "plan"
+        let text: String?
+        let summary: String?
+        let action: String?
+        let subject: String?
+        let recipients: [LeadsAgentRecipient]?
+        let skipped: [LeadsAgentSkipped]?
+    }
+    struct LeadsAgentExecuteResult: Codable, Hashable {
+        let sent: Int
+        let failed: [LeadsAgentSkipped]
+    }
+
+    func askLeadsAgent(message: String) async throws -> LeadsAgentReply {
+        var req = try crmRequest(
+            "me/leads/agent", method: "POST", body: ["message": message]
+        )
+        // Claude over the whole lead corpus can take a moment.
+        req.timeoutInterval = 90
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadsAgentReply.self, from: data)
+    }
+
+    func executeLeadsAgentPlan(
+        subject: String,
+        recipients: [LeadsAgentRecipient]
+    ) async throws -> LeadsAgentExecuteResult {
+        let payload: [String: Any] = [
+            "plan": [
+                "action": "send_email",
+                "subject": subject,
+                "recipients": recipients.map { [
+                    "session_id": $0.sessionId,
+                    "name": $0.name,
+                    "speaker": $0.speaker ?? "",
+                    "email": $0.email,
+                    "address": $0.address ?? "",
+                    "body": $0.body,
+                ] },
+            ]
+        ]
+        var req = try crmRequest("me/leads/agent/execute", method: "POST", body: payload)
+        // N gmail sends in series — give it real headroom.
+        req.timeoutInterval = 180
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadsAgentExecuteResult.self, from: data)
+    }
+
+    // Ask Claude to rewrite the current follow-up draft per the agent's
+    // instruction ("too long", "add a CTA about the 1pm Saturday open
+    // house", etc.). Returns just the new body text — caller drops it
+    // back into the editor for review/save. Pass `baseBody` to refine
+    // an in-progress edit instead of the saved override.
+    func refineDraft(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        instruction: String,
+        baseBody: String? = nil
+    ) async throws -> String {
+        var payload: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "instruction": instruction,
+        ]
+        if let baseBody { payload["base_body"] = baseBody }
+        var req = try crmRequest(
+            "sessions/\(sessionId)/visitors/draft/refine", method: "POST", body: payload
+        )
+        // Claude rewrite + Render wake-up can ride past the snappy default.
+        req.timeoutInterval = 60
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct Wrapper: Codable { let body: String }
+        return try JSONDecoder().decode(Wrapper.self, from: data).body
+    }
+
+    // Edit a lead's contact info (display name + email + phone). Backend
+    // matches by the OLD (name, speaker); speaker stays stable so notes,
+    // tasks, schedules, etc. keep working without renaming the lookup key.
+    // Pass nil to leave a field unchanged; pass "" to explicitly clear
+    // email/phone. Returns the updated visitor entry.
+    func updateVisitorContact(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        newName: String? = nil,
+        newEmail: String? = nil,
+        newPhone: String? = nil
+    ) async throws -> VisitorResult {
+        var payload: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+        ]
+        if let n = newName { payload["new_name"] = n }
+        if let e = newEmail { payload["new_email"] = e }
+        if let p = newPhone { payload["new_phone"] = p }
+        let req = try crmRequest(
+            "sessions/\(sessionId)/visitors/contact", method: "PATCH", body: payload
+        )
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(VisitorResult.self, from: data)
     }
 
     // Save an edited follow-up draft. Pass clear=true (with nil body) to wipe

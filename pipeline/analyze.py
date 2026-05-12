@@ -131,3 +131,79 @@ def analyze_visitor(
     parsed = json.loads(text)
     parsed["words_spoken"] = words_spoken
     return VisitorAnalysis(**parsed)
+
+
+def refine_draft(
+    current_body: str,
+    instruction: str,
+    visitor_name: str | None = None,
+    visitor_summary: str | None = None,
+    visitor_tag: str | None = None,
+    address: str | None = None,
+) -> str:
+    """Rewrite an existing follow-up draft according to the agent's
+    instruction ("too long", "add a CTA about the 1pm Saturday tour", "more
+    casual", etc.).
+
+    Kept deliberately tight — we only return the new email body, no JSON
+    envelope. The agent will see it slot into the editor where they can
+    still make manual tweaks. We pass the visitor summary + tag for context
+    so the AI keeps the message specific to this lead instead of generic
+    boilerplate.
+    """
+    body = (current_body or "").strip()
+    ask = (instruction or "").strip()
+    if not ask:
+        return body
+
+    context_lines = []
+    if visitor_name:
+        context_lines.append(f"Lead: {visitor_name}")
+    if visitor_tag:
+        context_lines.append(f"Tag: {visitor_tag}")
+    if address:
+        context_lines.append(f"Property: {address}")
+    if visitor_summary:
+        context_lines.append(f"What we heard: {visitor_summary}")
+    context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    client = Anthropic()
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=600,
+        system=(
+            "You rewrite a real-estate follow-up email per the agent's "
+            "instruction. Keep it short and mobile-friendly. Default to under "
+            "4 sentences unless the agent explicitly asks for longer. End with "
+            "a single specific ask the lead can reply to. No subject line, no "
+            "greetings beyond a short hi/hello, no 'I hope this finds you well' "
+            "boilerplate. Sign-off is the agent's name on its own line. "
+            "Return ONLY the rewritten email body as plain text — no JSON, no "
+            "quotes around the result, no commentary, no 'Here is the rewrite'."
+        ),
+        messages=[{
+            "role": "user",
+            "content": (
+                f"{context_block}"
+                f"Current draft:\n{body or '(empty — write from scratch)'}\n\n"
+                f"Agent's instruction: {ask}\n\n"
+                "Rewrite the draft now."
+            ),
+        }],
+    )
+    text = (response.content[0].text or "").strip()
+    # Trim surrounding code-fences/quotes if the model wraps the body.
+    if text.startswith("```"):
+        # Strip the opening fence (possibly with a language tag) and the
+        # trailing fence.
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    if (text.startswith('"') and text.endswith('"')) or (
+        text.startswith("'") and text.endswith("'")
+    ):
+        text = text[1:-1].strip()
+    return text

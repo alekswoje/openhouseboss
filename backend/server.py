@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import auth as auth_lib
-from pipeline.analyze import analyze_visitor
+from pipeline.analyze import analyze_visitor, refine_draft
+from pipeline.leads_agent import query_leads_agent
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
 from pipeline.script_coverage import grade_against_script
@@ -299,6 +300,181 @@ def set_my_force_templates(
     force = bool(payload.get("force"))
     auth_lib.set_force_templates(current_user["id"], force)
     return {"force_templates": force}
+
+
+# --------------------------------------------------------------------------
+# Leads AI agent — ask questions, propose batch sends
+# --------------------------------------------------------------------------
+
+
+def _collect_user_leads(user_id: str) -> list[dict]:
+    """Flatten the user's sessions into a single lead list. Each entry
+    carries enough context (session_id, address, lead_state) that the agent
+    can build a concrete recipient list."""
+    _hydrate_sessions_from_disk()
+    out: list[dict] = []
+    with _sessions_lock:
+        for session in _sessions.values():
+            if session.get("user_id") != user_id:
+                continue
+            result = session.get("result") or {}
+            address = session.get("address") or ""
+            for entry in result.get("visitors") or []:
+                v = entry.get("visitor") or {}
+                a = entry.get("analysis") or {}
+                ls = entry.get("lead_state") or {}
+                out.append({
+                    "session_id": session.get("id"),
+                    "address": address,
+                    "visitor": {
+                        "name": v.get("name") or "",
+                        "speaker": v.get("speaker") or "",
+                        "email": v.get("email") or "",
+                        "phone": v.get("phone") or "",
+                    },
+                    "analysis": {
+                        "summary": a.get("summary") or "",
+                        "tag": a.get("tag") or "",
+                        "score": a.get("score") or 0,
+                        "signals": a.get("signals") or [],
+                        "follow_up_draft": a.get("follow_up_draft") or "",
+                    },
+                    "lead_state": {
+                        "status": ls.get("status") or "drafted",
+                    },
+                })
+    return out
+
+
+@app.post("/me/leads/agent")
+def leads_agent_chat(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """One turn of the leads-AI conversation.
+
+    Body: {message: str}
+    Returns either:
+      - {"kind": "answer", "text": "..."}
+      - {"kind": "plan", "summary", "action": "send_email", "subject",
+         "recipients": [{session_id, name, speaker, email, address, body}],
+         "skipped": [{name, reason}]}
+
+    Plan stays stateless on the server — the iOS client decides whether to
+    show the plan, lets the agent confirm, and then calls
+    /me/leads/agent/execute with the plan dict.
+    """
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+
+    leads = _collect_user_leads(current_user["id"])
+    agent_name = (current_user.get("name") or "").strip()
+    try:
+        result = query_leads_agent(message=message, leads=leads, agent_name=agent_name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI agent failed: {exc}")
+    if not isinstance(result, dict) or "kind" not in result:
+        raise HTTPException(502, "AI agent returned an unexpected response")
+    return result
+
+
+@app.post("/me/leads/agent/execute")
+def leads_agent_execute(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Execute a plan returned by /me/leads/agent.
+
+    Body: {plan: {action: "send_email", subject, recipients: [...]}}
+
+    Sends one email per recipient via the user's connected Gmail and
+    records each as a sent_email in the matching visitor's lead_state.
+    Returns {sent: N, failed: [{name, error}]}. A failure on one recipient
+    does NOT roll back successful sends — the agent gets a per-recipient
+    failure list to retry by hand if needed.
+    """
+    plan = payload.get("plan") or {}
+    if not isinstance(plan, dict):
+        raise HTTPException(400, "plan must be an object")
+    if plan.get("action") != "send_email":
+        raise HTTPException(400, "Only action=send_email is supported")
+    recipients = plan.get("recipients") or []
+    if not isinstance(recipients, list) or not recipients:
+        raise HTTPException(400, "plan.recipients must be a non-empty list")
+    subject = (plan.get("subject") or "").strip()
+    if not subject:
+        raise HTTPException(400, "plan.subject is required")
+
+    sent_count = 0
+    failed: list[dict] = []
+    for r in recipients:
+        try:
+            session_id = (r.get("session_id") or "").strip()
+            name = (r.get("name") or "").strip()
+            speaker = (r.get("speaker") or "").strip()
+            email = (r.get("email") or "").strip()
+            body = (r.get("body") or "").strip()
+            if not email or not body or not session_id or not name:
+                failed.append({
+                    "name": name or "(unknown)",
+                    "error": "missing email/body/session/name on recipient",
+                })
+                continue
+
+            # Authorize: only send for sessions the user actually owns.
+            with _sessions_lock:
+                session = _sessions.get(session_id)
+                if session is None:
+                    path = SESSIONS_DIR / session_id / "session.json"
+                    if path.exists():
+                        session = json.loads(path.read_text())
+                        _sessions[session_id] = session
+                if session is None or session.get("user_id") != current_user["id"]:
+                    failed.append({"name": name, "error": "session not found or not yours"})
+                    continue
+
+            gmail_result = auth_lib.send_gmail_email(
+                user_id=current_user["id"],
+                to=email,
+                subject=subject,
+                body=body,
+            )
+            message_id = gmail_result.get("id")
+            sent_count += 1
+
+            # Record send + flip status on the matching visitor.
+            with _sessions_lock:
+                session = _sessions.get(session_id) or session
+                result = session.get("result") or {}
+                for entry in result.get("visitors") or []:
+                    v = entry.get("visitor") or {}
+                    if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        state = _ensure_lead_state(entry)
+                        state["status"] = "sent"
+                        state["updated_at"] = now_iso
+                        if not state.get("sent_at"):
+                            state["sent_at"] = now_iso
+                        state["sent_emails"].append({
+                            "id": str(uuid.uuid4()),
+                            "to": email,
+                            "subject": subject,
+                            "body": body,
+                            "sent_at": now_iso,
+                            "message_id": message_id,
+                            "scheduled": False,
+                            "source": "agent_bulk",
+                        })
+                        entry["lead_state"] = state
+                        _persist(session_id)
+                        break
+        except HTTPException as exc:
+            failed.append({"name": r.get("name") or "(unknown)", "error": exc.detail})
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"name": r.get("name") or "(unknown)", "error": str(exc)})
+
+    return {"sent": sent_count, "failed": failed}
 
 
 # --------------------------------------------------------------------------
@@ -1016,6 +1192,121 @@ def update_visitor_state(
         target["lead_state"] = state
         _persist(session_id)
         return state
+
+
+@app.post("/sessions/{session_id}/visitors/draft/refine")
+def refine_visitor_draft(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Rewrite the current follow-up draft according to a free-text
+    instruction ("shorter", "add a CTA for Saturday's open house", etc.).
+
+    Body: {name, speaker?, instruction, base_body?}
+        name         — visitor display name (composite key)
+        speaker      — diarization label (composite key)
+        instruction  — what the agent wants changed
+        base_body    — optional override of the draft to rewrite (lets the
+                       client refine its IN-PROGRESS edit before saving).
+                       Default: the lead's current override or AI draft.
+
+    Returns {body} with the rewritten text. The caller decides what to do
+    with it — usually drops it into the draft editor for review.
+    """
+    instruction = (payload.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+
+    # Read under the lock, but do the Claude call outside it.
+    with _sessions_lock:
+        session = _load_session(session_id)
+        _require_owner(session, current_user, session_id)
+        name = (payload.get("name") or "").strip()
+        speaker = payload.get("speaker")
+        speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+        entry = _find_visitor_entry(session, name, speaker)
+        if entry is None:
+            raise HTTPException(404, f"Visitor {name!r} not found")
+        visitor = entry.get("visitor") or {}
+        analysis = entry.get("analysis") or {}
+        override = (entry.get("lead_state") or {}).get("draft_override") or {}
+        client_base = payload.get("base_body")
+        if isinstance(client_base, str):
+            base_body = client_base
+        else:
+            base_body = override.get("body") or analysis.get("follow_up_draft") or ""
+        address = session.get("address")
+        summary = analysis.get("summary") or ""
+        tag = analysis.get("tag") or ""
+        display_name = visitor.get("name") or name
+
+    new_body = refine_draft(
+        current_body=base_body,
+        instruction=instruction,
+        visitor_name=display_name,
+        visitor_summary=summary,
+        visitor_tag=tag,
+        address=address,
+    )
+    return {"body": new_body}
+
+
+@app.patch("/sessions/{session_id}/visitors/contact")
+def update_visitor_contact(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Edit a lead's contact info (display name, email, phone).
+
+    Body: {name, speaker?, new_name?, new_email?, new_phone?}
+        name        — current display name (composite key)
+        speaker     — current diarization label (composite key)
+        new_name    — optional new display name (renames the visitor in-place)
+        new_email   — optional new email (pass "" to clear)
+        new_phone   — optional new phone (pass "" to clear)
+
+    Returns the updated visitor entry: {visitor, analysis, lead_state}.
+
+    Note: keeping `speaker` stable lets every other endpoint (notes, tasks,
+    schedules, state) keep working without a cascade — we only rewrite the
+    name field. Lead-state, notes, sent_emails etc. are preserved on the
+    same entry by reference.
+    """
+    name = (payload.get("name") or "").strip()
+    speaker = payload.get("speaker")
+    speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    new_name_raw = payload.get("new_name")
+    new_email_raw = payload.get("new_email")
+    new_phone_raw = payload.get("new_phone")
+
+    with _sessions_lock:
+        session = _load_session(session_id)
+        _require_owner(session, current_user, session_id)
+        entry = _find_visitor_entry(session, name, speaker)
+        if entry is None:
+            raise HTTPException(404, f"Visitor {name!r} (speaker={speaker!r}) not found")
+
+        visitor = dict(entry.get("visitor") or {})
+        if isinstance(new_name_raw, str):
+            cleaned = new_name_raw.strip()
+            if not cleaned:
+                raise HTTPException(400, "new_name cannot be empty")
+            visitor["name"] = cleaned
+        if isinstance(new_email_raw, str):
+            visitor["email"] = new_email_raw.strip()
+        if isinstance(new_phone_raw, str):
+            visitor["phone"] = new_phone_raw.strip()
+        entry["visitor"] = visitor
+
+        state = _ensure_lead_state(entry)
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist(session_id)
+        return entry
 
 
 @app.post("/sessions/{session_id}/visitors/send_email")
