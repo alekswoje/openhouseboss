@@ -32,6 +32,55 @@ function ProfilePage() {
   const [sendAsSaving, setSendAsSaving] = React.useState(false);
   const [sendAsMsg, setSendAsMsg] = React.useState(null);
 
+  // Templates state
+  const [templates, setTemplates] = React.useState([]);
+  const [forceTemplates, setForceTemplates] = React.useState(false);
+  const [templatesErr, setTemplatesErr] = React.useState(null);
+  const [editingTemplate, setEditingTemplate] = React.useState(null);  // {} for new, {id,...} for edit, null for closed
+
+  const refreshTemplates = React.useCallback(async () => {
+    try {
+      const r = await foyerApi.get('/me/templates');
+      setTemplates(r.templates || []);
+      setForceTemplates(!!r.force_templates);
+      setTemplatesErr(null);
+    } catch (e) {
+      setTemplatesErr(e.message || String(e));
+    }
+  }, []);
+
+  React.useEffect(() => { refreshTemplates(); }, [refreshTemplates]);
+
+  const toggleForceTemplates = async (next) => {
+    setForceTemplates(next);
+    try {
+      await foyerApi.post('/me/force_templates', { force: next });
+    } catch (e) {
+      setForceTemplates(!next);
+      setTemplatesErr(e.message || String(e));
+    }
+  };
+
+  const saveTemplate = async (template) => {
+    const payload = {
+      name: template.name || '',
+      subject: template.subject || '',
+      body: template.body || '',
+      match_hints: template.match_hints || '',
+    };
+    if (template.id) {
+      await foyerApi.patch(`/me/templates/${template.id}`, payload);
+    } else {
+      await foyerApi.post('/me/templates', payload);
+    }
+    await refreshTemplates();
+  };
+
+  const deleteTemplate = async (templateId) => {
+    await foyerApi.del(`/me/templates/${templateId}`);
+    await refreshTemplates();
+  };
+
   const refreshGmail = React.useCallback(async () => {
     setGmailLoading(true);
     try {
@@ -223,6 +272,95 @@ function ProfilePage() {
           </div>
         )}
 
+        {/* Templates card */}
+        <div>
+          <SectionEyebrow title="Follow-up templates" />
+          <div style={{
+            background: PC.card2, borderRadius: 14, padding: 24,
+            display: 'flex', flexDirection: 'column', gap: 16,
+          }}>
+            <div style={{ fontSize: 13, color: PC.creamDim, lineHeight: 1.6 }}>
+              Designs the AI uses when drafting follow-ups. Use <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{first_name}'}</code> and <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{full_name}'}</code> for auto-fill, or any other <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{slot}'}</code> you want filled.
+            </div>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 14,
+              padding: '12px 14px',
+              background: 'rgba(255,255,255,0.04)', borderRadius: 12, cursor: 'pointer',
+            }}>
+              <input
+                type="checkbox"
+                checked={forceTemplates}
+                onChange={e => toggleForceTemplates(e.target.checked)}
+                style={{ width: 18, height: 18, accentColor: PC.gold }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: PC.cream }}>Always use a template</div>
+                <div style={{ fontSize: 12, color: PC.textDim, marginTop: 2 }}>
+                  {forceTemplates
+                    ? 'AI uses the best-fit template verbatim (filling {slots}).'
+                    : 'AI picks a template only when one clearly fits; rewrites freely.'}
+                </div>
+              </div>
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {templates.length === 0 && (
+                <div style={{ fontSize: 12, color: PC.textDim, padding: '6px 0' }}>
+                  No templates yet. Add one to bias follow-ups toward your voice.
+                </div>
+              )}
+              {templates.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setEditingTemplate(t)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '12px 14px',
+                    background: 'rgba(255,255,255,0.04)',
+                    border: 0, borderRadius: 12, cursor: 'pointer',
+                    color: PC.cream, fontFamily: 'var(--sans)', textAlign: 'left',
+                  }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: PC.cream }}>{t.name}</div>
+                    {(t.match_hints || t.subject) && (
+                      <div style={{ fontSize: 12, color: PC.textDim, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {t.match_hints || t.subject}
+                      </div>
+                    )}
+                  </div>
+                  <Icon name="chevronRight" size={12} />
+                </button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={() => setEditingTemplate({})} style={{
+                padding: '10px 16px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 600,
+                background: PC.gold, color: 'var(--bg-deep)',
+                border: 0, borderRadius: 999, cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}><Icon name="plus" size={12} />New template</button>
+            </div>
+            {templatesErr && <div style={{ fontSize: 12, color: PC.terracotta }}>{templatesErr}</div>}
+          </div>
+        </div>
+
+        {editingTemplate && (
+          <TemplateModal
+            template={editingTemplate}
+            onCancel={() => setEditingTemplate(null)}
+            onSave={async (next) => {
+              try {
+                await saveTemplate(next);
+                setEditingTemplate(null);
+              } catch (e) { throw e; }
+            }}
+            onDelete={editingTemplate.id ? async () => {
+              try {
+                await deleteTemplate(editingTemplate.id);
+                setEditingTemplate(null);
+              } catch (e) { throw e; }
+            } : null}
+          />
+        )}
+
         {/* Account card */}
         <div>
           <SectionEyebrow title="Account" />
@@ -256,6 +394,135 @@ function SectionEyebrow({ title }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
       <div className="mono" style={{ fontSize: 10, letterSpacing: '0.18em', color: PC.textDim, textTransform: 'uppercase', fontWeight: 600 }}>{title}</div>
       <div style={{ height: 1, flex: 1, background: PC.hairline }} />
+    </div>
+  );
+}
+
+// Modal-style template editor — covers the page with a centered card.
+function TemplateModal({ template, onCancel, onSave, onDelete }) {
+  const [name, setName] = React.useState(template.name || '');
+  const [matchHints, setMatchHints] = React.useState(template.match_hints || '');
+  const [subject, setSubject] = React.useState(template.subject || '');
+  const [body, setBody] = React.useState(template.body || '');
+  const [saving, setSaving] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+
+  const canSave = name.trim() && body.trim() && !saving && !deleting;
+
+  const doSave = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      await onSave({
+        id: template.id,
+        name: name.trim(),
+        match_hints: matchHints.trim(),
+        subject: subject.trim(),
+        body: body.trim(),
+      });
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doDelete = async () => {
+    if (!onDelete) return;
+    if (!confirm('Delete this template? This can\'t be undone.')) return;
+    setDeleting(true);
+    setErr(null);
+    try {
+      await onDelete();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const fieldLabel = { fontSize: 10, letterSpacing: '0.14em', color: PC.textDim, textTransform: 'uppercase', fontWeight: 600, marginBottom: 6 };
+  const fieldInput = {
+    width: '100%', background: 'rgba(255,255,255,0.05)', color: PC.cream,
+    border: 0, borderRadius: 10, padding: '12px 14px',
+    fontFamily: 'var(--sans)', fontSize: 14, outline: 'none',
+    resize: 'vertical', boxSizing: 'border-box',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }} onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div style={{
+        background: 'var(--bg-elev)', borderRadius: 18, padding: 28,
+        width: '100%', maxWidth: 640, maxHeight: '90vh', overflow: 'auto',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.55)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 22, fontWeight: 500, color: PC.cream, letterSpacing: '-0.02em' }}>
+            {template.id ? 'Edit template' : 'New template'}
+          </div>
+          <div style={{ flex: 1 }} />
+          <button onClick={onCancel} disabled={saving || deleting} style={{
+            background: 'none', border: 0, color: PC.creamDim, cursor: 'pointer',
+            fontSize: 13, padding: 6,
+          }}>Cancel</button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div className="mono" style={fieldLabel}>Name</div>
+            <input value={name} onChange={e => setName(e.target.value)}
+              placeholder="Interested buyer, no offer yet"
+              style={fieldInput} />
+          </div>
+          <div>
+            <div className="mono" style={fieldLabel}>Match hints (when this fits)</div>
+            <textarea value={matchHints} onChange={e => setMatchHints(e.target.value)}
+              placeholder="Buyer expressed interest but no urgency — likes the place, hasn't made an offer."
+              rows={2}
+              style={fieldInput} />
+          </div>
+          <div>
+            <div className="mono" style={fieldLabel}>Subject</div>
+            <input value={subject} onChange={e => setSubject(e.target.value)}
+              placeholder="Following up — {property_address}"
+              style={fieldInput} />
+          </div>
+          <div>
+            <div className="mono" style={fieldLabel}>Body</div>
+            <textarea value={body} onChange={e => setBody(e.target.value)}
+              placeholder={"Hi {first_name} — great to chat about the place. Want me to send a few comps so you can compare?\n\n— [Your name]"}
+              rows={9}
+              style={fieldInput} />
+          </div>
+          <div style={{ fontSize: 11, color: PC.textMuted }}>
+            Use <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{first_name}'}</code> and <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{full_name}'}</code> for auto-fill, or any other <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>{'{slot}'}</code> to mark a spot for the AI (soft mode) or yourself (forced mode) to fill in.
+          </div>
+
+          {err && <div style={{ fontSize: 12, color: PC.terracotta }}>{err}</div>}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+            {onDelete && (
+              <button onClick={doDelete} disabled={saving || deleting} style={{
+                padding: '10px 14px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 500,
+                background: 'rgba(248,113,113,0.12)', color: PC.terracotta,
+                border: 0, borderRadius: 999, cursor: 'pointer',
+              }}>{deleting ? 'Deleting…' : 'Delete'}</button>
+            )}
+            <div style={{ flex: 1 }} />
+            <button onClick={doSave} disabled={!canSave} style={{
+              padding: '10px 20px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 600,
+              background: canSave ? PC.gold : 'rgba(255,255,255,0.1)',
+              color: canSave ? 'var(--bg-deep)' : PC.textDim,
+              border: 0, borderRadius: 999, cursor: canSave ? 'pointer' : 'not-allowed',
+            }}>{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

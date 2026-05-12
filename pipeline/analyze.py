@@ -20,8 +20,59 @@ class VisitorAnalysis(BaseModel):
     words_spoken: int
 
 
+def _render_template_for_visitor(template: dict, visitor: Visitor) -> dict:
+    """Apply the well-known auto-fill slots ({first_name}, {full_name}) before
+    the LLM sees the template. Anything else (e.g. {call_to_action}) is left
+    for the LLM (soft) or the agent (forced) to fill in. This keeps the LLM
+    from hallucinating common-name slots."""
+    first = (visitor.name or "").strip().split(" ")[0] if visitor.name else ""
+    full = (visitor.name or "").strip()
+    def _fill(text: str) -> str:
+        return (text or "").replace("{first_name}", first).replace("{full_name}", full)
+    return {
+        "name": template.get("name") or "",
+        "match_hints": template.get("match_hints") or "",
+        "subject": _fill(template.get("subject") or ""),
+        "body": _fill(template.get("body") or ""),
+    }
+
+
+def _template_instructions(templates: list[dict], force: bool) -> str:
+    if not templates:
+        return ""
+    blocks = []
+    for i, t in enumerate(templates, 1):
+        blocks.append(
+            f"--- Template {i}: {t['name']}\n"
+            f"Match hints (when this fits the lead): {t['match_hints'] or '(none)'}\n"
+            f"Subject: {t['subject'] or '(none)'}\n"
+            f"Body:\n{t['body']}\n"
+        )
+    catalog = "\n".join(blocks)
+    if force:
+        return (
+            "\n\nTHE AGENT HAS PROVIDED FOLLOW-UP TEMPLATES AND REQUIRES THAT YOU USE ONE.\n"
+            "Pick the template whose match hints best fit this lead. Use its body VERBATIM, "
+            "fixing only grammar/punctuation if needed. Replace any `{slot}` token by "
+            "inferring its value from the conversation when possible; if you cannot infer it, "
+            "leave it as `[slot]` so the agent fills it in. Do not invent new sentences. "
+            "Templates:\n" + catalog
+        )
+    return (
+        "\n\nThe agent has provided follow-up templates. If one of them clearly fits this "
+        "lead based on its match hints, base your draft heavily on that template — keep its "
+        "structure, tone, and key phrases, but rewrite freely to match what the visitor "
+        "actually said. Replace any `{slot}` tokens with concrete values when possible. "
+        "If no template fits, draft from scratch as usual. Templates:\n" + catalog
+    )
+
+
 def analyze_visitor(
-    transcript: aai.Transcript, visitor: Visitor, tags: list[Tag]
+    transcript: aai.Transcript,
+    visitor: Visitor,
+    tags: list[Tag],
+    templates: list[dict] | None = None,
+    force_templates: bool = False,
 ) -> VisitorAnalysis:
     utterances_text = "\n".join(
         f"[{u.speaker}{' ← visitor' if u.speaker == visitor.speaker else ''}] {u.text}"
@@ -36,6 +87,11 @@ def analyze_visitor(
         for u in (transcript.utterances or [])
         if u.speaker == visitor.speaker
     )
+
+    rendered_templates = [
+        _render_template_for_visitor(t, visitor) for t in (templates or [])
+    ]
+    template_block = _template_instructions(rendered_templates, force_templates)
 
     client = Anthropic()
     response = client.messages.create(
@@ -54,7 +110,9 @@ def analyze_visitor(
             "a reply — e.g. 'Want me to send the comps?' or 'Open to a 15-minute call "
             "Thursday?'). No long paragraphs, no boilerplate intro, no 'I hope this "
             "finds you well'. Reference exactly one thing they said, then the ask. "
-            "Sign-off is just the agent's name on its own line.\n\n"
+            "Sign-off is just the agent's name on its own line."
+            + template_block
+            + "\n\n"
             f"Visitor: {visitor.name} (Speaker {visitor.speaker})\n\n"
             f"Tags (pick exactly one):\n{tag_block}\n\n"
             "Return JSON only, no prose, format:\n"

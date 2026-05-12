@@ -222,8 +222,60 @@ function LeadDetail({ lead, onUpdate, onDelete, onShowToast }) {
   const [newTask, setNewTask] = React.useState('');
   const [crmErr, setCrmErr] = React.useState(null);
 
+  const currentDraft =
+    ls.draft_override?.body || v.analysis?.follow_up_draft || '';
+  const isOverridden = !!ls.draft_override?.body;
+  const [editingDraft, setEditingDraft] = React.useState(false);
+  const [draftBody, setDraftBody] = React.useState(currentDraft);
+  const [draftSaving, setDraftSaving] = React.useState(false);
+
+  // When the lead switches (different visitor selected), reset edit state so
+  // we don't carry a stale buffer across leads.
+  React.useEffect(() => {
+    setEditingDraft(false);
+    setDraftBody(currentDraft);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v.visitor.name, v.visitor.speaker, session.id]);
+
   const applyState = (state) => {
     if (state) onUpdate({ ...v, lead_state: state });
+  };
+
+  const saveDraft = async () => {
+    if (!draftBody.trim()) { setCrmErr('Draft body can\'t be empty.'); return; }
+    setDraftSaving(true); setCrmErr(null);
+    try {
+      const r = await foyerApi.patch(`/sessions/${session.id}/visitors/draft`, {
+        name: v.visitor.name,
+        speaker: v.visitor.speaker || '',
+        body: draftBody.trim(),
+      });
+      applyState(r.lead_state);
+      setEditingDraft(false);
+    } catch (e) {
+      setCrmErr(e.message || String(e));
+    } finally {
+      setDraftSaving(false);
+    }
+  };
+
+  const resetDraft = async () => {
+    setDraftSaving(true); setCrmErr(null);
+    try {
+      const r = await foyerApi.patch(`/sessions/${session.id}/visitors/draft`, {
+        name: v.visitor.name,
+        speaker: v.visitor.speaker || '',
+        clear: true,
+      });
+      applyState(r.lead_state);
+      setEditingDraft(false);
+      // Re-seed buffer from the now-uneditied draft.
+      setDraftBody(r.lead_state?.draft_override?.body || v.analysis?.follow_up_draft || '');
+    } catch (e) {
+      setCrmErr(e.message || String(e));
+    } finally {
+      setDraftSaving(false);
+    }
   };
 
   const send = async () => {
@@ -386,10 +438,62 @@ function LeadDetail({ lead, onUpdate, onDelete, onShowToast }) {
 
       {/* Drafted follow-up */}
       <div>
-        <SectionHeader title="Drafted follow-up" />
-        <div style={{ background: C.card2, padding: 20, borderRadius: 14, color: C.cream, fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
-          {v.analysis?.follow_up_draft}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.18em', color: C.textDim, textTransform: 'uppercase', fontWeight: 600 }}>Drafted follow-up</div>
+          {isOverridden && (
+            <span className="mono" style={{
+              fontSize: 9, letterSpacing: '0.12em', color: C.gold,
+              padding: '2px 7px', background: C.goldSoft, borderRadius: 999,
+            }}>EDITED</span>
+          )}
+          <div style={{ height: 1, flex: 1, background: C.hairline }} />
+          {editingDraft ? (
+            <>
+              <button
+                onClick={saveDraft}
+                disabled={draftSaving || !draftBody.trim()}
+                style={{ ...primaryBtnStyle, padding: '6px 14px', fontSize: 12, opacity: (draftSaving || !draftBody.trim()) ? 0.6 : 1 }}>
+                {draftSaving ? 'Saving…' : 'Save draft'}
+              </button>
+              <button
+                onClick={() => { setEditingDraft(false); setDraftBody(currentDraft); }}
+                disabled={draftSaving}
+                style={{ ...ghostBtnStyle, padding: '6px 12px', fontSize: 12 }}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              {isOverridden && (
+                <button onClick={resetDraft} disabled={draftSaving} style={{ ...ghostBtnStyle, padding: '6px 12px', fontSize: 12 }}>
+                  Reset to AI
+                </button>
+              )}
+              <button
+                onClick={() => { setDraftBody(currentDraft); setEditingDraft(true); }}
+                style={{ ...ghostBtnStyle, padding: '6px 12px', fontSize: 12 }}>
+                Edit
+              </button>
+            </>
+          )}
         </div>
+        {editingDraft ? (
+          <textarea
+            value={draftBody}
+            onChange={e => setDraftBody(e.target.value)}
+            rows={8}
+            autoFocus
+            style={{
+              width: '100%', background: C.card2, color: C.cream,
+              border: `1px solid ${C.gold}`, borderRadius: 14, padding: 18,
+              fontFamily: 'var(--sans)', fontSize: 15, lineHeight: 1.7,
+              outline: 'none', resize: 'vertical', boxSizing: 'border-box',
+            }} />
+        ) : (
+          <div style={{ background: C.card2, padding: 20, borderRadius: 14, color: C.cream, fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+            {currentDraft}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           {status !== 'archived' && (
             <button onClick={() => transition('archived')} style={chipBtnStyle(C.creamDim)}>

@@ -237,6 +237,8 @@ struct LeadState: Codable, Hashable {
     var tasks: [LeadTask]?
     var sentEmails: [SentEmail]?
     var scheduledEmail: ScheduledEmail?
+    // Agent-edited follow-up draft. nil = use AnalysisResult.followUpDraft as-is.
+    var draftOverride: DraftOverride?
 
     enum CodingKeys: String, CodingKey {
         case status, notes, tasks
@@ -245,12 +247,54 @@ struct LeadState: Codable, Hashable {
         case updatedAt = "updated_at"
         case sentEmails = "sent_emails"
         case scheduledEmail = "scheduled_email"
+        case draftOverride = "draft_override"
     }
 
     static let defaultDrafted = LeadState(
         status: .drafted, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
-        notes: [], tasks: [], sentEmails: [], scheduledEmail: nil
+        notes: [], tasks: [], sentEmails: [], scheduledEmail: nil,
+        draftOverride: nil
     )
+}
+
+struct DraftOverride: Codable, Hashable {
+    var subject: String?
+    var body: String
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case subject, body
+        case updatedAt = "updated_at"
+    }
+}
+
+// MARK: – Follow-up templates
+
+struct FollowupTemplate: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var subject: String
+    var body: String
+    var matchHints: String
+    var createdAt: String?
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, subject, body
+        case matchHints = "match_hints"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct TemplatesEnvelope: Codable, Hashable {
+    var templates: [FollowupTemplate]
+    var forceTemplates: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case templates
+        case forceTemplates = "force_templates"
+    }
 }
 
 struct LeadNote: Codable, Hashable, Identifiable {

@@ -106,6 +106,23 @@ const foyerApi = {
     if (!r.ok) throw new Error(await _readError(r));
     return r.json();
   },
+  async patch(path, body) {
+    const r = await fetch(path, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (r.status === 401) throw new Error('unauthenticated');
+    if (!r.ok) throw new Error(await _readError(r));
+    return r.json();
+  },
+  async del(path) {
+    const r = await fetch(path, { method: 'DELETE', credentials: 'include' });
+    if (r.status === 401) throw new Error('unauthenticated');
+    if (!r.ok) throw new Error(await _readError(r));
+    try { return await r.json(); } catch { return {}; }
+  },
 };
 
 async function foyerLoad({ force = false } = {}) {

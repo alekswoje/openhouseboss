@@ -799,6 +799,7 @@ private struct IPadHome: View {
             .padding(.top, 36)
             .padding(.bottom, 120) // breathing room for the sticky bar
         }
+        .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
     }
@@ -2023,6 +2024,14 @@ private struct IPadLeads: View {
     // Schedule-send sheet — non-nil means a date picker is up for that lead.
     @State private var scheduleForLead: LeadRow?
 
+    // Draft editor state — `editingDraftFor` is the LeadRow.id currently in
+    // edit mode. `draftText[id]` is the working copy (seeded from the lead's
+    // draft_override or AI draft when entering edit mode). Sticky per-lead
+    // so switching leads doesn't blow away in-progress edits.
+    @State private var editingDraftFor: String?
+    @State private var draftText: [String: String] = [:]
+    @State private var draftSaving: Bool = false
+
     private var filteredLeads: [LeadRow] {
         guard let id = filterSessionId else { return allLeads }
         return allLeads.filter { $0.session.id == id }
@@ -2164,6 +2173,7 @@ private struct IPadLeads: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 12)
                 }
+                .refreshable { await load() }
             }
         }
     }
@@ -2328,6 +2338,7 @@ private struct IPadLeads: View {
                 .frame(maxWidth: 720, alignment: .leading)
                 .padding(.horizontal, 56).padding(.top, 56)
             }
+            .refreshable { await load() }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if loading {
             ProgressView().tint(FoyerTheme.gold)
@@ -2443,28 +2454,116 @@ private struct IPadLeads: View {
         }
     }
 
+    private func draftBodyFor(_ row: LeadRow) -> String {
+        row.visitor.leadState?.draftOverride?.body
+            ?? row.visitor.analysis.followUpDraft
+    }
+
     private func followup(_ v: VisitorResult, session: Session) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let row = LeadRow(visitor: v, session: session)
+        let isOverridden = (v.leadState?.draftOverride?.body ?? "").isEmpty == false
+        let isEditing = (editingDraftFor == row.id)
+        let currentBody = draftBodyFor(row)
+        return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("Drafted follow-up")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(FoyerTheme.textDim)
+                if isOverridden {
+                    Text("Edited")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Capsule().fill(FoyerTheme.gold.opacity(0.14)))
+                }
                 Spacer()
+                if isEditing {
+                    Button {
+                        Task { await saveDraft(for: row) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if draftSaving {
+                                ProgressView().scaleEffect(0.6).tint(FoyerTheme.inkOnGold)
+                            }
+                            Text(draftSaving ? "Saving…" : "Save draft")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(FoyerTheme.gold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(draftSaving)
+                    Button("Cancel") {
+                        editingDraftFor = nil
+                        draftText[row.id] = nil
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .buttonStyle(.plain)
+                    .disabled(draftSaving)
+                } else {
+                    if isOverridden {
+                        Button {
+                            Task { await resetDraft(for: row) }
+                        } label: {
+                            Text("Reset to AI")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(FoyerTheme.creamDim)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button {
+                        draftText[row.id] = currentBody
+                        editingDraftFor = row.id
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Edit")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Color(white: 0.08)))
+                    }
+                    .buttonStyle(.plain)
+                }
                 Text(channel(v))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(FoyerTheme.textMuted)
             }
 
-            Text(v.analysis.followUpDraft)
-                .font(.system(size: 15))
-                .foregroundStyle(FoyerTheme.cream)
-                .lineSpacing(6)
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(white: 0.05))
-                )
+            if isEditing {
+                TextEditor(text: Binding(
+                    get: { draftText[row.id] ?? currentBody },
+                    set: { draftText[row.id] = $0 }
+                ))
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .scrollContentBackground(.hidden)
+                    .padding(14)
+                    .frame(minHeight: 160)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color(white: 0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
+                    )
+            } else {
+                Text(currentBody)
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(6)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color(white: 0.05))
+                    )
+            }
 
             HStack(spacing: 10) {
                 let state = v.leadState?.status ?? .drafted
@@ -3085,6 +3184,51 @@ private struct IPadLeads: View {
     }
 
     @MainActor
+    private func saveDraft(for row: LeadRow) async {
+        let body = (draftText[row.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            crmError = "Draft body can't be empty."
+            return
+        }
+        draftSaving = true
+        defer { draftSaving = false }
+        do {
+            let state = try await APIClient.shared.updateDraft(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                body: body,
+                subject: nil,
+                clear: false
+            )
+            apply(state, to: row)
+            editingDraftFor = nil
+            draftText[row.id] = nil
+        } catch {
+            crmError = "Couldn't save draft: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func resetDraft(for row: LeadRow) async {
+        do {
+            let state = try await APIClient.shared.updateDraft(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                body: nil,
+                subject: nil,
+                clear: true
+            )
+            apply(state, to: row)
+            editingDraftFor = nil
+            draftText[row.id] = nil
+        } catch {
+            crmError = "Couldn't reset draft: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
     private func cancelSchedule(_ row: LeadRow) async {
         do {
             let state = try await APIClient.shared.cancelScheduledEmail(
@@ -3120,6 +3264,187 @@ private struct IPadLeads: View {
         let f = DateFormatter()
         f.dateFormat = "MMM d 'at' h:mma"
         return f.string(from: date).replacingOccurrences(of: "AM", with: "am").replacingOccurrences(of: "PM", with: "pm")
+    }
+}
+
+// MARK: – Template editor sheet
+
+private struct TemplateEditorSheet: View {
+    let existing: FollowupTemplate?
+    var onCancel: () -> Void
+    var onSaved: (FollowupTemplate) -> Void
+
+    @State private var name: String = ""
+    @State private var matchHints: String = ""
+    @State private var subject: String = ""
+    @State private var bodyText: String = ""
+    @State private var saving: Bool = false
+    @State private var deleting: Bool = false
+    @State private var errorMessage: String?
+    @State private var showDeleteConfirm: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    field("NAME", placeholder: "Interested buyer, no offer yet", text: $name)
+                    field("MATCH HINTS (when this fits)",
+                          placeholder: "Buyer expressed interest but no urgency — likes the place, hasn't made an offer.",
+                          text: $matchHints,
+                          multiline: true,
+                          minHeight: 70)
+                    field("SUBJECT",
+                          placeholder: "Following up — {property_address}",
+                          text: $subject)
+                    field("BODY",
+                          placeholder: "Hi {first_name} — great to chat about the place. Want me to send a few comps so you can compare?\n\n— [Your name]",
+                          text: $bodyText,
+                          multiline: true,
+                          minHeight: 220)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        Text("Use `{first_name}` and `{full_name}` for auto-fill, or any other `{slot}` you want filled (e.g. `{call_to_action}`).")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                    .padding(.top, -8)
+
+                    if let err = errorMessage {
+                        Text(err)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+
+                    if existing != nil {
+                        Button(role: .destructive) {
+                            showDeleteConfirm = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("Delete template")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundStyle(FoyerTheme.terracotta)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(FoyerTheme.terracotta.opacity(0.10), in: Capsule())
+                        }
+                        .disabled(saving || deleting)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(28)
+            }
+            .background(Color.black)
+            .navigationTitle(existing == nil ? "New template" : "Edit template")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                        .disabled(saving || deleting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(saving || deleting
+                                  || name.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .alert("Delete this template?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { Task { await delete() } }
+            } message: {
+                Text("This can't be undone. Existing follow-ups that used this template are unaffected.")
+            }
+        }
+        .onAppear {
+            if let t = existing {
+                name = t.name
+                matchHints = t.matchHints
+                subject = t.subject
+                bodyText = t.body
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func field(_ label: String, placeholder: String, text: Binding<String>, multiline: Bool = false, minHeight: CGFloat = 44) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textDim)
+            if multiline {
+                ZStack(alignment: .topLeading) {
+                    if text.wrappedValue.isEmpty {
+                        Text(placeholder)
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.textDim.opacity(0.6))
+                            .padding(.horizontal, 14).padding(.vertical, 12)
+                    }
+                    TextEditor(text: text)
+                        .font(.system(size: 14))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .frame(minHeight: minHeight)
+                }
+                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                TextField(placeholder, text: text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+                    .autocorrectionDisabled(true)
+                    .textInputAutocapitalization(.sentences)
+            }
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        do {
+            let saved: FollowupTemplate
+            if let t = existing {
+                saved = try await APIClient.shared.updateTemplate(
+                    id: t.id,
+                    name: name.trimmingCharacters(in: .whitespaces),
+                    subject: subject.trimmingCharacters(in: .whitespaces),
+                    body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
+                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            } else {
+                saved = try await APIClient.shared.createTemplate(
+                    name: name.trimmingCharacters(in: .whitespaces),
+                    subject: subject.trimmingCharacters(in: .whitespaces),
+                    body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
+                    matchHints: matchHints.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            onSaved(saved)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func delete() async {
+        guard let t = existing else { return }
+        deleting = true
+        defer { deleting = false }
+        do {
+            try await APIClient.shared.deleteTemplate(id: t.id)
+            onSaved(t)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -3490,6 +3815,7 @@ private struct IPadListings: View {
             }
             .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
         }
+        .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
     }
@@ -3582,6 +3908,14 @@ private struct IPadProfile: View {
     @State private var sendAsSaving: Bool = false
     @State private var sendAsMessage: String?
 
+    // Templates state
+    @State private var templates: [FollowupTemplate] = []
+    @State private var forceTemplates: Bool = false
+    @State private var templatesLoading: Bool = false
+    @State private var templatesError: String?
+    @State private var editingTemplate: FollowupTemplate?
+    @State private var showNewTemplate: Bool = false
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 28) {
@@ -3591,6 +3925,7 @@ private struct IPadProfile: View {
                 if gmail?.connected == true {
                     sendAsCard
                 }
+                templatesCard
                 defaultScriptCard
                 signOutCard
                 Spacer().frame(height: 80)
@@ -3599,9 +3934,14 @@ private struct IPadProfile: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
         }
+        .refreshable {
+            await refreshGmail()
+            await loadTemplates()
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .task { await refreshGmail() }
+        .task { await loadTemplates() }
         .sheet(isPresented: $showGmailConnect) {
             GmailConnectSheet(
                 onConnected: { _ in
@@ -3611,11 +3951,154 @@ private struct IPadProfile: View {
                 onCancel: { showGmailConnect = false }
             )
         }
+        .sheet(isPresented: $showNewTemplate) {
+            TemplateEditorSheet(
+                existing: nil,
+                onCancel: { showNewTemplate = false },
+                onSaved: { _ in
+                    showNewTemplate = false
+                    Task { await loadTemplates() }
+                }
+            )
+        }
+        .sheet(item: $editingTemplate) { template in
+            TemplateEditorSheet(
+                existing: template,
+                onCancel: { editingTemplate = nil },
+                onSaved: { _ in
+                    editingTemplate = nil
+                    Task { await loadTemplates() }
+                }
+            )
+        }
         .alert("Sign out?", isPresented: $showSignOutConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Sign out", role: .destructive) { auth.signOut() }
         } message: {
             Text("You'll need to sign back in with Google to access your sessions and leads.")
+        }
+    }
+
+    private var templatesCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "doc.on.doc.fill",
+                title: "Follow-up templates",
+                subtitle: "Designs the AI uses when drafting follow-ups."
+            )
+            Toggle(isOn: Binding(
+                get: { forceTemplates },
+                set: { newValue in Task { await setForce(newValue) } }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Always use a template")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text(forceTemplates
+                         ? "AI uses the best-fit template verbatim (filling {slots})."
+                         : "AI picks a template only when one clearly fits; rewrites freely.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
+            }
+            .tint(FoyerTheme.gold)
+
+            if templates.isEmpty {
+                Text("No templates yet. Add one to bias follow-ups toward your voice.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .padding(.vertical, 6)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(templates) { t in
+                        templateRow(t)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button { showNewTemplate = true } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("New template")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let err = templatesError {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+
+            Text("Use `{first_name}`, `{full_name}` (auto-filled), or any other `{slot}` you want the AI (soft mode) or yourself (forced mode) to fill in.")
+                .font(.system(size: 11))
+                .foregroundStyle(FoyerTheme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func templateRow(_ t: FollowupTemplate) -> some View {
+        Button { editingTemplate = t } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(t.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    if !t.matchHints.isEmpty {
+                        Text(t.matchHints)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textDim)
+                            .lineLimit(1)
+                    } else if !t.subject.isEmpty {
+                        Text(t.subject)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textDim)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func loadTemplates() async {
+        templatesLoading = true
+        defer { templatesLoading = false }
+        do {
+            let env = try await APIClient.shared.listTemplates()
+            templates = env.templates
+            forceTemplates = env.forceTemplates
+            templatesError = nil
+        } catch {
+            templatesError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func setForce(_ force: Bool) async {
+        forceTemplates = force
+        do {
+            _ = try await APIClient.shared.setForceTemplates(force)
+        } catch {
+            forceTemplates = !force
+            templatesError = error.localizedDescription
         }
     }
 
@@ -5008,6 +5491,7 @@ private struct IPadSessionDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 44).padding(.top, 28).padding(.bottom, 120)
         }
+        .refreshable { await load() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .task(id: sessionId) { await load() }

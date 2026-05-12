@@ -254,6 +254,54 @@ def gmail_set_send_from(
 
 
 # --------------------------------------------------------------------------
+# Follow-up templates (per user) + draft preferences
+# --------------------------------------------------------------------------
+
+@app.get("/me/templates")
+def list_my_templates(current_user: dict = Depends(auth_lib.get_current_user)):
+    return {
+        "templates": auth_lib.list_templates_for(current_user["id"]),
+        "force_templates": auth_lib.force_templates_for(current_user["id"]),
+    }
+
+
+@app.post("/me/templates")
+def create_my_template(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.create_template(current_user["id"], payload)
+
+
+@app.patch("/me/templates/{template_id}")
+def update_my_template(
+    template_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    return auth_lib.update_template(current_user["id"], template_id, payload)
+
+
+@app.delete("/me/templates/{template_id}")
+def delete_my_template(
+    template_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    auth_lib.delete_template(current_user["id"], template_id)
+    return {"deleted": True}
+
+
+@app.post("/me/force_templates")
+def set_my_force_templates(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    force = bool(payload.get("force"))
+    auth_lib.set_force_templates(current_user["id"], force)
+    return {"force_templates": force}
+
+
+# --------------------------------------------------------------------------
 # Contact verification for the kiosk sign-in form
 # --------------------------------------------------------------------------
 
@@ -363,7 +411,7 @@ def _update(session_id: str, **updates) -> None:
         _persist(session_id)
 
 
-def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None) -> None:
+def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None, user_id: Optional[str] = None) -> None:
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
@@ -386,10 +434,19 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                 key = (v.get("name") or "", v.get("speaker") or "")
                 prior_states[key] = state
 
+        # Pull this agent's follow-up templates + their forced-mode preference
+        # so analyze_visitor can bake them into the initial AI draft.
+        templates = auth_lib.list_templates_for(user_id) if user_id else []
+        force_templates = auth_lib.force_templates_for(user_id) if user_id else False
+
         now_iso = datetime.now(timezone.utc).isoformat()
         visitors_out = []
         for visitor in identification.matched_visitors:
-            analysis = analyze_visitor(transcript, visitor, DEFAULT_TAGS)
+            analysis = analyze_visitor(
+                transcript, visitor, DEFAULT_TAGS,
+                templates=templates,
+                force_templates=force_templates,
+            )
             v_dict = visitor.model_dump(mode="json")
             key = (v_dict.get("name") or "", v_dict.get("speaker") or "")
             lead_state = prior_states.get(key) or {
@@ -533,7 +590,7 @@ async def create_session(
 
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, mock_path, visitors_path, speakers_expected, script_id),
+        args=(session_id, audio_path, mock_path, visitors_path, speakers_expected, script_id, current_user["id"]),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
@@ -619,7 +676,7 @@ async def reprocess_session(
     # the agent can't switch scripts mid-flight, that would be confusing.
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id),
+        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id, current_user["id"]),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
@@ -664,6 +721,10 @@ def _ensure_lead_state(entry: dict) -> dict:
     state.setdefault("tasks", [])
     state.setdefault("sent_emails", [])
     state.setdefault("scheduled_email", None)
+    # `draft_override` carries the agent's edited version of the AI draft —
+    # nil = "use the AI's follow_up_draft as-is", otherwise it's the
+    # authoritative subject/body for both manual and scheduled sends.
+    state.setdefault("draft_override", None)
     entry["lead_state"] = state
     return state
 
@@ -888,13 +949,23 @@ def send_visitor_email(
 
         visitor_info = target.get("visitor") or {}
         analysis = target.get("analysis") or {}
+        override = (target.get("lead_state") or {}).get("draft_override") or {}
         to_addr = (payload.get("to") or visitor_info.get("email") or "").strip()
         if not to_addr:
             raise HTTPException(400, "No recipient email — visitor has no email on file")
 
         address = session.get("address") or "the open house"
-        subject = (payload.get("subject") or f"Following up — {address}").strip()
-        body = (payload.get("body") or analysis.get("follow_up_draft") or "").strip()
+        subject = (
+            payload.get("subject")
+            or override.get("subject")
+            or f"Following up — {address}"
+        ).strip()
+        body = (
+            payload.get("body")
+            or override.get("body")
+            or analysis.get("follow_up_draft")
+            or ""
+        ).strip()
         if not body:
             raise HTTPException(400, "Email body is empty")
 
@@ -1096,6 +1167,38 @@ def delete_task(
         return {"lead_state": state}
 
 
+@app.patch("/sessions/{session_id}/visitors/draft")
+def update_draft(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Save (or clear) the agent's edited follow-up draft for a single lead.
+    Body: {name, speaker?, subject?, body?}. Empty body OR explicit
+    {clear: true} → wipe the override and fall back to the AI draft.
+    """
+    clear = bool(payload.get("clear"))
+    subject = payload.get("subject")
+    body = payload.get("body")
+    if not clear:
+        if not isinstance(body, str) or not body.strip():
+            raise HTTPException(400, "body is required (or pass {clear: true})")
+    with _sessions_lock:
+        _, _, state = _resolve_visitor(session_id, payload, current_user)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if clear:
+            state["draft_override"] = None
+        else:
+            state["draft_override"] = {
+                "subject": (subject or "").strip() or None,
+                "body": body.strip(),
+                "updated_at": now_iso,
+            }
+        state["updated_at"] = now_iso
+        _persist(session_id)
+        return {"lead_state": state}
+
+
 @app.post("/sessions/{session_id}/visitors/schedule_email")
 def schedule_email(
     session_id: str,
@@ -1123,12 +1226,22 @@ def schedule_email(
         session, entry, state = _resolve_visitor(session_id, payload, current_user)
         visitor_info = entry.get("visitor") or {}
         analysis = entry.get("analysis") or {}
+        override = state.get("draft_override") or {}
         to_addr = (payload.get("to") or visitor_info.get("email") or "").strip()
         if not to_addr:
             raise HTTPException(400, "No recipient email — visitor has no email on file")
         address = session.get("address") or "the open house"
-        subject = (payload.get("subject") or f"Following up — {address}").strip()
-        body = (payload.get("body") or analysis.get("follow_up_draft") or "").strip()
+        subject = (
+            payload.get("subject")
+            or override.get("subject")
+            or f"Following up — {address}"
+        ).strip()
+        body = (
+            payload.get("body")
+            or override.get("body")
+            or analysis.get("follow_up_draft")
+            or ""
+        ).strip()
         if not body:
             raise HTTPException(400, "Email body is empty")
 

@@ -568,6 +568,82 @@ actor APIClient {
         return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
     }
 
+    // Save an edited follow-up draft. Pass clear=true (with nil body) to wipe
+    // the override and fall back to the AI draft.
+    func updateDraft(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        body: String?,
+        subject: String? = nil,
+        clear: Bool = false
+    ) async throws -> LeadState {
+        var payload: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+        ]
+        if clear {
+            payload["clear"] = true
+        } else {
+            payload["body"] = body ?? ""
+            if let subject { payload["subject"] = subject }
+        }
+        let req = try crmRequest(
+            "sessions/\(sessionId)/visitors/draft", method: "PATCH", body: payload
+        )
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    // MARK: – Templates
+
+    func listTemplates() async throws -> TemplatesEnvelope {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/templates"))
+        req.httpMethod = "GET"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(TemplatesEnvelope.self, from: data)
+    }
+
+    func createTemplate(name: String, subject: String, body: String, matchHints: String) async throws -> FollowupTemplate {
+        let req = try crmRequest("me/templates", method: "POST", body: [
+            "name": name, "subject": subject, "body": body, "match_hints": matchHints,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FollowupTemplate.self, from: data)
+    }
+
+    func updateTemplate(id: String, name: String, subject: String, body: String, matchHints: String) async throws -> FollowupTemplate {
+        let req = try crmRequest("me/templates/\(id)", method: "PATCH", body: [
+            "name": name, "subject": subject, "body": body, "match_hints": matchHints,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FollowupTemplate.self, from: data)
+    }
+
+    func deleteTemplate(id: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/templates/\(id)"))
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    func setForceTemplates(_ force: Bool) async throws -> Bool {
+        let req = try crmRequest("me/force_templates", method: "POST", body: ["force": force])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct Wrapper: Codable {
+            let forceTemplates: Bool
+            enum CodingKeys: String, CodingKey { case forceTemplates = "force_templates" }
+        }
+        return try JSONDecoder().decode(Wrapper.self, from: data).forceTemplates
+    }
+
     func cancelScheduledEmail(sessionId: String, visitorName: String, visitorSpeaker: String?) async throws -> LeadState {
         var comps = URLComponents(url: Config.backendURL.appendingPathComponent(
             "sessions/\(sessionId)/visitors/schedule_email"

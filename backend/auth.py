@@ -460,6 +460,103 @@ def set_gmail_send_from(user_id: str, address: Optional[str]) -> None:
     raise HTTPException(404, "User not found")
 
 
+# --------------------------------------------------------------------------
+# Follow-up templates (per user)
+# --------------------------------------------------------------------------
+# Stored on the user record as `templates: [{id, name, match_hints, subject,
+# body, created_at, updated_at}]`. Slots are free-form `{snake_case}` tokens
+# the agent embeds in subject/body; the drafting pipeline fills the well-
+# known ones (first_name, full_name, property_address, agent_name) and leaves
+# the rest for the LLM (soft mode) or the agent (forced mode) to populate.
+
+def list_templates_for(user_id: str) -> list[dict]:
+    user = get_user_by_id(user_id)
+    return list((user or {}).get("templates") or [])
+
+
+def force_templates_for(user_id: str) -> bool:
+    user = get_user_by_id(user_id)
+    return bool((user or {}).get("force_templates"))
+
+
+def set_force_templates(user_id: str, force: bool) -> None:
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            u["force_templates"] = bool(force)
+            _save_users(data)
+            return
+    raise HTTPException(404, "User not found")
+
+
+def _validate_template_payload(payload: dict) -> dict:
+    name = (payload.get("name") or "").strip()
+    subject = (payload.get("subject") or "").strip()
+    body = (payload.get("body") or "").strip()
+    hints = (payload.get("match_hints") or "").strip()
+    if not name:
+        raise HTTPException(400, "Template name is required")
+    if not body:
+        raise HTTPException(400, "Template body is required")
+    return {"name": name, "subject": subject, "body": body, "match_hints": hints}
+
+
+def create_template(user_id: str, payload: dict) -> dict:
+    import uuid as _uuid
+    fields = _validate_template_payload(payload)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    template = {
+        "id": str(_uuid.uuid4()),
+        "name": fields["name"],
+        "subject": fields["subject"],
+        "body": fields["body"],
+        "match_hints": fields["match_hints"],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = list(u.get("templates") or [])
+            arr.append(template)
+            u["templates"] = arr
+            _save_users(data)
+            return template
+    raise HTTPException(404, "User not found")
+
+
+def update_template(user_id: str, template_id: str, payload: dict) -> dict:
+    fields = _validate_template_payload(payload)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = list(u.get("templates") or [])
+            for t in arr:
+                if t.get("id") == template_id:
+                    t["name"] = fields["name"]
+                    t["subject"] = fields["subject"]
+                    t["body"] = fields["body"]
+                    t["match_hints"] = fields["match_hints"]
+                    t["updated_at"] = now_iso
+                    u["templates"] = arr
+                    _save_users(data)
+                    return t
+            raise HTTPException(404, "Template not found")
+    raise HTTPException(404, "User not found")
+
+
+def delete_template(user_id: str, template_id: str) -> None:
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            arr = [t for t in (u.get("templates") or []) if t.get("id") != template_id]
+            u["templates"] = arr
+            _save_users(data)
+            return
+    raise HTTPException(404, "User not found")
+
+
 def send_gmail_email(
     user_id: str,
     to: str,
