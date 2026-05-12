@@ -78,11 +78,15 @@ struct IPadAgentApp: View {
     // or the Listings tab. Both surfaces present the same editor.
     @State private var showAddListing: Bool = false
 
-    // Plays once per cold launch when the user is signed in. Starts hidden
-    // and gets flipped on AFTER the SplashView dismisses (~1.75s) so the
-    // ripple animation is actually visible. The static flag survives view-
-    // struct re-creations so we don't replay the welcome on tab switches.
-    @State private var showWelcome: Bool = false
+    // Plays once per cold launch when the user is signed in. Renders on top
+    // of the main UI from the very first frame so the agent sees the
+    // welcome BEFORE the home content paints in — then fades out to reveal
+    // the loaded home. The static flag survives view-struct re-creations so
+    // we don't replay the welcome on tab switches.
+    @State private var showWelcome: Bool = !IPadAgentApp.welcomeShownThisLaunch
+    // Snapshot taken when the view first appears, so even after we flip
+    // markWelcomed() the overlay keeps using the right copy until it fades.
+    @State private var welcomeIsFirstTime: Bool = AuthStore.shared.isFirstWelcome
     private static var welcomeShownThisLaunch = false
 
     var body: some View {
@@ -141,7 +145,7 @@ struct IPadAgentApp: View {
                 }
             }
             if showWelcome {
-                WelcomeOverlay(name: firstName)
+                WelcomeOverlay(name: firstName, greeting: welcomeIsFirstTime ? "Welcome," : "Welcome back,")
                     .transition(.opacity)
                     .zIndex(10)
             }
@@ -169,12 +173,14 @@ struct IPadAgentApp: View {
         .onAppear {
             guard !Self.welcomeShownThisLaunch else { return }
             Self.welcomeShownThisLaunch = true
+            // Persist "we've welcomed this user" so the next launch shows
+            // "Welcome back" instead of "Welcome".
+            auth.markWelcomed()
             Task {
-                // Wait for SplashView's 1.4s hold + 0.35s crossfade to clear.
-                try? await Task.sleep(for: .milliseconds(1500))
-                withAnimation(.easeOut(duration: 0.25)) { showWelcome = true }
-                // Hold the welcome on screen long enough for the rings +
-                // checkmark + name reveal to land.
+                // The overlay is already on screen from the first frame; we
+                // just need to hold it long enough for the rings + checkmark
+                // + name reveal to land, then fade out to reveal the home
+                // content sitting behind it.
                 try? await Task.sleep(for: .milliseconds(2400))
                 withAnimation(.easeInOut(duration: 0.55)) { showWelcome = false }
             }
@@ -4851,32 +4857,28 @@ private struct DraftEditorPane: View {
     }
 }
 
-// Pretty-print the network errors we see most often:
-//   - Render/Cloudflare's 502/503/504 HTML page (cold start / proxy
-//     timeout / dyno still booting),
-//   - URLError.timedOut (iOS gave up before backend responded),
-//   - APIError.http(50x, ...) thrown by validate() when the backend
-//     surfaces an upstream proxy failure.
-// Lets the UI say something the agent can act on instead of dumping an
-// HTML stack trace into the panel.
+// Pretty-print the network errors we see most often so we don't dump
+// raw HTML or stack traces into the UI. Backend runs on a paid Render
+// plan (always warm), so "waking up" framing is wrong — if leads loaded
+// the dyno is up. A 502 here usually means the worker errored mid-
+// request; a timeout usually means a backend bug holding a lock or a
+// hanging upstream call.
 private func friendlyErrorMessage(_ prefix: String, error: Error) -> String {
     let raw = error.localizedDescription
     let lower = raw.lowercased()
-    // HTML proxy error pages from Cloudflare or Render — recognised by
-    // the title or body text rather than exact tag formatting.
     if lower.contains("502 bad gateway")
         || lower.contains("503 service")
         || lower.contains("504 gateway")
         || (lower.contains("<title>502") && lower.contains("</title>"))
         || lower.contains("cloudflare")
         || lower.contains("<!doctype html>") {
-        return "\(prefix): backend is waking up. Wait a few seconds and retry."
+        return "\(prefix): backend hiccuped (proxy error). Try again."
     }
     if case let APIError.http(code, _) = error, [502, 503, 504].contains(code) {
-        return "\(prefix): backend is waking up. Wait a few seconds and retry."
+        return "\(prefix): backend hiccuped (\(code)). Try again."
     }
     if let urlError = error as? URLError, urlError.code == .timedOut {
-        return "\(prefix): timed out. Backend may be waking up — retry in a few seconds."
+        return "\(prefix): timed out. The backend may be stuck on this request — try again."
     }
     return "\(prefix): \(raw)"
 }
@@ -6268,6 +6270,7 @@ private struct IPadProfile: View {
 // parent fades the whole overlay out and the home content takes over.
 private struct WelcomeOverlay: View {
     let name: String
+    let greeting: String
 
     @State private var ringScale: CGFloat = 0.4
     @State private var ringOpacity: Double = 0
@@ -6311,7 +6314,7 @@ private struct WelcomeOverlay: View {
                 .frame(height: 220)
 
                 VStack(spacing: 6) {
-                    Text("Welcome,")
+                    Text(greeting)
                         .font(.system(size: 22, weight: .regular))
                         .foregroundStyle(FoyerTheme.creamDim)
                     Text(name)

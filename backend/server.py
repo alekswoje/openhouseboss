@@ -573,7 +573,13 @@ def verify_contact(payload: dict):
 
 
 _sessions: dict[str, dict] = {}
-_sessions_lock = threading.Lock()
+# Re-entrant lock so endpoints that need the lock AND call helpers like
+# `_load_session` (which also takes the lock) don't deadlock. A plain
+# threading.Lock would self-deadlock as soon as a handler nested two
+# `with _sessions_lock:` blocks on the same thread — refine_visitor_draft
+# and update_visitor_contact hit this and hung forever, surfacing as
+# "request timed out" on iOS. RLock counts ownership per thread.
+_sessions_lock = threading.RLock()
 
 
 def _persist(session_id: str) -> None:
