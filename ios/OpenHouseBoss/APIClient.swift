@@ -206,6 +206,57 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    // PATCH /scripts/{id} — overwrite a user script. Same body shape as
+    // createScript. Presets are not editable; returns the updated record.
+    func updateScript(id: String, name: String, description: String, steps: [ScriptStepDraft]) async throws -> ScriptSummary {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/\(id)"))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+        let stepDicts = steps.map { s -> [String: String] in
+            ["label": s.label, "quote": s.quote, "intent": s.intent]
+        }
+        let body: [String: Any] = [
+            "name": name, "description": description, "steps": stepDicts,
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct UpdatedScript: Codable {
+            let id: String, name: String, description: String
+            let steps: [Step]
+            struct Step: Codable { let id, label: String }
+        }
+        let updated = try JSONDecoder().decode(UpdatedScript.self, from: data)
+        return ScriptSummary(
+            id: updated.id, name: updated.name, description: updated.description,
+            stepCount: updated.steps.count, isPreset: false
+        )
+    }
+
+    // GET /scripts/{id} — full script with all step bodies, used by the
+    // iPad script editor to populate the form when editing existing scripts.
+    struct ScriptDetailDTO: Codable {
+        let id: String
+        let name: String
+        let description: String
+        let steps: [Step]
+        struct Step: Codable {
+            let id: String
+            let label: String
+            let quote: String?
+            let intent: String?
+            let section: String?
+        }
+    }
+    func getScript(id: String) async throws -> ScriptDetailDTO {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/\(id)"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ScriptDetailDTO.self, from: data)
+    }
+
     // POST /leads — adds a manual lead with no audio. The backend creates
     // a kind="manual" session so the lead flows into the inbox like any
     // recorded visitor. Returns the new session so callers can route into

@@ -275,6 +275,30 @@ def save_user_script(name: str, description: str, steps: list[dict]) -> Script:
     return script
 
 
+def update_user_script(script_id: str, name: str, description: str, steps: list[dict]) -> Optional[Script]:
+    """Overwrite a user-created script in place. Returns None if the id
+    points at a preset or doesn't exist. Steps mirror save_user_script."""
+    if script_id in {s.id for s in PRESETS}:
+        return None
+    user_file = USER_SCRIPTS_DIR / f"{script_id}.json"
+    if not user_file.exists():
+        return None
+    parsed_steps = []
+    for i, s in enumerate(steps):
+        parsed_steps.append(ScriptStep(
+            id=s.get("id") or f"step_{i+1}",
+            section=s.get("section") or "Custom",
+            label=s.get("label") or f"Step {i+1}",
+            quote=s.get("quote") or "",
+            intent=s.get("intent") or "",
+        ))
+    script = Script(
+        id=script_id, name=name, description=description, steps=parsed_steps,
+    )
+    user_file.write_text(json.dumps(script.model_dump(), indent=2))
+    return script
+
+
 def delete_user_script(script_id: str) -> bool:
     """Remove a user-created script. Returns False if not found or if the
     caller tries to delete a preset."""

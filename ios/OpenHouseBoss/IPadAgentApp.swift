@@ -2773,10 +2773,28 @@ private struct IPadLeads: View {
                 visitorName: v.visitor.name,
                 visitorSpeaker: v.visitor.speaker
             )
+            // Best-effort push to Follow Up Boss if the agent has connected.
+            // FUB failures don't roll back the "sent" flip — the email already
+            // went out, so we just surface a soft warning toast.
+            var fubWarning: String? = nil
+            if FUBCredential.isConnected {
+                do {
+                    var updatedVisitor = v
+                    updatedVisitor.leadState = result.leadState
+                    _ = try await APIClient.shared.fubPushLead(
+                        visitor: updatedVisitor,
+                        sessionAddress: session.address,
+                        snoozedUntil: result.leadState?.snoozedUntilDate
+                    )
+                } catch {
+                    fubWarning = "Sent — but FUB push failed: \(error.localizedDescription)"
+                }
+            }
             await MainActor.run {
                 let newState = result.leadState
                     ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
-                                 notes: nil, tasks: nil, sentEmails: nil, scheduledEmail: nil)
+                                 notes: nil, tasks: nil, sentEmails: nil, scheduledEmail: nil,
+                                 draftOverride: nil)
                 if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
                     var row = allLeads[idx]
                     var visitor = row.visitor
@@ -2786,6 +2804,9 @@ private struct IPadLeads: View {
                 }
                 let first = v.visitor.name.split(separator: " ").first.map(String.init) ?? v.visitor.name
                 showToast("Email sent to \(first)")
+                if let warning = fubWarning {
+                    sendError = warning
+                }
             }
         } catch APIClient.SendEmailError.gmailNotConnected {
             await MainActor.run { showGmailConnect = true }
@@ -3264,6 +3285,492 @@ private struct IPadLeads: View {
         let f = DateFormatter()
         f.dateFormat = "MMM d 'at' h:mma"
         return f.string(from: date).replacingOccurrences(of: "AM", with: "am").replacingOccurrences(of: "PM", with: "pm")
+    }
+}
+
+// MARK: – Follow Up Boss connect sheet
+
+private struct FUBConnectSheetIPad: View {
+    @Binding var connectedName: String?
+    var onClose: () -> Void
+
+    @State private var apiKey: String = ""
+    @State private var testing = false
+    @State private var errorMessage: String?
+    @State private var alreadyConnected: Bool = FUBCredential.isConnected
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    intro
+                    if alreadyConnected {
+                        connectedCard
+                    } else {
+                        keyField
+                        connectButton
+                    }
+                    if let err = errorMessage {
+                        Text(err)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    howToFind
+                }
+                .padding(28)
+            }
+            .background(Color.black)
+            .navigationTitle("Follow Up Boss")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+        }
+    }
+
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("CRM INTEGRATION")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(FoyerTheme.gold)
+            Text("Push captured leads automatically")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("When you Send a follow-up draft, OpenHouseBoss creates the contact in FUB, attaches your session notes, and schedules a follow-up task. The API key stays in this device's Keychain — it never goes to our servers.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
+        }
+    }
+
+    private var keyField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("API KEY")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textDim)
+            SecureField("", text: $apiKey,
+                        prompt: Text("Paste from FUB → Settings → API").foregroundStyle(FoyerTheme.textMuted.opacity(0.7)))
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var connectButton: some View {
+        Button(action: testAndSave) {
+            HStack(spacing: 8) {
+                if testing {
+                    ProgressView().scaleEffect(0.7).tint(FoyerTheme.inkOnGold)
+                }
+                Text(testing ? "Connecting…" : "Test & connect")
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            .foregroundStyle(FoyerTheme.inkOnGold)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .background(FoyerTheme.gold, in: Capsule())
+        }
+        .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty || testing)
+        .opacity(apiKey.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+        .buttonStyle(.plain)
+    }
+
+    private var connectedCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(FoyerTheme.sage)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connected")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text(connectedName ?? "Sending leads to your FUB account.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                Spacer()
+            }
+            .padding(16)
+            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 14))
+
+            Button(role: .destructive, action: disconnect) {
+                Text("Disconnect")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(FoyerTheme.terracotta.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var howToFind: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("WHERE DO I FIND THIS?")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textDim)
+            Text("In Follow Up Boss: click your profile → Settings → API. Create or copy a key with read + write access.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
+        }
+    }
+
+    private func testAndSave() {
+        let key = apiKey.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return }
+        testing = true
+        errorMessage = nil
+        Task {
+            do {
+                let name = try await APIClient.shared.fubTestKey(key)
+                try FUBCredential.save(key)
+                await MainActor.run {
+                    testing = false
+                    alreadyConnected = true
+                    connectedName = name
+                    apiKey = ""
+                }
+            } catch {
+                await MainActor.run {
+                    testing = false
+                    errorMessage = "That key didn't work: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func disconnect() {
+        FUBCredential.clear()
+        alreadyConnected = false
+        connectedName = nil
+    }
+}
+
+// MARK: – Script editor sheet
+
+// Identifiable wrapper so `.sheet(item:)` can drive on an Optional<String>.
+private struct ScriptIdRef: Identifiable, Hashable {
+    let id: String
+}
+
+private struct ScriptEditorSheet: View {
+    let existingId: String?
+    var onCancel: () -> Void
+    var onSaved: () -> Void
+
+    @State private var name: String = ""
+    @State private var description: String = ""
+    @State private var steps: [ScriptStepDraft] = [ScriptStepDraft(label: "Step 1")]
+    @State private var loading: Bool = true
+    @State private var saving: Bool = false
+    @State private var deleting: Bool = false
+    @State private var errorMessage: String?
+    @State private var showDeleteConfirm: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if loading {
+                    ProgressView()
+                        .tint(FoyerTheme.gold)
+                        .padding(60)
+                } else {
+                    VStack(alignment: .leading, spacing: 18) {
+                        introBlurb
+                        nameAndDescription
+                        stepsSection
+                        if let err = errorMessage {
+                            Text(err)
+                                .font(.system(size: 12))
+                                .foregroundStyle(FoyerTheme.terracotta)
+                        }
+                        if existingId != nil {
+                            Button(role: .destructive) {
+                                showDeleteConfirm = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("Delete script")
+                                        .font(.system(size: 14, weight: .semibold))
+                                }
+                                .foregroundStyle(FoyerTheme.terracotta)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(FoyerTheme.terracotta.opacity(0.10), in: Capsule())
+                            }
+                            .disabled(saving || deleting)
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(28)
+                }
+            }
+            .background(Color.black)
+            .navigationTitle(existingId == nil ? "New script" : "Edit script")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                        .disabled(saving || deleting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(!canSave || saving || deleting)
+                }
+            }
+            .alert("Delete this script?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { Task { await delete() } }
+            } message: {
+                Text("This can't be undone. Past sessions graded against this script keep their coverage results, but new sessions won't have it as an option.")
+            }
+        }
+        .task { await load() }
+    }
+
+    private var introBlurb: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("OPEN-HOUSE COACHING")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(FoyerTheme.gold)
+            Text(existingId == nil ? "Author a script" : "Edit script")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+            Text("After each open house, the AI grades how well you covered each step and surfaces the lines you said vs. what's missing. Use Quote for the line you typically deliver, and Why it matters to teach the AI when it counts as covered.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
+        }
+    }
+
+    private var nameAndDescription: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            field("NAME", placeholder: "My buyer flow", text: $name)
+            field("DESCRIPTION", placeholder: "Lead qualification + rebate close",
+                  text: $description, multiline: true, minHeight: 60)
+        }
+    }
+
+    private var stepsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("STEPS · \(steps.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(FoyerTheme.textDim)
+                Spacer()
+                Button { addStep() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Add step")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.gold)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(FoyerTheme.goldSoft, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            VStack(spacing: 12) {
+                ForEach(Array(steps.enumerated()), id: \.element.id) { idx, _ in
+                    stepCard(at: idx)
+                }
+            }
+        }
+    }
+
+    private func stepCard(at index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("STEP \(index + 1)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(FoyerTheme.gold)
+                Spacer()
+                if steps.count > 1 {
+                    Button { removeStep(at: index) } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            miniField("Label", placeholder: "Establish the timeline",
+                      text: Binding(
+                        get: { steps[index].label },
+                        set: { steps[index].label = $0 }))
+            miniField("What you'll say", placeholder: "So are you getting close to making a move?",
+                      text: Binding(
+                        get: { steps[index].quote },
+                        set: { steps[index].quote = $0 }),
+                      multiline: true, minHeight: 60)
+            miniField("Why it matters", placeholder: "Sorts active buyers from window-shoppers",
+                      text: Binding(
+                        get: { steps[index].intent },
+                        set: { steps[index].intent = $0 }),
+                      multiline: true, minHeight: 50)
+        }
+        .padding(14)
+        .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func field(_ label: String, placeholder: String, text: Binding<String>,
+                       multiline: Bool = false, minHeight: CGFloat = 44) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textDim)
+            if multiline {
+                ZStack(alignment: .topLeading) {
+                    if text.wrappedValue.isEmpty {
+                        Text(placeholder)
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.textDim.opacity(0.6))
+                            .padding(.horizontal, 14).padding(.vertical, 12)
+                    }
+                    TextEditor(text: text)
+                        .font(.system(size: 14))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .frame(minHeight: minHeight)
+                }
+                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                TextField(placeholder, text: text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+                    .autocorrectionDisabled(true)
+                    .textInputAutocapitalization(.sentences)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func miniField(_ label: String, placeholder: String, text: Binding<String>,
+                           multiline: Bool = false, minHeight: CGFloat = 38) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.2)
+                .foregroundStyle(FoyerTheme.textMuted)
+            if multiline {
+                ZStack(alignment: .topLeading) {
+                    if text.wrappedValue.isEmpty {
+                        Text(placeholder)
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.textDim.opacity(0.6))
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                    }
+                    TextEditor(text: text)
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .frame(minHeight: minHeight)
+                }
+                .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+                TextField(placeholder, text: text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(.horizontal, 10).padding(.vertical, 9)
+                    .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        steps.contains { !$0.label.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private func addStep() {
+        steps.append(ScriptStepDraft(label: "Step \(steps.count + 1)"))
+    }
+
+    private func removeStep(at index: Int) {
+        guard index < steps.count else { return }
+        steps.remove(at: index)
+    }
+
+    @MainActor
+    private func load() async {
+        if let id = existingId {
+            do {
+                let detail = try await APIClient.shared.getScript(id: id)
+                name = detail.name
+                description = detail.description
+                steps = detail.steps.map {
+                    ScriptStepDraft(id: $0.id, label: $0.label, quote: $0.quote ?? "", intent: $0.intent ?? "")
+                }
+                if steps.isEmpty {
+                    steps = [ScriptStepDraft(label: "Step 1")]
+                }
+            } catch {
+                errorMessage = "Couldn't load script: \(error.localizedDescription)"
+            }
+        }
+        loading = false
+    }
+
+    @MainActor
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        let cleaned = steps.filter { !$0.label.trimmingCharacters(in: .whitespaces).isEmpty }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedDesc = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if let id = existingId {
+                _ = try await APIClient.shared.updateScript(
+                    id: id, name: trimmedName, description: trimmedDesc, steps: cleaned
+                )
+            } else {
+                _ = try await APIClient.shared.createScript(
+                    name: trimmedName, description: trimmedDesc, steps: cleaned
+                )
+            }
+            onSaved()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func delete() async {
+        guard let id = existingId else { return }
+        deleting = true
+        defer { deleting = false }
+        do {
+            try await APIClient.shared.deleteScript(id: id)
+            onSaved()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -3916,6 +4423,16 @@ private struct IPadProfile: View {
     @State private var editingTemplate: FollowupTemplate?
     @State private var showNewTemplate: Bool = false
 
+    // Follow Up Boss state — Keychain-backed, so we just track display state.
+    @State private var fubConnected: Bool = FUBCredential.isConnected
+    @State private var fubName: String? = nil
+    @State private var showFubSheet: Bool = false
+
+    // Scripts state
+    @State private var scriptsError: String?
+    @State private var editingScriptId: String? = nil
+    @State private var showNewScript: Bool = false
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 28) {
@@ -3926,7 +4443,8 @@ private struct IPadProfile: View {
                     sendAsCard
                 }
                 templatesCard
-                defaultScriptCard
+                scriptsCard
+                fubCard
                 signOutCard
                 Spacer().frame(height: 80)
             }
@@ -3937,11 +4455,13 @@ private struct IPadProfile: View {
         .refreshable {
             await refreshGmail()
             await loadTemplates()
+            await store.refreshScripts()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .task { await refreshGmail() }
         .task { await loadTemplates() }
+        .task { await store.refreshScripts() }
         .sheet(isPresented: $showGmailConnect) {
             GmailConnectSheet(
                 onConnected: { _ in
@@ -3971,12 +4491,218 @@ private struct IPadProfile: View {
                 }
             )
         }
+        .sheet(isPresented: $showFubSheet) {
+            FUBConnectSheetIPad(
+                connectedName: $fubName,
+                onClose: {
+                    showFubSheet = false
+                    fubConnected = FUBCredential.isConnected
+                }
+            )
+        }
+        .sheet(isPresented: $showNewScript) {
+            ScriptEditorSheet(
+                existingId: nil,
+                onCancel: { showNewScript = false },
+                onSaved: {
+                    showNewScript = false
+                    Task { await store.refreshScripts() }
+                }
+            )
+        }
+        .sheet(item: Binding(
+            get: { editingScriptId.map { ScriptIdRef(id: $0) } },
+            set: { editingScriptId = $0?.id }
+        )) { ref in
+            ScriptEditorSheet(
+                existingId: ref.id,
+                onCancel: { editingScriptId = nil },
+                onSaved: {
+                    editingScriptId = nil
+                    Task { await store.refreshScripts() }
+                }
+            )
+        }
         .alert("Sign out?", isPresented: $showSignOutConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Sign out", role: .destructive) { auth.signOut() }
         } message: {
             Text("You'll need to sign back in with Google to access your sessions and leads.")
         }
+    }
+
+    private var fubCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "arrow.triangle.branch",
+                title: "Follow Up Boss",
+                subtitle: "Push captured leads into FUB on send."
+            )
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(fubConnected ? FoyerTheme.sage : FoyerTheme.creamDim.opacity(0.4))
+                    .frame(width: 10, height: 10)
+                Text(fubConnected ? "Connected" : "Not connected")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Spacer()
+                Button { showFubSheet = true } label: {
+                    Text(fubConnected ? "Manage" : "Connect")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(fubConnected ? FoyerTheme.creamDim : FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(fubConnected
+                                    ? Color(white: 0.08)
+                                    : FoyerTheme.gold,
+                                    in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var scriptsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "doc.text.fill",
+                title: "Open-house scripts",
+                subtitle: "Drives coaching + per-session coverage grading."
+            )
+
+            // Default script row (Menu) — preserved so the agent can flip
+            // defaults in the same card instead of digging through a sheet.
+            Menu {
+                Button {
+                    store.defaultScriptId = nil
+                } label: {
+                    HStack {
+                        Text("No default")
+                        if store.defaultScriptId == nil {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                if !store.availableScripts.isEmpty {
+                    Divider()
+                    ForEach(store.availableScripts) { s in
+                        Button {
+                            store.defaultScriptId = s.id
+                        } label: {
+                            HStack {
+                                Text(s.name)
+                                if store.defaultScriptId == s.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.gold)
+                    Text("Default for new sessions")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                    Spacer()
+                    Text(currentScriptLabel)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            if store.availableScripts.isEmpty {
+                Text("No scripts loaded yet.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(store.availableScripts) { s in
+                        scriptRow(s)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button { showNewScript = true } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("New script")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            if let err = scriptsError {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func scriptRow(_ s: ScriptSummary) -> some View {
+        let isDefault = store.defaultScriptId == s.id
+        let editable = !s.isPreset
+        return Button {
+            if editable { editingScriptId = s.id }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(s.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                        if s.isPreset {
+                            Text("PRESET")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.2)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                        if isDefault {
+                            Text("DEFAULT")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.2)
+                                .foregroundStyle(FoyerTheme.gold)
+                        }
+                    }
+                    Text("\(s.stepCount) steps · \(s.description)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: editable ? "chevron.right" : "lock.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(!editable)
+    }
+
+    private var currentScriptLabel: String {
+        if let id = store.defaultScriptId,
+           let s = store.availableScripts.first(where: { $0.id == id }) {
+            return s.name
+        }
+        return "None"
     }
 
     private var templatesCard: some View {
@@ -4226,69 +4952,6 @@ private struct IPadProfile: View {
             }
             .buttonStyle(.plain)
         }
-    }
-
-    private var defaultScriptCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            cardHeader(
-                icon: "doc.text.fill",
-                title: "Default script",
-                subtitle: "Used for coverage grading unless overridden per session."
-            )
-            Menu {
-                Button {
-                    store.defaultScriptId = nil
-                } label: {
-                    HStack {
-                        Text("No script")
-                        if store.defaultScriptId == nil {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-                if !store.availableScripts.isEmpty {
-                    Divider()
-                    ForEach(store.availableScripts) { s in
-                        Button {
-                            store.defaultScriptId = s.id
-                        } label: {
-                            HStack {
-                                Text(s.name)
-                                if store.defaultScriptId == s.id {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 13))
-                        .foregroundStyle(FoyerTheme.gold)
-                    Text(currentScriptLabel)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(FoyerTheme.cream)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.creamDim)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 12)
-                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
-            }
-            .task { await store.refreshScripts() }
-        }
-        .padding(20)
-        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
-    }
-
-    private var currentScriptLabel: String {
-        if let id = store.defaultScriptId,
-           let s = store.availableScripts.first(where: { $0.id == id }) {
-            return s.name
-        }
-        return "No script"
     }
 
     private var signOutCard: some View {
@@ -5471,6 +6134,9 @@ private struct IPadSessionDetail: View {
                     }
                     playbackBar
                     if let result = session.result {
+                        if let coverage = result.scriptCoverage {
+                            coverageSection(coverage)
+                        }
                         leadsList(result.visitors, session: session)
                         if let utts = result.utterances, !utts.isEmpty {
                             speakerTranscript(utts, result: result)
@@ -5801,6 +6467,63 @@ private struct IPadSessionDetail: View {
 
     // Speaker-labeled transcript. The backend already produces per-turn
     // utterances with a speaker label (e.g. "A", "B"); each visitor has a
+    // Script coverage panel — score, scriptName, and per-step rows with
+    // tap-to-expand "you said" + "suggestion". Mirrors the iPhone summary.
+    @ViewBuilder
+    private func coverageSection(_ coverage: ScriptCoverage) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Script coverage")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Spacer()
+                if let score = coverage.score {
+                    Text("\(score)")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(coverageScoreColor(score))
+                    Text("/100")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+            }
+            if let err = coverage.error {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FoyerTheme.terracotta.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                Text(coverage.scriptName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                if let s = coverage.overallSummary, !s.isEmpty {
+                    Text(s)
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let steps = coverage.steps {
+                    VStack(spacing: 8) {
+                        ForEach(steps) { step in
+                            IPadCoverageRow(step: step)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func coverageScoreColor(_ score: Int) -> Color {
+        switch score {
+        case 75...:    return FoyerTheme.sage
+        case 40..<75:  return FoyerTheme.gold
+        default:       return FoyerTheme.terracotta
+        }
+    }
+
     // matched `speaker` field, and the agent's label is in
     // result.agentSpeaker. We resolve each utterance's speaker to a name
     // and color so the agent can scan who said what.
@@ -5966,6 +6689,84 @@ private struct IPadSessionDetail: View {
         } catch {
             await MainActor.run { self.loadError = error.localizedDescription }
         }
+    }
+}
+
+// MARK: – Coverage row (iPad)
+
+private struct IPadCoverageRow: View {
+    let step: StepCoverage
+    @State private var expanded = false
+
+    var body: some View {
+        Button { withAnimation { expanded.toggle() } } label: {
+            VStack(alignment: .leading, spacing: expanded ? 10 : 0) {
+                HStack(spacing: 10) {
+                    statusPill
+                    Text(stepLabel)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                if expanded {
+                    if !step.evidence.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("YOU SAID")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                            Text("\"\(step.evidence)\"")
+                                .font(.system(size: 13))
+                                .foregroundStyle(FoyerTheme.cream)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if !step.suggestion.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("SUGGESTION")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(FoyerTheme.gold)
+                            Text(step.suggestion)
+                                .font(.system(size: 13))
+                                .foregroundStyle(FoyerTheme.creamDim)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var statusPill: some View {
+        let (text, color): (String, Color) = {
+            switch step.status {
+            case "hit":     return ("HIT",     FoyerTheme.sage)
+            case "partial": return ("PARTIAL", FoyerTheme.gold)
+            case "missed":  return ("MISSED",  FoyerTheme.terracotta)
+            default:        return (step.status.uppercased(), FoyerTheme.creamDim)
+            }
+        }()
+        return Text(text)
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .tracking(1.2)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    private var stepLabel: String {
+        ScriptStepLookup.label(for: step.stepId)
     }
 }
 

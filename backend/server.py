@@ -19,7 +19,7 @@ from pipeline.analyze import analyze_visitor
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
 from pipeline.script_coverage import grade_against_script
-from pipeline.scripts import get_script, list_scripts_summary, save_user_script, delete_user_script
+from pipeline.scripts import get_script, list_scripts_summary, save_user_script, update_user_script, delete_user_script
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
 
@@ -625,6 +625,24 @@ async def create_script(payload: dict):
         raise HTTPException(400, "at least one step is required")
     script = save_user_script(name=name, description=description, steps=steps)
     return script.model_dump()
+
+
+@app.patch("/scripts/{script_id}")
+async def edit_script(script_id: str, payload: dict):
+    """Update an existing user-created script. Body shape matches
+    `POST /scripts`: { name, description, steps[] }. Presets are not editable
+    — this returns 400 if the agent tries to edit one."""
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = (payload.get("description") or "").strip()
+    steps = payload.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        raise HTTPException(400, "at least one step is required")
+    updated = update_user_script(script_id, name=name, description=description, steps=steps)
+    if updated is None:
+        raise HTTPException(400, "Cannot edit that script (preset or unknown)")
+    return updated.model_dump()
 
 
 @app.delete("/scripts/{script_id}")
