@@ -232,6 +232,27 @@ def gmail_disconnect(current_user: dict = Depends(auth_lib.get_current_user)):
     return {"connected": False}
 
 
+@app.post("/auth/gmail/send_from")
+def gmail_set_send_from(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Set (or clear) the Send-as alias that gets stamped on the From:
+    header of every outgoing follow-up. Body: {address: "..." | null}.
+
+    The agent has to verify the alias inside Gmail (Settings → Accounts →
+    Send mail as) for it to actually appear on outgoing mail — Gmail
+    silently rewrites unverified addresses. We don't try to verify here;
+    if it doesn't work, the From: silently falls back to the connected
+    mailbox.
+    """
+    address = payload.get("address")
+    if address is not None and not isinstance(address, str):
+        raise HTTPException(400, "address must be a string or null")
+    auth_lib.set_gmail_send_from(current_user["id"], address)
+    return auth_lib.gmail_status_for(current_user["id"])
+
+
 # --------------------------------------------------------------------------
 # Contact verification for the kiosk sign-in form
 # --------------------------------------------------------------------------

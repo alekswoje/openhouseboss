@@ -339,6 +339,16 @@ actor APIClient {
     struct GmailStatus: Codable {
         let connected: Bool
         let email: String?
+        // Optional Send-as alias the agent has set. When present, the
+        // backend stamps it on the From: header of every outgoing
+        // follow-up (Gmail will silently fall back if the alias isn't
+        // verified inside Gmail Settings → Accounts → Send mail as).
+        let sendFrom: String?
+
+        enum CodingKeys: String, CodingKey {
+            case connected, email
+            case sendFrom = "send_from"
+        }
     }
 
     func gmailStatus() async throws -> GmailStatus {
@@ -355,6 +365,20 @@ actor APIClient {
         authorize(&req)
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
+    }
+
+    /// Save (or clear with address=nil) the Send-as alias for the
+    /// signed-in agent. Backend echoes back the full Gmail status.
+    func setGmailSendFrom(address: String?) async throws -> GmailStatus {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/gmail/send_from"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+        let body: [String: Any] = ["address": (address ?? "") as Any]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(GmailStatus.self, from: data)
     }
 
     struct SendEmailResult: Codable {

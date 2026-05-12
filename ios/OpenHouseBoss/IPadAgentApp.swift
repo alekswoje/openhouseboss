@@ -3576,6 +3576,11 @@ private struct IPadProfile: View {
     @State private var gmailError: String?
     @State private var showGmailConnect: Bool = false
     @State private var showSignOutConfirm: Bool = false
+    // Local draft of the Send-as alias. Reset to the backend's value
+    // on every refresh so a Cancel discards anything in flight.
+    @State private var sendAsDraft: String = ""
+    @State private var sendAsSaving: Bool = false
+    @State private var sendAsMessage: String?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -3583,6 +3588,9 @@ private struct IPadProfile: View {
                 header
                 accountCard
                 gmailCard
+                if gmail?.connected == true {
+                    sendAsCard
+                }
                 defaultScriptCard
                 signOutCard
                 Spacer().frame(height: 80)
@@ -3816,6 +3824,92 @@ private struct IPadProfile: View {
         .buttonStyle(.plain)
     }
 
+    private var sendAsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "at",
+                title: "Send mail as",
+                subtitle: "Stamp follow-ups with a different From address."
+            )
+            Text("Verify the alias in Gmail first (Settings → Accounts → Send mail as). Gmail silently falls back to your connected address if it isn't verified.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
+
+            HStack(spacing: 10) {
+                TextField(gmail?.email ?? "name@company.com", text: $sendAsDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .keyboardType(.emailAddress)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+
+                Button { Task { await saveSendAs(clear: false) } } label: {
+                    Text(sendAsSaving ? "Saving…" : "Save")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 16).padding(.vertical, 11)
+                        .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(sendAsSaving)
+
+                if let current = gmail?.sendFrom, !current.isEmpty {
+                    Button { Task { await saveSendAs(clear: true) } } label: {
+                        Text("Clear")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 11)
+                            .background(Color(white: 0.08), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sendAsSaving)
+                }
+            }
+
+            if let current = gmail?.sendFrom, !current.isEmpty {
+                HStack(spacing: 8) {
+                    Circle().fill(FoyerTheme.sage).frame(width: 6, height: 6)
+                    Text("Sending as ")
+                        .foregroundStyle(FoyerTheme.textDim) +
+                    Text(current)
+                        .foregroundStyle(FoyerTheme.cream) +
+                    Text(" via \(gmail?.email ?? "")")
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
+                .font(.system(size: 12))
+            }
+
+            if let msg = sendAsMessage {
+                Text(msg)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    @MainActor
+    private func saveSendAs(clear: Bool) async {
+        sendAsSaving = true
+        sendAsMessage = nil
+        defer { sendAsSaving = false }
+        do {
+            let address: String? = clear ? nil : sendAsDraft.trimmingCharacters(in: .whitespaces)
+            let updated = try await APIClient.shared.setGmailSendFrom(
+                address: (address?.isEmpty == true) ? nil : address
+            )
+            gmail = updated
+            sendAsDraft = updated.sendFrom ?? ""
+        } catch {
+            sendAsMessage = error.localizedDescription
+        }
+    }
+
     private func cardHeader(icon: String, title: String, subtitle: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
@@ -3841,7 +3935,10 @@ private struct IPadProfile: View {
         gmailError = nil
         defer { gmailLoading = false }
         do {
-            gmail = try await APIClient.shared.gmailStatus()
+            let status = try await APIClient.shared.gmailStatus()
+            gmail = status
+            // Seed the draft with whatever the server thinks is current.
+            sendAsDraft = status.sendFrom ?? ""
         } catch {
             gmailError = error.localizedDescription
         }

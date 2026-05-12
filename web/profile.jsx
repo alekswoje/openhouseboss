@@ -26,12 +26,18 @@ function ProfilePage() {
   const [gmailLoading, setGmailLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  // Send-as alias — what gets stamped on every outgoing From: header.
+  // Kept locally as a draft so the agent can type before hitting Save.
+  const [sendAsDraft, setSendAsDraft] = React.useState('');
+  const [sendAsSaving, setSendAsSaving] = React.useState(false);
+  const [sendAsMsg, setSendAsMsg] = React.useState(null);
 
   const refreshGmail = React.useCallback(async () => {
     setGmailLoading(true);
     try {
       const r = await foyerApi.get('/auth/gmail/status');
       setGmail(r);
+      setSendAsDraft(r?.send_from || '');
       setError(null);
     } catch (e) {
       setError(e.message || String(e));
@@ -39,6 +45,22 @@ function ProfilePage() {
       setGmailLoading(false);
     }
   }, []);
+
+  const saveSendAs = async (clear = false) => {
+    setSendAsSaving(true);
+    setSendAsMsg(null);
+    try {
+      const address = clear ? null : (sendAsDraft.trim() || null);
+      const r = await foyerApi.post('/auth/gmail/send_from', { address });
+      setGmail(r);
+      setSendAsDraft(r?.send_from || '');
+      window.foyerToast?.(clear ? 'Send-as cleared' : 'Send-as saved');
+    } catch (e) {
+      setSendAsMsg(e.message || String(e));
+    } finally {
+      setSendAsSaving(false);
+    }
+  };
 
   // Initial fetch + handle OAuth completion redirect. When the user lands
   // on /#/profile?gmail=connected, strip the query, refresh status, toast.
@@ -148,6 +170,58 @@ function ProfilePage() {
           </div>
           {error && <div style={{ fontSize: 12, color: PC.terracotta, marginTop: 10 }}>{error}</div>}
         </div>
+
+        {/* Send-as card — only relevant once Gmail is connected. */}
+        {gmail?.connected && (
+          <div>
+            <SectionEyebrow title="Send mail as" />
+            <div style={{
+              background: PC.card2, borderRadius: 14, padding: 24,
+              display: 'flex', flexDirection: 'column', gap: 14,
+            }}>
+              <div style={{ fontSize: 13, color: PC.creamDim, lineHeight: 1.6 }}>
+                Stamp outgoing follow-ups with a different From address (e.g. your work
+                alias). The alias has to be verified in Gmail first — open
+                <a href="https://mail.google.com/mail/u/0/#settings/accounts" target="_blank" rel="noreferrer" style={{ color: PC.gold, textDecoration: 'none', margin: '0 4px' }}>Gmail → Settings → Accounts → Send mail as</a>
+                and add it there. Gmail silently falls back to your connected address
+                if it isn't verified.
+              </div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="email"
+                  value={sendAsDraft}
+                  onChange={e => setSendAsDraft(e.target.value)}
+                  placeholder={gmail.email || 'name@company.com'}
+                  style={{
+                    flex: '1 1 240px', minWidth: 0,
+                    background: 'rgba(255,255,255,0.05)', color: PC.cream,
+                    border: 0, borderRadius: 10, padding: '12px 14px',
+                    fontFamily: 'var(--sans)', fontSize: 14, outline: 'none',
+                  }} />
+                <button onClick={() => saveSendAs(false)} disabled={sendAsSaving} style={{
+                  padding: '10px 18px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 600,
+                  background: PC.gold, color: 'var(--bg-deep)',
+                  border: 0, borderRadius: 999, cursor: 'pointer',
+                  opacity: sendAsSaving ? 0.5 : 1,
+                }}>{sendAsSaving ? 'Saving…' : 'Save'}</button>
+                {gmail.send_from && (
+                  <button onClick={() => saveSendAs(true)} disabled={sendAsSaving} style={{
+                    padding: '10px 14px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 500,
+                    background: 'rgba(255,255,255,0.05)', color: PC.creamDim,
+                    border: 0, borderRadius: 999, cursor: 'pointer',
+                  }}>Clear</button>
+                )}
+              </div>
+              {gmail.send_from && (
+                <div style={{ fontSize: 12, color: PC.textDim, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: PC.sage, boxShadow: `0 0 8px ${PC.sage}` }} />
+                  Sending as <span style={{ color: PC.cream }}>{gmail.send_from}</span> via {gmail.email}
+                </div>
+              )}
+              {sendAsMsg && <div style={{ fontSize: 12, color: PC.terracotta }}>{sendAsMsg}</div>}
+            </div>
+          </div>
+        )}
 
         {/* Account card */}
         <div>

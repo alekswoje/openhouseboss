@@ -410,14 +410,18 @@ def clear_gmail_credential(user_id: str) -> None:
 
 
 def gmail_status_for(user_id: str) -> dict:
-    """{connected, email} — used by iOS to decide whether to show the
-    Connect Gmail prompt or jump straight to sending."""
+    """{connected, email, send_from} — used by iOS and web to render the
+    Connect Gmail card and the optional Send-as alias picker."""
     user = get_user_by_id(user_id)
     if not user:
-        return {"connected": False, "email": None}
+        return {"connected": False, "email": None, "send_from": None}
     return {
         "connected": bool(user.get("gmail_refresh_token")),
         "email": user.get("gmail_account_email"),
+        # Optional alias the user verified in Gmail's "Send mail as"
+        # settings. If set, we put it on the From: header so recipients
+        # see this address instead of the authenticated mailbox.
+        "send_from": user.get("gmail_send_from") or None,
     }
 
 
@@ -429,6 +433,31 @@ def gmail_refresh_token_for(user_id: str) -> Optional[str]:
 def gmail_email_for(user_id: str) -> Optional[str]:
     user = get_user_by_id(user_id)
     return user.get("gmail_account_email") if user else None
+
+
+def gmail_send_from_for(user_id: str) -> Optional[str]:
+    """The Send-as alias the agent wants on every outgoing message, or
+    None to use the authenticated Gmail account. Caller is responsible
+    for falling back gracefully — Gmail itself silently rewrites the
+    From: header if the alias isn't verified in Gmail settings, so this
+    is best-effort by design."""
+    user = get_user_by_id(user_id)
+    return (user or {}).get("gmail_send_from") or None
+
+
+def set_gmail_send_from(user_id: str, address: Optional[str]) -> None:
+    """Save (or clear) the Send-as alias. Pass None / empty to clear."""
+    addr = (address or "").strip()
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            if addr:
+                u["gmail_send_from"] = addr
+            else:
+                u.pop("gmail_send_from", None)
+            _save_users(data)
+            return
+    raise HTTPException(404, "User not found")
 
 
 def send_gmail_email(
@@ -451,7 +480,12 @@ def send_gmail_email(
         raise HTTPException(400, "Gmail not connected")
 
     access = refresh_gmail_access_token(refresh)
-    from_email = gmail_email_for(user_id) or ""
+    # Prefer the user's saved Send-as alias when present; fall back to
+    # the authenticated mailbox. Gmail silently rewrites unverified
+    # aliases, so this is best-effort by design.
+    from_email = (gmail_send_from_for(user_id)
+                  or gmail_email_for(user_id)
+                  or "")
 
     msg = EmailMessage()
     msg["To"] = to
