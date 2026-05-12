@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import auth as auth_lib
+from backend import mls_store
+from backend import mls_replicator
 from pipeline.analyze import analyze_visitor, refine_draft
 from pipeline.leads_agent import query_leads_agent
 from pipeline.identify import identify_agent_and_visitors
@@ -26,6 +28,11 @@ from pipeline.transcribe import transcribe_with_speakers
 
 SESSIONS_DIR = Path("sessions")
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+# Newsletter signup log. JSONL — one line per subscriber — so re-reading
+# is trivial and a redeploy on Render only loses entries that haven't
+# also been mirrored to the logs (see `_log_newsletter_signup`).
+NEWSLETTER_LOG = SESSIONS_DIR / "newsletter.jsonl"
 
 app = FastAPI(title="OpenHouseBoss API")
 
@@ -41,6 +48,71 @@ app.add_middleware(
 
 @app.get("/healthz")
 def healthz():
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Newsletter — pre-launch waitlist
+# --------------------------------------------------------------------------
+#
+# Foyer is invite-only for now; no one can self-serve a real agent
+# account from the marketing site. The "Request access" CTA collects an
+# email here instead, so we can ping the list when we're ready to onboard
+# the next cohort. The same endpoint backs any future "subscribe to
+# updates" surface — there's only one list.
+#
+# Storage: append a JSON line per signup to sessions/newsletter.jsonl AND
+# log to stdout. Render's ephemeral disk wipes the file on redeploy, but
+# the stdout log persists in Render's logs viewer for the dashboard
+# retention window — so signups aren't lost if I forget to copy the file
+# off before the next deploy.
+
+import json as _json_nl
+import re as _re_nl
+from pydantic import BaseModel as _BaseModel_nl
+
+# RFC-5322-ish but pragmatic: don't reject a real email over a regex
+# quibble. Just sanity-check shape and length.
+_EMAIL_RE = _re_nl.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{1,63}$")
+
+
+class NewsletterSignup(_BaseModel_nl):
+    email: str
+    # Optional free-form context — "where did you hear about us", "I'm
+    # an agent at X brokerage", etc. Capped server-side so the log
+    # doesn't get spammed.
+    note: Optional[str] = None
+    # Where the signup came from ("landing", "footer", etc.) so we can
+    # tell which CTA is converting if we add more later.
+    source: Optional[str] = "landing"
+
+
+@app.post("/newsletter/subscribe")
+def newsletter_subscribe(payload: NewsletterSignup):
+    email = (payload.email or "").strip().lower()
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Please enter a valid email.")
+    if len(email) > 320:
+        raise HTTPException(status_code=400, detail="Email too long.")
+    note = (payload.note or "").strip()[:500]
+    source = (payload.source or "landing").strip()[:32]
+    entry = {
+        "email": email,
+        "note": note or None,
+        "source": source,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    # Best-effort append. We don't surface a server error to the user
+    # if the disk is read-only — the stdout log below is the source of
+    # truth in that case.
+    try:
+        with NEWSLETTER_LOG.open("a", encoding="utf-8") as f:
+            f.write(_json_nl.dumps(entry) + "\n")
+    except OSError:
+        pass
+    # Persistent record. Show up in Render's logs viewer for a long
+    # retention window. Tag the line so it's easy to grep out.
+    print(f"[newsletter] {_json_nl.dumps(entry)}", flush=True)
     return {"ok": True}
 
 
@@ -1979,6 +2051,10 @@ def _start_scheduled_worker():
             target=_scheduled_send_worker, daemon=True, name="scheduled-send-worker"
         )
         _worker_thread.start()
+    # Replicate the MLS Grid Property feed into a local SQLite store so the
+    # iOS New-Listing form can do address autocomplete. No-ops if
+    # MLS_GRID_TOKEN isn't set.
+    mls_replicator.start()
 
 
 @app.get("/sessions/{session_id}/audio")
@@ -2146,6 +2222,90 @@ def delete_visitor(
     session["result"] = result
     _persist(session_id)
     return {"deleted_visitor": removed.get("visitor", {}).get("name"), "remaining": len(visitors)}
+
+
+# --------------------------------------------------------------------------
+# MLS Grid — address autocomplete + listing detail
+#
+# The replicator (backend/mls_replicator.py) keeps a local SQLite mirror of
+# the NWMLS Property feed in sync. These endpoints are what the iOS New
+# Listing form hits: type-ahead from /mls/autocomplete, full record from
+# /mls/property/{id} after the agent picks a suggestion.
+# --------------------------------------------------------------------------
+
+
+def _slim_property(p: dict) -> dict:
+    """Reshape a stored property row into a slim DTO the iOS Listing form
+    can map 1:1 onto its fields. Drops the heavy raw_json blob."""
+    return {
+        "listing_id":      p.get("listing_id"),
+        "address":         p.get("unparsed_address"),
+        "street_number":   p.get("street_number"),
+        "street_name":     p.get("street_name"),
+        "street_suffix":   p.get("street_suffix"),
+        "unit_number":     p.get("unit_number"),
+        "city":            p.get("city"),
+        "state":           p.get("state"),
+        "postal_code":     p.get("postal_code"),
+        "county":          p.get("county"),
+        "subdivision":     p.get("subdivision"),
+        "list_price":      p.get("list_price"),
+        "bedrooms":        p.get("bedrooms"),
+        "bathrooms_total": p.get("bathrooms_total"),
+        "living_area":     p.get("living_area"),
+        "lot_size_sqft":   p.get("lot_size_sqft"),
+        "year_built":      p.get("year_built"),
+        "latitude":        p.get("latitude"),
+        "longitude":       p.get("longitude"),
+        "photos_count":    p.get("photos_count"),
+        "public_remarks":  p.get("public_remarks"),
+        "list_agent_name": p.get("list_agent_name"),
+        "list_office_name": p.get("list_office_name"),
+        "standard_status": p.get("standard_status"),
+    }
+
+
+@app.get("/mls/autocomplete")
+def mls_autocomplete(
+    q: str,
+    limit: int = 10,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Type-ahead lookup for the iOS Listing form. Returns up to `limit`
+    active-residential matches against the FTS index over address/city/zip.
+    Suggestions are slim so the dropdown is cheap; the iOS app fetches the
+    full record from /mls/property/{id} once the agent taps one."""
+    safe_limit = max(1, min(int(limit or 10), 25))
+    results = mls_store.autocomplete(q, limit=safe_limit)
+    return {"suggestions": [_slim_property(r) for r in results]}
+
+
+@app.get("/mls/property/{listing_id}")
+def mls_property(
+    listing_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Full normalized property record for the agent's selected suggestion."""
+    prop = mls_store.get_property(listing_id)
+    if not prop:
+        raise HTTPException(404, f"Listing {listing_id} not found in local mirror")
+    slim = _slim_property(prop)
+    slim["modification_ts"] = prop.get("modification_ts")
+    return slim
+
+
+@app.get("/mls/status")
+def mls_status(current_user: dict = Depends(auth_lib.get_current_user)):
+    """Replication health for the admin/debug surface."""
+    from pipeline import mls_grid
+    mls = mls_grid.origin_system()
+    return {
+        "enabled": bool(mls_grid.token()),
+        "base_url": mls_grid.base_url(),
+        "mls": mls,
+        "state": mls_store.get_state(mls),
+        "stats": mls_store.stats(),
+    }
 
 
 WEB_DIR = Path(__file__).parent.parent / "web"

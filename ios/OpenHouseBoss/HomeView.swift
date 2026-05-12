@@ -1132,6 +1132,16 @@ struct ListingEditView: View {
     @State private var sqft: String = ""
     @FocusState private var focused: Bool
 
+    // MLS autocomplete state. `suggestions` drives the dropdown; the active
+    // `searchTask` is cancelled when the agent types again so we only ever
+    // hit the backend once per pause. `selectedListingId` non-nil = the
+    // address came from a chosen suggestion (we stop searching to prevent
+    // a flicker of stale results).
+    @State private var suggestions: [APIClient.MLSSuggestion] = []
+    @State private var searchTask: Task<Void, Never>?
+    @State private var selectedListingId: String?
+    @State private var isFetchingDetail = false
+
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
@@ -1171,8 +1181,22 @@ struct ListingEditView: View {
 
     private var form: some View {
         VStack(spacing: 10) {
-            textField("Address", text: $address, placeholder: "1936 17th Ave NE")
-                .focused($focused)
+            // Address field doubles as the MLS search input. Typing fires
+            // debounced /mls/autocomplete; tapping a suggestion auto-fills
+            // every other field from the chosen listing. Manual entry still
+            // works — just type a custom address and leave the suggestions
+            // alone.
+            VStack(spacing: 0) {
+                textField("Address", text: $address, placeholder: "Search MLS or type an address")
+                    .focused($focused)
+                    .onChange(of: address) { _, newValue in onAddressChange(newValue) }
+                if !suggestions.isEmpty {
+                    suggestionsList
+                }
+            }
+            if selectedListingId != nil {
+                mlsFilledBadge
+            }
             textField("Neighborhood", text: $neighborhood, placeholder: "Issaquah Highlands")
             numericField("Price ($)", text: $price, placeholder: "850000")
             HStack(spacing: 10) {
@@ -1182,6 +1206,152 @@ struct ListingEditView: View {
             numericField("Square feet", text: $sqft, placeholder: "1510")
         }
         .padding(.horizontal, 20)
+    }
+
+    private var suggestionsList: some View {
+        VStack(spacing: 0) {
+            ForEach(suggestions) { s in
+                Button { pickSuggestion(s) } label: { suggestionRow(s) }
+                    .buttonStyle(.plain)
+                if s.id != suggestions.last?.id {
+                    Divider().background(FoyerTheme.border)
+                }
+            }
+        }
+        .padding(.top, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(FoyerTheme.bgElev)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(FoyerTheme.border, lineWidth: 1)
+                )
+        )
+    }
+
+    private func suggestionRow(_ s: APIClient.MLSSuggestion) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(s.address ?? "Untitled listing")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(2)
+                Text(suggestionSubtitle(s))
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            Spacer(minLength: 8)
+            if let p = s.list_price {
+                Text(formatPrice(p))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    private var mlsFilledBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 11, weight: .semibold))
+            Text("Auto-filled from MLS")
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundStyle(FoyerTheme.gold)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(FoyerTheme.gold.opacity(0.12))
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func suggestionSubtitle(_ s: APIClient.MLSSuggestion) -> String {
+        var bits: [String] = []
+        if let beds = s.bedrooms, beds > 0 { bits.append("\(beds) bd") }
+        if let baths = s.bathrooms_total, baths > 0 {
+            let label = baths.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(baths))" : String(format: "%.1f", baths)
+            bits.append("\(label) ba")
+        }
+        if let sqft = s.living_area, sqft > 0 { bits.append("\(sqft.formatted()) sf") }
+        if bits.isEmpty, let city = s.city { return city }
+        return bits.joined(separator: " · ")
+    }
+
+    private func formatPrice(_ price: Int) -> String {
+        if price >= 1_000_000 {
+            let m = Double(price) / 1_000_000
+            return String(format: "$%.2fM", m).replacingOccurrences(of: ".00M", with: "M")
+        }
+        return "$\(price.formatted())"
+    }
+
+    private func onAddressChange(_ value: String) {
+        // Once the agent picks a suggestion, subsequent edits to `address`
+        // (or any other field) shouldn't re-fire the search — they're
+        // refining the auto-filled record, not searching for a new one.
+        if selectedListingId != nil {
+            return
+        }
+        searchTask?.cancel()
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2 else {
+            suggestions = []
+            return
+        }
+        searchTask = Task { @MainActor in
+            // Light debounce — fast enough to feel live, slow enough to
+            // collapse a burst of keystrokes into one network call.
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            if Task.isCancelled { return }
+            do {
+                let results = try await APIClient.shared.mlsAutocomplete(query: trimmed)
+                if Task.isCancelled { return }
+                self.suggestions = results
+            } catch {
+                self.suggestions = []
+            }
+        }
+    }
+
+    private func pickSuggestion(_ s: APIClient.MLSSuggestion) {
+        searchTask?.cancel()
+        suggestions = []
+        selectedListingId = s.listing_id
+        // Optimistic fill from the autocomplete card so the form snaps
+        // into place even before the detail fetch returns.
+        if let a = s.address { address = a }
+        if let beds = s.bedrooms { self.beds = max(0, beds) }
+        if let baths = s.bathrooms_total { self.baths = max(0, baths) }
+        if let sqft = s.living_area { self.sqft = String(sqft) }
+        if let p = s.list_price { self.price = String(p) }
+        if let city = s.city, neighborhood.isEmpty { neighborhood = city }
+        focused = false
+        isFetchingDetail = true
+        Task { @MainActor in
+            defer { isFetchingDetail = false }
+            do {
+                let full = try await APIClient.shared.mlsProperty(listingId: s.listing_id)
+                applyFullProperty(full)
+            } catch {
+                // Optimistic fill already covers the visible fields, so
+                // a failed detail fetch isn't user-fatal.
+            }
+        }
+    }
+
+    private func applyFullProperty(_ p: APIClient.MLSProperty) {
+        if let a = p.address { address = a }
+        if let p2 = p.list_price { price = String(p2) }
+        if let b = p.bedrooms { beds = max(0, b) }
+        if let b = p.bathrooms_total { baths = max(0, b) }
+        if let s = p.living_area { sqft = String(s) }
+        // Prefer subdivision (MLS-assigned neighborhood name); fall back to
+        // city if the listing is in an unsubdivided area.
+        neighborhood = (p.subdivision?.isEmpty == false ? p.subdivision : p.city) ?? neighborhood
     }
 
     private func textField(_ label: String, text: Binding<String>, placeholder: String) -> some View {

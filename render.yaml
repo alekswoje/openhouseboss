@@ -14,6 +14,18 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: "3.11"
+      # MLS Grid replication — token + base URL set in the Render dashboard
+      # (sync:false). MLS_GRID_BASE_URL switches between api.mlsgrid.com and
+      # api-demo.mlsgrid.com. MLS_DB_PATH points the SQLite mirror at the
+      # mounted disk so it survives restarts.
+      - key: MLS_GRID_TOKEN
+        sync: false
+      - key: MLS_GRID_BASE_URL
+        sync: false
+      - key: MLS_GRID_ORIGINATING_SYSTEM
+        value: nwmls
+      - key: MLS_DB_PATH
+        value: /opt/render/project/src/sessions/mls.db
     # Persistent disk mounted at <workdir>/sessions so transcripts + recorded
     # audio survive redeploys and restarts. Without this, the container's
     # filesystem is ephemeral and sessions vanish on every push.

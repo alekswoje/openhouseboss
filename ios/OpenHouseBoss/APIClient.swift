@@ -524,6 +524,78 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    // MARK: – MLS Grid (address autocomplete on the New-Listing form)
+
+    // What the backend's autocomplete dropdown serves up. All optional
+    // because demo records often arrive with bedrooms/baths/sqft missing
+    // — the UI just hides whichever stat is nil.
+    struct MLSSuggestion: Codable, Hashable, Identifiable {
+        let listing_id: String
+        let address: String?
+        let city: String?
+        let state: String?
+        let postal_code: String?
+        let list_price: Int?
+        let bedrooms: Int?
+        let bathrooms_total: Double?
+        let living_area: Int?
+        let standard_status: String?
+        let photos_count: Int?
+        var id: String { listing_id }
+    }
+
+    struct MLSProperty: Codable {
+        let listing_id: String
+        let address: String?
+        let city: String?
+        let state: String?
+        let postal_code: String?
+        let county: String?
+        let subdivision: String?
+        let list_price: Int?
+        let bedrooms: Int?
+        let bathrooms_total: Double?
+        let living_area: Int?
+        let lot_size_sqft: Double?
+        let year_built: Int?
+        let latitude: Double?
+        let longitude: Double?
+        let photos_count: Int?
+        let public_remarks: String?
+        let list_agent_name: String?
+        let list_office_name: String?
+        let standard_status: String?
+    }
+
+    // Type-ahead lookup on the New-Listing screen. Returns up to `limit`
+    // active-residential suggestions from the locally-replicated MLS feed.
+    // Caller debounces; backend FTS is fast enough that 150ms is comfortable.
+    func mlsAutocomplete(query: String, limit: Int = 10) async throws -> [MLSSuggestion] {
+        var comps = URLComponents(url: Config.backendURL.appendingPathComponent("mls/autocomplete"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct Wrapper: Codable { let suggestions: [MLSSuggestion] }
+        return try JSONDecoder().decode(Wrapper.self, from: data).suggestions
+    }
+
+    // Full normalized property record for an agent-selected suggestion.
+    func mlsProperty(listingId: String) async throws -> MLSProperty {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("mls/property/\(listingId)"))
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(MLSProperty.self, from: data)
+    }
+
     // MARK: – Contact verification (kiosk form)
 
     struct ContactCheck: Codable {
