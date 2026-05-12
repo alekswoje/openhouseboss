@@ -49,19 +49,16 @@ const useStaggered = (schedule) => {
 };
 
 // iPhone — agent recording
+// iPhone Leads detail — mirrors the current iPhone UI: bottom tab bar,
+// lead detail with avatar + name + pill row, "What we heard" preview,
+// drafted follow-up, and the Refine/Send action row.
 const HDIPhone = () => {
-  const [rec, setRec] = useHD(true);
-  const [sel, setSel] = useHD(0);
-  const guests = [
-    { n: 'Sarah Chen',     t: '2:05', k: 'buyer',   m: 'Pre-approved · close 60d' },
-    { n: 'Mike Rodriguez', t: '2:22', k: 'seller',  m: 'Wants comp analysis' },
-    { n: 'Jennifer Park',  t: '2:35', k: 'browser', m: 'Lease runs to 2027' },
-  ];
-  const shown = useStaggered([700, 1700, 2700]);
-  const tickSec = useCount(0, 1000, 0);
-  const totalSec = 14 * 60 + 22 + tickSec;
-  const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
-  const ss = String(totalSec % 60).padStart(2, '0');
+  const pillsIn = useDelayed(0, 1, 600);
+  const draftIn = useDelayed(0, 1, 1100);
+  const [bodyTyped] = useTyped(
+    "Sarah — great meeting you today. I'd love to share the West Side comps with you. Want me to send three close to your range plus a Saturday tour slot?",
+    1600, 22
+  );
 
   return (
     <div style={{
@@ -73,77 +70,173 @@ const HDIPhone = () => {
       <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', width: 96, height: 30, borderRadius: 20, background: '#000', zIndex: 10 }} />
       <div style={{
         width: '100%', height: '100%', borderRadius: 42, overflow: 'hidden',
-        background: 'var(--bg-card)', padding: '54px 22px 26px',
+        background: 'var(--bg-deep)', padding: '50px 16px 14px',
         position: 'relative', display: 'flex', flexDirection: 'column',
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-dim)', marginTop: -8 }}>
-          <span className="mono">2:14</span>
+        {/* Status bar */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--cream)', marginTop: -4 }}>
+          <span className="mono">13:18</span>
           <span className="mono">●●●●●</span>
         </div>
-        <div className="eyebrow" style={{ marginTop: 18, color: rec ? 'var(--gold)' : 'var(--text-muted)' }}>
-          {rec ? `● LIVE · ${mm}:${ss}` : '○ PAUSED'}
+
+        {/* Back to Leads chip */}
+        <div style={{ marginTop: 10 }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            padding: '5px 9px', borderRadius: 999,
+            background: 'rgba(255,255,255,0.06)',
+            fontSize: 10, color: 'var(--cream-dim)',
+          }}>
+            <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="10 4 6 8 10 12"/></svg>
+            Leads
+          </span>
         </div>
-        <div className="serif" style={{ fontSize: 26, lineHeight: 1.05, marginTop: 8, color: 'var(--cream)' }}>
-          412 W 78th St<br/>
-          <span className="serif-it" style={{ color: 'var(--gold)' }}>Open house</span>
+
+        {/* Visitor header row: avatar + name + delete */}
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: '50%',
+            background: 'var(--bg-elev)', color: 'var(--gold)',
+            display: 'grid', placeItems: 'center',
+            fontFamily: 'var(--sans)', fontWeight: 600, fontSize: 14,
+          }}>S</div>
+          <div className="serif" style={{ flex: 1, fontSize: 22, color: 'var(--cream)', letterSpacing: '-0.02em' }}>
+            Sarah Chen
+          </div>
+          <span style={{
+            padding: '5px 8px', borderRadius: 999,
+            background: 'rgba(202, 80, 71, 0.14)',
+            color: 'var(--terracotta)',
+            fontSize: 10, fontWeight: 600,
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+          </span>
         </div>
-        <div style={{ marginTop: 18, padding: '14px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
-          <div className="eyebrow" style={{ fontSize: 9 }}>{rec ? 'NOW RECORDING' : 'TAP TO RESUME'}</div>
-          <div style={{ display: 'flex', gap: 2.5, alignItems: 'center', height: 32, marginTop: 10 }}>
-            {Array.from({ length: 30 }).map((_, i) => (
-              <div key={i} style={{
-                width: 3, height: 4 + Math.abs(Math.sin(i * 0.7)) * 26, background: 'var(--gold)',
-                opacity: rec ? (0.35 + (i % 3) * 0.22) : 0.15,
-                animation: rec ? `hbar${i % 4} 0.9s ease-in-out ${i * 50}ms infinite alternate` : 'none',
-                transition: 'opacity .4s',
-              }}></div>
-            ))}
+
+        {/* Pill row — FlowLayout style */}
+        <div style={{
+          marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap',
+          opacity: pillsIn, transform: pillsIn ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'opacity .4s ease, transform .4s ease',
+        }}>
+          <span style={{
+            padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 500,
+            color: 'var(--gold)', background: 'rgba(196,162,82,0.14)',
+          }}>Buyer</span>
+          <span style={{
+            padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 500,
+            color: 'var(--cream-dim)', background: 'rgba(255,255,255,0.06)',
+          }}>Score 94/100</span>
+          <span style={{
+            padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 500,
+            color: 'var(--sage)', background: 'rgba(134,166,128,0.14)',
+          }}>Replied</span>
+        </div>
+
+        {/* What we heard */}
+        <div style={{ marginTop: 14 }}>
+          <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.1em' }}>WHAT WE HEARD</div>
+          <p style={{
+            margin: '5px 0 0',
+            fontSize: 11, lineHeight: 1.5, color: 'var(--cream-dim)',
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}>
+            Pre-approved to $1.4M. Sold her Queens place last year. Drawn by the kitchen…
+          </p>
+        </div>
+
+        {/* Drafted follow-up */}
+        <div style={{
+          marginTop: 14, padding: '10px 11px', flex: 1,
+          borderRadius: 10,
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(196,162,82,0.22)',
+          opacity: draftIn,
+          transform: draftIn ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'opacity .5s ease, transform .5s ease',
+        }}>
+          <div className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.1em' }}>DRAFTED FOLLOW-UP</div>
+          <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, color: 'var(--cream)' }}>
+            {bodyTyped}
+            <span style={{
+              display: 'inline-block', width: 5, height: 11, marginLeft: 1,
+              background: 'var(--gold)', verticalAlign: '-1px',
+              animation: 'hdBlink 0.9s steps(2) infinite',
+            }} />
           </div>
         </div>
-        <div className="eyebrow" style={{ fontSize: 9, marginTop: 16 }}>GUESTS · {shown}</div>
-        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
-          {guests.map((g, i) => (
-            <button key={g.n} onClick={() => setSel(i)} style={{
-              all: 'unset', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 6px', borderBottom: '1px solid var(--hairline)',
-              background: sel === i ? 'var(--gold-soft)' : 'transparent',
-              margin: '0 -6px',
-              opacity: i < shown ? 1 : 0,
-              transform: i < shown ? 'translateY(0)' : 'translateY(8px)',
-              transition: 'opacity .5s ease, transform .5s ease, background .2s',
+
+        {/* Action row */}
+        <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{
+            padding: '6px 9px', borderRadius: 999,
+            background: 'rgba(255,255,255,0.05)',
+            color: 'var(--cream-dim)', fontSize: 10, fontWeight: 500,
+          }}>Archive</span>
+          <span style={{ flex: 1 }} />
+          <span style={{
+            padding: '6px 9px', borderRadius: 999,
+            background: 'rgba(255,255,255,0.05)',
+            color: 'var(--cream-dim)', fontSize: 10, fontWeight: 500,
+          }}>Schedule</span>
+          <span style={{
+            padding: '6px 11px', borderRadius: 999,
+            background: 'var(--gold)', color: 'var(--ink-on-gold)',
+            fontSize: 10.5, fontWeight: 600,
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>
+            Send
+          </span>
+        </div>
+
+        {/* Bottom tab bar — floating capsule */}
+        <div style={{
+          marginTop: 10,
+          background: 'rgba(20,20,22,0.96)',
+          border: '1px solid var(--hairline)',
+          borderRadius: 18,
+          padding: '6px 4px',
+          display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
+          boxShadow: '0 8px 16px rgba(0,0,0,0.4)',
+        }}>
+          {[
+            { i: 'home',  l: 'Home' },
+            { i: 'rec',   l: 'Record' },
+            { i: 'kiosk', l: 'Kiosk' },
+            { i: 'leads', l: 'Leads', active: true },
+            { i: 'more',  l: 'More' },
+          ].map(t => (
+            <div key={t.i} style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              gap: 2, padding: '4px 0',
+              color: t.active ? 'var(--gold)' : 'var(--text-muted)',
             }}>
-              <div>
-                <div style={{ fontSize: 13, color: 'var(--cream)' }}>{g.n}</div>
-                <div className="mono" style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.08em' }}>
-                  SIGNED · {g.t}
-                </div>
-              </div>
-              <span className={`tag tag-${g.k}`} style={{ fontSize: 8, padding: '2px 7px 3px' }}>
-                <span className="tag-dot" style={{ width: 4, height: 4 }} />{g.k}
-              </span>
-            </button>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={t.active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6">
+                {t.i === 'home'  && <path d="M3 11 12 3l9 8v9a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2v-9Z"/>}
+                {t.i === 'rec'   && <><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></>}
+                {t.i === 'kiosk' && <><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8M12 18v4"/></>}
+                {t.i === 'leads' && <><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2.5" fill="currentColor"/></>}
+                {t.i === 'more'  && <><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></>}
+              </svg>
+              <span style={{ fontSize: 7, fontWeight: 500 }}>{t.l}</span>
+            </div>
           ))}
         </div>
-        <button onClick={() => setRec(r => !r)} style={{
-          all: 'unset', cursor: 'pointer', marginTop: 16,
-          height: 48, borderRadius: 24,
-          background: rec ? 'var(--gold)' : 'transparent',
-          border: '1px solid ' + (rec ? 'var(--gold)' : 'var(--border-strong)'),
-          color: rec ? '#1a1610' : 'var(--cream)',
-          display: 'grid', placeItems: 'center',
-          fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 500,
-          letterSpacing: '0.16em', textTransform: 'uppercase',
-        }}>{rec ? 'Stop & Save' : 'Resume Recording'}</button>
-        <div style={{ position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)', width: 110, height: 4, borderRadius: 100, background: 'rgba(255,255,255,0.3)' }} />
+
+        <div style={{ position: 'absolute', bottom: 5, left: '50%', transform: 'translateX(-50%)', width: 110, height: 4, borderRadius: 100, background: 'rgba(255,255,255,0.3)' }} />
       </div>
     </div>
   );
 };
 
-// iPad LANDSCAPE — agent home (composition of IPadAgentHome)
+// iPad LANDSCAPE — agent Home matching the real IPadHome:
+//   side rail (Home active) + greeting + hero listing card with photo
+//   + recent sessions feed below.
 const HDIPad = () => {
-  const inSession = useStaggered([900, 1700, 2600]);
+  const sessionsIn = useStaggered([900, 1500, 2100]);
   const tickSec = useCount(0, 1000, 0);
   const guestsIn = Math.min(6, 4 + Math.floor(tickSec / 4));
 
@@ -211,214 +304,135 @@ const HDIPad = () => {
           }}>JH</div>
         </div>
 
-        {/* MAIN */}
-        <div style={{ padding: '22px 26px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {/* greeting + status */}
-          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-            <div>
-              <div className="eyebrow" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 9 }}>
-                <span style={{ display: 'inline-block', width: 16, height: 1, background: 'var(--gold)' }}></span>
-                Saturday · May 10 · 2:14 PM
-              </div>
-              <h1 className="serif" style={{ fontSize: 30, lineHeight: 1, margin: '8px 0 0', fontWeight: 500 }}>
-                Good afternoon, <span className="serif-it" style={{ color: 'var(--gold)' }}>John.</span>
-              </h1>
+        {/* MAIN — mirrors IPadHome: greeting, hero listing card with
+            photo, recent sessions feed. */}
+        <div style={{ padding: '24px 30px 0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {/* Greeting */}
+          <div>
+            <div className="eyebrow" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+              SATURDAY, MAY 10
             </div>
-            <div className="mono" style={{
-              fontSize: 9, letterSpacing: '0.14em', color: 'var(--sage)',
-              padding: '6px 10px', border: '1px solid var(--sage)', borderRadius: 999,
-              background: 'var(--sage-soft)',
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--sage)' }}></span>
-              MLS · LIVE
-            </div>
+            <h1 className="serif" style={{ fontSize: 30, lineHeight: 1, margin: '4px 0 0', fontWeight: 500, letterSpacing: '-0.02em' }}>
+              Good afternoon, <span className="serif-it" style={{ color: 'var(--gold)' }}>John</span>
+            </h1>
           </div>
 
-          {/* hero row */}
-          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
+          {/* HERO LISTING CARD — big photo + address + price + Sign-in / Record */}
+          <div style={{
+            marginTop: 20, position: 'relative', overflow: 'hidden',
+            borderRadius: 16, minHeight: 240,
+            background:
+              'linear-gradient(180deg, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 70%, rgba(0,0,0,0.92) 100%),' +
+              'linear-gradient(115deg, #2c3340 0%, #1a1f29 40%, #0e1218 100%)',
+          }}>
+            {/* Tiled-photo texture */}
             <div style={{
-              position: 'relative', overflow: 'hidden',
+              position: 'absolute', inset: 0,
+              backgroundImage:
+                'repeating-linear-gradient(45deg, rgba(196,162,82,0.04) 0 14px, transparent 14px 28px)',
+              opacity: 0.7,
+            }} />
+            {/* Faux house silhouette */}
+            <div style={{
+              position: 'absolute', top: 24, right: 28, width: 220, height: 130,
+              opacity: 0.18,
               background:
-                'linear-gradient(95deg, rgba(10,14,19,0.0) 35%, rgba(10,14,19,0.85) 90%),' +
-                'repeating-linear-gradient(135deg, transparent 0 12px, rgba(201,168,106,0.05) 12px 13px),' +
-                'linear-gradient(135deg, #2a2218 0%, #3a2e1f 50%, #1d1812 100%)',
-              border: '1px solid var(--border-strong)', borderRadius: 12,
-              padding: '20px 22px', minHeight: 140,
-              display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-            }}>
-              <div style={{ maxWidth: 280 }}>
-                <div className="eyebrow" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9 }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--terracotta)' }}></span>
-                  Hosting now · 412 W 78th St
-                </div>
-                <h2 className="serif" style={{ fontSize: 26, lineHeight: 1, margin: '8px 0 0', fontWeight: 500 }}>
-                  Launch the <span className="serif-it" style={{ color: 'var(--gold)' }}>sign-in form</span>
-                </h2>
-                <p style={{ fontSize: 11, color: 'var(--cream-dim)', marginTop: 6, lineHeight: 1.5 }}>
-                  Today's listing pulls from MLS · photos rotate during sign-in.
-                </p>
-              </div>
-              <button style={{
-                padding: '12px 18px', background: 'var(--gold)', color: '#1a1610',
-                border: 'none', borderRadius: 8,
-                fontFamily: 'var(--sans)', fontSize: 11, fontWeight: 500, letterSpacing: '0.04em',
-                textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center', gap: 8,
-              }}>
-                Launch
-                <span className="serif-it" style={{ fontSize: 14, textTransform: 'none' }}>→</span>
-              </button>
-            </div>
-            <div style={{
-              border: '1px solid var(--hairline)', borderRadius: 12,
-              background: 'var(--bg-card)', padding: '18px 20px', minHeight: 140,
-              display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-            }}>
-              <div>
-                <div className="eyebrow" style={{ color: 'var(--terracotta)', fontSize: 9 }}>Quick capture</div>
-                <h3 className="serif" style={{ fontSize: 22, lineHeight: 1, margin: '8px 0 0', fontWeight: 500 }}>
-                  Start <span className="serif-it" style={{ color: 'var(--terracotta)' }}>recording</span>
-                </h3>
-                <p style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.5 }}>
-                  No sign-in — just listen.
-                </p>
-              </div>
-              <button style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                background: 'transparent', border: '1px solid var(--terracotta)',
-                color: 'var(--terracotta)', borderRadius: 8,
-                fontFamily: 'var(--sans)', fontSize: 10.5,
-                fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase',
-              }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--terracotta)', boxShadow: '0 0 0 3px rgba(196,102,61,0.18)' }}></span>
-                Tap to record
-              </button>
-            </div>
-          </div>
-
-          {/* Today's open house listing card */}
-          <div style={{ marginTop: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div>
-                <div className="eyebrow" style={{ fontSize: 9 }}>Your open house · pulled from MLS</div>
-                <div className="serif" style={{ fontSize: 17, marginTop: 4 }}>
-                  Hosting today <span className="serif-it" style={{ color: 'var(--text-dim)' }}>2–4 PM</span>
-                </div>
-              </div>
-              <a className="serif-it" style={{ fontSize: 11, color: 'var(--gold)' }}>All listings →</a>
-            </div>
-
-            <div style={{
-              background: 'var(--bg-card)', borderColor: 'var(--gold)',
-              border: '1px solid var(--gold)', boxShadow: '0 0 0 1px var(--gold-soft)',
-              borderRadius: 12, display: 'grid', gridTemplateColumns: '1.3fr 1fr',
-              minHeight: 120, overflow: 'hidden',
-            }}>
+                'linear-gradient(180deg, transparent 30%, rgba(196,162,82,0.4) 100%)',
+              clipPath: 'polygon(8% 100%, 8% 50%, 50% 12%, 92% 50%, 92% 100%)',
+            }} />
+            <div style={{ position: 'absolute', inset: 0, padding: 22, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
               <div style={{
-                position: 'relative',
-                background:
-                  'linear-gradient(135deg, rgba(10,14,19,0.0) 50%, rgba(10,14,19,0.85) 100%),' +
-                  'repeating-linear-gradient(135deg, transparent 0 10px, rgba(201,168,106,0.05) 10px 11px),' +
-                  'linear-gradient(135deg, #3a2e1f 0%, #1d1812 100%)',
-                padding: '12px 14px',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                fontSize: 9, letterSpacing: '0.16em', fontFamily: 'var(--mono)',
+                color: '#fff', textTransform: 'uppercase',
+                marginBottom: 8,
               }}>
-                <span style={{
-                  fontFamily: 'var(--mono)', fontSize: 8, letterSpacing: '0.18em',
-                  color: 'var(--terracotta)',
-                  padding: '3px 7px', background: 'rgba(10,14,19,0.7)', backdropFilter: 'blur(6px)',
-                  border: '1px solid var(--terracotta)',
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                }}>
-                  <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--terracotta)' }}></span>
-                  HOSTING
-                </span>
-                <div style={{
-                  position: 'absolute', bottom: 10, left: 12, right: 12,
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-                }}>
-                  <div style={{ display: 'flex', gap: 3 }}>
-                    {[0,1,2,3].map(d => (
-                      <span key={d} style={{ width: 12, height: 2, background: d === 0 ? 'var(--gold)' : 'rgba(235,229,214,0.25)' }}></span>
-                    ))}
-                  </div>
-                  <span className="mono" style={{ fontSize: 7, letterSpacing: '0.16em', color: 'rgba(235,229,214,0.45)' }}>
-                    MLS · 4072281
-                  </span>
-                </div>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--terracotta)', boxShadow: '0 0 8px var(--terracotta)' }} />
+                HOSTING TODAY
               </div>
-              <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div className="serif" style={{ fontSize: 15, lineHeight: 1.1 }}>412 W 78th St</div>
-                <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-muted)', letterSpacing: '0.10em' }}>
-                  UPPER WEST SIDE · 3 / 2.5 / 1,840
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 4 }}>
-                  <div className="serif" style={{ fontSize: 16, color: 'var(--gold)' }}>$1,295,000</div>
-                  <div className="mono" style={{ fontSize: 8, color: 'var(--text-dim)', letterSpacing: '0.10em' }}>2–4 PM</div>
-                </div>
-                <div style={{
-                  marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--hairline)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                }}>
-                  <span className="mono" style={{ fontSize: 8, color: 'var(--sage)', letterSpacing: '0.10em' }}>
-                    {guestsIn} SIGNED IN
+              <div className="serif" style={{ fontSize: 28, color: '#fff', lineHeight: 1.05, letterSpacing: '-0.02em' }}>
+                412 W 78th St
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 14, gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+                  <span className="serif" style={{ fontSize: 16, color: 'var(--gold)', fontWeight: 500 }}>$1.29M</span>
+                  <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)' }}>
+                    3 Beds · 2.5 Baths · 1,840 SF
                   </span>
-                  <a className="serif-it" style={{ fontSize: 11, color: 'var(--gold)' }}>Launch →</a>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button style={{
+                    padding: '8px 14px',
+                    background: 'rgba(255,255,255,0.12)', color: '#fff',
+                    border: 0, borderRadius: 999,
+                    fontFamily: 'var(--sans)', fontSize: 11, fontWeight: 500,
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 11a4 4 0 1 0-8 0v3"/><path d="M5 14h14v6H5z"/></svg>
+                    Sign-in
+                  </button>
+                  <button style={{
+                    padding: '8px 14px',
+                    background: 'var(--gold)', color: 'var(--ink-on-gold)',
+                    border: 0, borderRadius: 999,
+                    fontFamily: 'var(--sans)', fontSize: 11, fontWeight: 600,
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="6" y1="12" x2="6" y2="12"/><path d="M3 12c0-3 1-6 3-6m15 6c0-3-1-6-3-6M3 12c0 3 1 6 3 6m15-6c0 3-1 6-3 6"/></svg>
+                    Record
+                  </button>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* recordings & leads — compact row */}
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div>
-                <div className="eyebrow" style={{ fontSize: 9 }}>Recordings & leads</div>
-                <div className="serif" style={{ fontSize: 14, marginTop: 2 }}>
-                  <span className="serif-it" style={{ color: 'var(--terracotta)' }}>8 follow-ups</span> ready
-                </div>
-              </div>
-              <a className="serif-it" style={{ fontSize: 11, color: 'var(--gold)' }}>All sessions →</a>
+          {/* RECENT SESSIONS feed — matches IPadHome session rows */}
+          <div style={{ marginTop: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+              <h2 className="serif" style={{ fontSize: 18, fontWeight: 500, color: 'var(--cream)', margin: 0 }}>
+                Recent sessions
+              </h2>
+              <span className="mono" style={{ fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+                {guestsIn} TOTAL
+              </span>
             </div>
-            <div style={{ border: '1px solid var(--hairline)', borderRadius: 10, background: 'var(--bg-card)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {[
-                { addr: '301 E 79th St',       when: 'YESTERDAY · 3:14 PM', dur: '54 min', leads: 8,  hot: 2, ready: 5, sent: 1 },
-                { addr: '212 W End · #6F',     when: 'THU · 5:02 PM',       dur: '38 min', leads: 4,  hot: 1, ready: 3, sent: 0 },
-                { addr: '88 Greenwich St',     when: 'WED · 1:22 PM',       dur: '1 h 12', leads: 11, hot: 4, ready: 0, sent: 11 },
+                { addr: '301 E 79th St',   when: 'Yesterday', leads: 8 },
+                { addr: '212 W End · #6F', when: '2 days ago', leads: 4 },
+                { addr: '88 Greenwich St', when: '4 days ago', leads: 11 },
               ].map((s, i) => (
                 <div key={s.addr} style={{
-                  display: 'grid', gridTemplateColumns: '1.4fr 0.6fr 0.5fr 1fr 1fr 0.4fr',
-                  gap: 10, alignItems: 'center',
-                  padding: '8px 14px', borderTop: i ? '1px solid var(--hairline)' : 'none',
-                  opacity: i < inSession ? 1 : 0,
-                  transform: i < inSession ? 'translateY(0)' : 'translateY(6px)',
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px',
+                  background: 'rgba(255,255,255,0.04)',
+                  borderRadius: 12,
+                  opacity: i < sessionsIn ? 1 : 0,
+                  transform: i < sessionsIn ? 'translateY(0)' : 'translateY(6px)',
                   transition: 'opacity .4s ease, transform .4s ease',
                 }}>
-                  <div>
-                    <div className="serif" style={{ fontSize: 12 }}>{s.addr}</div>
-                    <div className="mono" style={{ fontSize: 7.5, color: 'var(--text-muted)', letterSpacing: '0.10em', marginTop: 2 }}>
-                      {s.when}
+                  {/* Thumb */}
+                  <div style={{
+                    width: 56, height: 40, borderRadius: 8,
+                    background: 'linear-gradient(135deg, #20262f, #0c0e12)',
+                    display: 'grid', placeItems: 'center',
+                    color: 'rgba(196,162,82,0.55)',
+                  }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M3 12c0-3 1-6 3-6m15 6c0-3-1-6-3-6M3 12c0 3 1 6 3 6m15-6c0 3-1 6-3 6"/>
+                    </svg>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div className="serif" style={{ fontSize: 14, color: 'var(--cream)' }}>{s.addr}</div>
+                    <div style={{ display: 'flex', gap: 6, fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+                      <span>{s.when}</span>
+                      <span>·</span>
+                      <span>{s.leads} leads</span>
                     </div>
                   </div>
-                  <div className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.08em' }}>{s.dur}</div>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                    <span className="serif" style={{ fontSize: 16, color: 'var(--cream)' }}>{s.leads}</span>
-                    <span className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.10em' }}>LEADS</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    {s.hot > 0 && <span className="tag tag-buyer" style={{ fontSize: 7, padding: '1.5px 5px' }}><span className="tag-dot"></span>{s.hot} HOT</span>}
-                    {s.ready > 0 && <span className="tag tag-seller" style={{ fontSize: 7, padding: '1.5px 5px' }}><span className="tag-dot"></span>{s.ready} READY</span>}
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', height: 2, background: 'var(--hairline)', overflow: 'hidden' }}>
-                      <span style={{ width: (s.sent / s.leads * 100) + '%', background: 'var(--sage)' }}></span>
-                      <span style={{ width: (s.ready / s.leads * 100) + '%', background: 'var(--gold)' }}></span>
-                      <span style={{ width: (s.hot / s.leads * 100) + '%', background: 'var(--terracotta)' }}></span>
-                    </div>
-                    <div className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.10em', marginTop: 3 }}>
-                      {s.sent}/{s.leads} SENT
-                    </div>
-                  </div>
-                  <a className="serif-it" style={{ fontSize: 11, color: 'var(--gold)', textAlign: 'right' }}>Open →</a>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                    <polyline points="9 6 15 12 9 18"/>
+                  </svg>
                 </div>
               ))}
             </div>
@@ -429,31 +443,40 @@ const HDIPad = () => {
   );
 };
 
-// Laptop — dashboard
+// Laptop — web Leads inbox mirroring the actual /#/leads page: the new
+// sidebar (Home / Kiosk / Sessions / Leads / Offers / Listings), a lead
+// list on the left, and a focused lead detail on the right with the
+// draft + Refine-with-AI bar.
 const HDLaptop = () => {
   const [sel, setSel] = useHD(0);
   const guests = [
-    { n: 'Sarah Chen',     k: 'buyer',   sub: 'pre-approved $1.4M',
-      sum: 'Actively searching the West Side. Sold her Queens place last year. Drawn by the kitchen. Pre-approved to $1.4M, ready to close in 60 days.',
-      tags: ['Pre-approved $1.4M','Close 60d','3+ bedrooms'] },
-    { n: 'Mike Rodriguez', k: 'seller',  sub: 'wants comp analysis',
-      sum: 'Lives two blocks away. 15 years in his home. Kids off to college, considering downsizing in six months. Requested a complimentary comp.',
-      tags: ['Owner 15 yrs','Downsizing 6mo','Wants comp'] },
-    { n: 'Jennifer Park',  k: 'browser', sub: 'curious renter',
-      sum: 'Local renter, lease through 2027. Loves the neighborhood but undecided. Open to low-pressure listing updates.',
-      tags: ['Lease 2027','No urgency','Curious'] },
+    { n: 'Sarah Chen',     k: 'buyer',   sub: 'Pre-approved $1.4M', score: 94,
+      sum: 'Actively searching the West Side. Sold her Queens place last year. Drawn by the kitchen. Pre-approved to $1.4M, ready to close in 60 days.' },
+    { n: 'Mike Rodriguez', k: 'seller',  sub: 'Wants comp analysis', score: 76,
+      sum: 'Lives two blocks away. 15 years in his home. Kids off to college, considering downsizing in six months. Requested a complimentary comp.' },
+    { n: 'Jennifer Park',  k: 'browser', sub: 'Curious renter', score: 38,
+      sum: 'Local renter, lease through 2027. Loves the neighborhood but undecided. Open to low-pressure listing updates.' },
   ];
   const g = guests[sel];
   const shownGuests = useStaggered([400, 900, 1400]);
   const detailIn = useDelayed(0, 1, 1700);
   const [bodyTyped] = useTyped(
     g.k === 'buyer'
-      ? 'It was great meeting you today at the open house. I love how prepared you and Tom are — pre-approved and ready in 60 days is exactly the position to be in for 412 W 78th. I’ve attached three comps from the block.'
+      ? "Sarah — great meeting you today. I'd love to share three comps from the block plus a private-showing slot for Saturday morning. Want me to send them over?"
       : g.k === 'seller'
-      ? "It was great meeting you today. I'd love to put together a complimentary comparative market analysis for your place on Riverside — no obligations, just real numbers from this quarter."
-      : 'It was great meeting you today. Totally understand you’re in the early stages — there’s no rush. I’ll send a quiet listing update once a week, and you can unsubscribe with one tap.',
-    2600, 18
+      ? "Mike — great meeting you today. I'd love to put together a complimentary CMA for your place — no obligations, just real numbers from this quarter."
+      : "Jennifer — great meeting you today. Totally understand you're early. I'll send a quiet listing update once a week — unsubscribe with one tap.",
+    1800, 22
   );
+
+  const navItems = [
+    { i: 'home',  l: 'Home' },
+    { i: 'kiosk', l: 'Kiosk' },
+    { i: 'sess',  l: 'Sessions' },
+    { i: 'leads', l: 'Leads', active: true },
+    { i: 'off',   l: 'Offers' },
+    { i: 'list',  l: 'Listings' },
+  ];
 
   return (
     <div style={{ width: 880, position: 'relative' }}>
@@ -468,80 +491,170 @@ const HDLaptop = () => {
         <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 110, height: 9, background: '#000', borderRadius: '0 0 8px 8px' }} />
         <div style={{
           width: '100%', height: '100%', overflow: 'hidden',
-          background: 'var(--bg)', border: '1px solid var(--hairline)',
+          background: 'var(--bg-deep)', border: '1px solid var(--hairline)',
           display: 'flex', flexDirection: 'column',
         }}>
+          {/* Browser chrome */}
           <div style={{
             padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 14,
-            borderBottom: '1px solid var(--hairline)', background: 'var(--bg-deep)',
+            borderBottom: '1px solid var(--hairline)', background: 'rgba(0,0,0,0.4)',
           }}>
             <div style={{ display: 'flex', gap: 6 }}>
               {['#3a3328','#3a3328','#3a3328'].map((c, i) => (
                 <span key={i} style={{ width: 10, height: 10, borderRadius: '50%', background: c }} />
               ))}
             </div>
-            <Crest size={14} />
             <div style={{ flex: 1 }} />
             <span className="mono" style={{ fontSize: 10, letterSpacing: '0.16em', color: 'var(--text-muted)' }}>
-              app.foyer.house / sessions / 412-w-78
+              foyer.house /#/leads
             </span>
           </div>
-          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '180px 1fr', minHeight: 0 }}>
-            <div style={{ borderRight: '1px solid var(--hairline)', padding: '14px 12px', background: 'var(--bg-deep)' }}>
-              <div className="eyebrow" style={{ fontSize: 9, marginBottom: 6 }}>SAT MAY 10</div>
-              <div className="serif" style={{ fontSize: 15, color: 'var(--cream)', lineHeight: 1.1 }}>412 W 78th St</div>
-              <div className="mono" style={{ fontSize: 8, color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: 3 }}>1H 47M · 3 GUESTS</div>
-              <div style={{ height: 1, background: 'var(--hairline)', margin: '14px 0' }} />
-              <div className="eyebrow" style={{ fontSize: 8, marginBottom: 6 }}>GUESTS</div>
-              {guests.map((gg, i) => (
-                <button key={gg.n} onClick={() => setSel(i)} style={{
-                  all: 'unset', cursor: 'pointer', display: 'block',
-                  padding: '8px 10px', margin: '0 -10px',
-                  background: sel === i ? 'var(--gold-soft)' : 'transparent',
-                  borderLeft: sel === i ? '2px solid var(--gold)' : '2px solid transparent',
-                  width: 'calc(100% + 20px)', boxSizing: 'border-box',
-                  opacity: i < shownGuests ? 1 : 0,
-                  transform: i < shownGuests ? 'translateX(0)' : 'translateX(-8px)',
-                  transition: 'opacity .45s ease, transform .45s ease, background .2s',
-                }}>
-                  <div style={{ fontSize: 11, color: 'var(--cream)' }}>{gg.n}</div>
-                  <div className="mono" style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.06em' }}>{gg.sub}</div>
-                </button>
-              ))}
-            </div>
+
+          {/* App: sidebar + main */}
+          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '140px 1fr', minHeight: 0 }}>
+            {/* SIDEBAR — new web nav */}
             <div style={{
-              padding: '18px 22px', minHeight: 0, overflow: 'hidden',
-              opacity: detailIn,
-              transform: detailIn ? 'translateY(0)' : 'translateY(8px)',
-              transition: 'opacity .55s ease, transform .55s ease',
+              borderRight: '1px solid var(--hairline)',
+              padding: '12px 8px',
+              background: 'rgba(255,255,255,0.02)',
+              display: 'flex', flexDirection: 'column',
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div className="eyebrow" style={{ fontSize: 9 }}>GUEST</div>
-                  <div className="serif" style={{ fontSize: 24, color: 'var(--cream)', marginTop: 4 }}>{g.n}</div>
-                </div>
-                <span className={`tag tag-${g.k}`} style={{ fontSize: 9, padding: '3px 9px 4px' }}>
-                  <span className="tag-dot" style={{ width: 5, height: 5 }} />{g.k}
-                </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px 14px', borderBottom: '1px solid var(--hairline)' }}>
+                <Crest size={11} />
               </div>
-              <p style={{ fontSize: 12, color: 'var(--cream-dim)', lineHeight: 1.6, marginTop: 12 }}>{g.sum}</p>
-              <div style={{ display: 'flex', gap: 5, marginTop: 10, flexWrap: 'wrap' }}>
-                {g.tags.map(t => (
-                  <span key={t} className="mono" style={{
-                    fontSize: 9, letterSpacing: '0.05em',
-                    padding: '3px 7px', border: '1px solid var(--hairline)', color: 'var(--text-dim)',
-                  }}>{t}</span>
+              <div className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.16em', padding: '12px 10px 6px' }}>
+                OPEN HOUSE
+              </div>
+              {navItems.slice(0, 2).map(it => (
+                <NavRow key={it.i} item={it} />
+              ))}
+              <div className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.16em', padding: '12px 10px 6px' }}>
+                LIBRARY
+              </div>
+              {navItems.slice(2).map(it => (
+                <NavRow key={it.i} item={it} />
+              ))}
+              <div style={{ flex: 1 }} />
+              <div style={{
+                margin: '8px 4px 0', padding: '8px 10px', borderRadius: 8,
+                background: 'rgba(255,255,255,0.04)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <div style={{
+                  width: 22, height: 22, borderRadius: '50%',
+                  background: 'var(--gold-soft)', color: 'var(--gold)',
+                  display: 'grid', placeItems: 'center',
+                  fontSize: 9, fontWeight: 600,
+                }}>JH</div>
+                <span style={{ fontSize: 9.5, color: 'var(--cream)' }}>John H.</span>
+              </div>
+            </div>
+
+            {/* MAIN — Leads inbox: list + detail */}
+            <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', minHeight: 0 }}>
+              {/* Lead list */}
+              <div style={{
+                borderRight: '1px solid var(--hairline)',
+                padding: '14px 10px',
+                background: 'rgba(0,0,0,0.18)',
+                overflow: 'hidden',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px 10px' }}>
+                  <div className="serif" style={{ fontSize: 18, color: 'var(--cream)' }}>Leads</div>
+                  <span style={{
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: 'var(--gold)', color: 'var(--ink-on-gold)',
+                    display: 'grid', placeItems: 'center', fontSize: 12,
+                  }}>+</span>
+                </div>
+                <div style={{
+                  margin: '0 4px 10px', padding: '8px 10px', borderRadius: 8,
+                  background: 'rgba(196,162,82,0.08)',
+                  border: '1px solid rgba(196,162,82,0.22)',
+                  display: 'flex', alignItems: 'center', gap: 7,
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
+                  <span style={{ fontSize: 9.5, color: 'var(--cream-dim)' }}>Ask your inbox anything…</span>
+                </div>
+                {guests.map((gg, i) => (
+                  <button key={gg.n} onClick={() => setSel(i)} style={{
+                    all: 'unset', cursor: 'pointer', display: 'block',
+                    padding: '10px 10px', margin: '0 0 4px',
+                    background: sel === i ? 'rgba(255,255,255,0.06)' : 'transparent',
+                    borderRadius: 8,
+                    width: '100%', boxSizing: 'border-box',
+                    opacity: i < shownGuests ? 1 : 0,
+                    transform: i < shownGuests ? 'translateX(0)' : 'translateX(-6px)',
+                    transition: 'opacity .45s ease, transform .45s ease, background .2s',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: '50%',
+                        background: 'var(--bg-elev)', color: 'var(--gold)',
+                        display: 'grid', placeItems: 'center',
+                        fontSize: 9, fontWeight: 600,
+                      }}>{gg.n.charAt(0)}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{gg.n}</div>
+                        <div style={{ fontSize: 8.5, color: 'var(--text-dim)', marginTop: 1 }}>{gg.sub}</div>
+                      </div>
+                      <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.04em' }}>
+                        {gg.score}
+                      </span>
+                    </div>
+                  </button>
                 ))}
               </div>
-              <div style={{ height: 1, background: 'var(--hairline)', margin: '14px 0' }} />
-              <div className="eyebrow" style={{ fontSize: 9 }}>DRAFTED · SENDS TMRW 9:14 AM</div>
-              <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-deep)', border: '1px solid var(--hairline)', fontSize: 11, lineHeight: 1.55, color: 'var(--cream-dim)' }}>
-                <span className="serif-it" style={{ color: 'var(--gold)' }}>Hi {g.n.split(' ')[0]},</span><br/>
-                {bodyTyped}<span style={{
-                  display: 'inline-block', width: 6, height: 12, marginLeft: 2,
-                  background: 'var(--gold)', verticalAlign: '-1px',
-                  animation: 'hdBlink 0.9s steps(2) infinite',
-                }} />
+
+              {/* Detail */}
+              <div style={{
+                padding: '18px 22px', minHeight: 0, overflow: 'hidden',
+                opacity: detailIn,
+                transform: detailIn ? 'translateY(0)' : 'translateY(8px)',
+                transition: 'opacity .55s ease, transform .55s ease',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 30, height: 30, borderRadius: '50%',
+                    background: 'var(--bg-elev)', color: 'var(--gold)',
+                    display: 'grid', placeItems: 'center',
+                    fontSize: 11, fontWeight: 600,
+                  }}>{g.n.charAt(0)}</div>
+                  <div className="serif" style={{ fontSize: 22, color: 'var(--cream)', letterSpacing: '-0.02em' }}>{g.n}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 5, marginTop: 8, flexWrap: 'wrap' }}>
+                  <span className={`tag tag-${g.k}`} style={{ fontSize: 9, padding: '2px 7px 3px' }}>
+                    <span className="tag-dot" style={{ width: 4, height: 4 }} />{g.k}
+                  </span>
+                  <span style={{
+                    padding: '2px 7px', borderRadius: 999, fontSize: 9, fontWeight: 500,
+                    color: 'var(--cream-dim)', background: 'rgba(255,255,255,0.05)',
+                  }}>Score {g.score}/100</span>
+                </div>
+                <p style={{ fontSize: 11, color: 'var(--cream-dim)', lineHeight: 1.55, marginTop: 10,
+                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }}>
+                  {g.sum}
+                </p>
+                <div style={{ height: 1, background: 'var(--hairline)', margin: '10px 0 8px' }} />
+                <div className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.1em' }}>DRAFTED FOLLOW-UP</div>
+                <div style={{ marginTop: 5, padding: 10, background: 'rgba(0,0,0,0.3)', border: '1px solid var(--hairline)', borderRadius: 6, fontSize: 10.5, lineHeight: 1.55, color: 'var(--cream-dim)' }}>
+                  {bodyTyped}<span style={{
+                    display: 'inline-block', width: 5, height: 11, marginLeft: 1,
+                    background: 'var(--gold)', verticalAlign: '-1px',
+                    animation: 'hdBlink 0.9s steps(2) infinite',
+                  }} />
+                </div>
+                {/* Refine bar */}
+                <div style={{
+                  marginTop: 8, padding: '7px 10px',
+                  background: 'var(--gold-soft)',
+                  border: '1px solid rgba(196,162,82,0.4)',
+                  borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6"/></svg>
+                  <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.1em' }}>REFINE WITH AI</span>
+                </div>
               </div>
             </div>
           </div>
@@ -557,6 +670,32 @@ const HDLaptop = () => {
     </div>
   );
 };
+
+// Small helper for the laptop mock sidebar — one nav row matching the
+// real web AppShell visual.
+function NavRow({ item }) {
+  const icon = {
+    home:  <><path d="M3 11 12 3l9 8"/><path d="M5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10"/><path d="M9 22v-7h6v7"/></>,
+    kiosk: <><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8M12 18v4"/><circle cx="12" cy="11" r="2.5"/></>,
+    sess:  <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 14h6"/></>,
+    leads: <><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2.5" fill={item.active ? 'currentColor' : 'none'}/></>,
+    off:   <><path d="M20.59 13.41 13.41 20.59a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4"/></>,
+    list:  <><path d="M3 12 12 4l9 8"/><path d="M5 10v10h14V10"/></>,
+  }[item.i];
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '7px 10px', margin: '1px 2px', borderRadius: 6,
+      background: item.active ? 'rgba(196,162,82,0.12)' : 'transparent',
+      color: item.active ? 'var(--gold)' : 'var(--cream-dim)',
+    }}>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        {icon}
+      </svg>
+      <span style={{ fontSize: 10, fontWeight: item.active ? 500 : 400 }}>{item.l}</span>
+    </div>
+  );
+}
 
 // HeroDevices — rotating carousel
 const HeroDevices = () => {

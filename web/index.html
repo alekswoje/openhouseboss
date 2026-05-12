@@ -461,11 +461,16 @@
       const Screen = route.El;
       const isKiosk = !!route.kiosk;
 
-      // The floating route-switcher is a demo helper, not part of the
-      // product. Hide it once the agent is inside the app shell — they
-      // navigate via the sidebar there. Still show on marketing pages
-      // (Home, Sign in) for the demo flow.
-      const showRouteNav = !isKiosk && !!route.marketing;
+      // The floating route-switcher is a dev/demo helper, not part of the
+      // product. Hide it everywhere by default — marketing visitors aren't
+      // shopping a route table, they're reading the landing page. Flip it
+      // on by hitting `?dev=1` in the URL during development if you need
+      // to bounce between screens fast.
+      const devNav = (() => {
+        try { return new URLSearchParams(window.location.search).get('dev') === '1'; }
+        catch { return false; }
+      })();
+      const showRouteNav = devNav && !isKiosk;
 
       return (
         <>
