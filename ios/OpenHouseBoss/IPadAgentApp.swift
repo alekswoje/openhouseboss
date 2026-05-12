@@ -8582,7 +8582,8 @@ struct ActiveMention {
 
 func activeMention(in text: String) -> ActiveMention? {
     guard let atIdx = text.lastIndex(of: "@") else { return nil }
-    // Boundary check: `@` must follow whitespace or be at start.
+    // Boundary: `@` must follow whitespace or be at start (so a@b.com doesn't
+    // open the picker mid-email-address).
     if atIdx != text.startIndex {
         let before = text[text.index(before: atIdx)]
         if !before.isWhitespace && before != "\n" {
@@ -8590,6 +8591,15 @@ func activeMention(in text: String) -> ActiveMention? {
         }
     }
     let query = String(text[text.index(after: atIdx)...])
+    // Token closes as soon as ANY whitespace appears after `@`. This is
+    // what makes the picker behave like Cursor: tap a suggestion (the
+    // inserter appends a trailing space) and the picker disappears, so
+    // further typing isn't re-interpreted as a new query. If the agent
+    // wants a multi-word name they pick it from the list — typing it
+    // freehand isn't supported on purpose.
+    if query.contains(where: { $0.isWhitespace || $0 == "\n" }) {
+        return nil
+    }
     return ActiveMention(start: atIdx, query: query)
 }
 
@@ -8647,46 +8657,24 @@ struct MentionSuggestionsView: View {
     private var emptyRow: some View {
         let q = activeMention(in: text)?.query
                   .trimmingCharacters(in: .whitespaces) ?? ""
-        HStack(alignment: .top, spacing: 10) {
+        let message: String = {
+            if !library.loaded { return "Loading…" }
+            if library.loadError != nil { return "Couldn't load offers" }
+            if library.items.isEmpty { return "No offers or templates yet" }
+            return "No matches for @\(q)"
+        }()
+        HStack(spacing: 12) {
             Image(systemName: !library.loaded ? "hourglass" : "tag")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(FoyerTheme.creamDim)
                 .frame(width: 18)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                if !library.loaded {
-                    Text("Loading offers + templates…")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.cream)
-                } else if let err = library.loadError {
-                    Text("Couldn't load")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.terracotta)
-                    Text(err)
-                        .font(.system(size: 11))
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .lineLimit(2)
-                } else if library.items.isEmpty {
-                    Text("No offers or templates yet")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.cream)
-                    Text("Create one in the Offers tab or in Profile → Templates, then @reference it here.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .lineLimit(2)
-                } else {
-                    Text("No matches for \"@\(q)\"")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.cream)
-                    Text("Type fewer characters or pick a different name.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .lineLimit(2)
-                }
-            }
-            Spacer()
+            Text(message)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineLimit(1)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -8698,29 +8686,23 @@ struct MentionSuggestionsView: View {
     }
 
     private func row(_ item: MentionItem) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: item.kind == .offer ? "tag.fill" : "doc.text.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(item.kind == .offer ? FoyerTheme.gold : FoyerTheme.sage)
+        // Cursor-style row: icon + name, nothing else. Offer icon is
+        // gold to mirror the brand accent; templates get a subtler glyph
+        // so the two are distinguishable without a textual label.
+        HStack(spacing: 12) {
+            Image(systemName: item.kind == .offer ? "tag.fill" : "doc.text")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(item.kind == .offer
+                                 ? FoyerTheme.gold
+                                 : FoyerTheme.creamDim)
                 .frame(width: 18)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .lineLimit(1)
-                Text(item.preview)
-                    .font(.system(size: 11))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Text(item.kind == .offer ? "OFFER" : "TEMPLATE")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .tracking(0.6)
-                .foregroundStyle(FoyerTheme.textMuted)
+            Text(item.name)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .lineLimit(1)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
