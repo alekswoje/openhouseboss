@@ -252,6 +252,12 @@ struct SplashView: View {
                 dummy.resignFirstResponder()
                 dummy.removeFromSuperview()
             }
+            // Wake Render's free-tier service in the background. The user
+            // spends 1.4s on the splash + however long on the login button;
+            // by the time they hit Send or Refine, the backend should be hot.
+            Task.detached(priority: .utility) {
+                await APIClient.shared.warmup()
+            }
         }
     }
 }

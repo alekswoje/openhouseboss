@@ -157,6 +157,21 @@ actor APIClient {
         throw lastError ?? URLError(.unknown)
     }
 
+    // Fire-and-forget ping that wakes Render's free-tier service before
+    // the user actually touches anything. The whole point is to overlap
+    // the cold-start with the splash + login screen, so by the time the
+    // user signs in and lands on Home, the backend is hot. We ignore the
+    // result — this is best-effort, not authoritative — and use a long
+    // timeout so the wake-up has room to complete (60s is more than
+    // enough for any plausible Render cold start).
+    func warmup() async {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("healthz"))
+        req.timeoutInterval = 60
+        // No auth — /healthz is public so we don't need a token to wake
+        // the dyno. Calling pre-login should still work.
+        _ = try? await self.session.data(for: req)
+    }
+
     // GET /auth/me — used to (a) verify a Keychain token on launch and (b)
     // pull the user's name/email/picture for the profile screen.
     // Cold-start tolerant: this is one of the first calls after launch, so
@@ -571,7 +586,9 @@ actor APIClient {
         // talking to Google) and can ride a Render cold-start wake-up. The
         // global 8s session timeout is way too tight for this path — bump
         // per-request so a real send doesn't surface as "request timed out".
-        req.timeoutInterval = 60
+        // 120s is generous enough that even a worst-case Render wake-up
+        // (~50s) + Gmail call (~20s) completes inside the window.
+        req.timeoutInterval = 120
         authorize(&req)
 
         var payload: [String: Any] = [
@@ -814,8 +831,10 @@ actor APIClient {
         var req = try crmRequest(
             "sessions/\(sessionId)/visitors/draft/refine", method: "POST", body: payload
         )
-        // Claude rewrite + Render wake-up can ride past the snappy default.
-        req.timeoutInterval = 60
+        // Haiku rewrite is ~1-3s, but a cold Render service can prepend
+        // 30-50s of wake-up. Give it plenty of headroom so a real refine
+        // doesn't surface as "request timed out" while the dyno boots.
+        req.timeoutInterval = 120
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let body: String }

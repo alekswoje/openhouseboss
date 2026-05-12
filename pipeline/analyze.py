@@ -8,6 +8,12 @@ from .identify import Visitor, _extract_json
 from .tags import Tag
 
 MODEL = "claude-sonnet-4-6"
+# Lightweight model for short rewrites where speed beats nuance. The full
+# analyze pass stays on Sonnet for tone-sensitive judgment; refine is a
+# narrow "rewrite this email per the agent's nudge" task that Haiku
+# handles in 1-3s vs Sonnet's 5-15s. The latency win matters because the
+# user is staring at the editor waiting for the AI's output.
+FAST_MODEL = "claude-haiku-4-5"
 
 
 class VisitorAnalysis(BaseModel):
@@ -169,8 +175,12 @@ def refine_draft(
 
     client = Anthropic()
     response = client.messages.create(
-        model=MODEL,
-        max_tokens=600,
+        # Haiku on the fast model so the agent isn't waiting 10s for an
+        # email rewrite. Haiku is fully capable here — we're not asking
+        # it to grade nuance, just to follow a tight instruction like
+        # "make this shorter" or "add a CTA about Saturday's tour".
+        model=FAST_MODEL,
+        max_tokens=400,
         system=(
             "You rewrite a real-estate follow-up email per the agent's "
             "instruction. Keep it short and mobile-friendly. Default to under "
