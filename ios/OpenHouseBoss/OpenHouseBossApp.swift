@@ -237,6 +237,22 @@ struct SplashView: View {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                 pulse = true
             }
+            // Pre-warm the iOS keyboard subsystem. Without this, the first
+            // time any TextField in the app gets focus, the keyboard takes
+            // 5-15s to appear on the simulator (well-known issue). Briefly
+            // creating a UITextField and toggling first-responder forces
+            // the keyboard layer to load while the splash is up — by the
+            // time the agent taps a kiosk field later, the keyboard is hot.
+            DispatchQueue.main.async {
+                let dummy = UITextField()
+                let scene = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }.first
+                let window = scene?.windows.first(where: \.isKeyWindow) ?? UIWindow()
+                window.addSubview(dummy)
+                dummy.becomeFirstResponder()
+                dummy.resignFirstResponder()
+                dummy.removeFromSuperview()
+            }
         }
     }
 }

@@ -5,6 +5,25 @@ struct VisitorInput: Identifiable, Equatable {
     var name: String = ""
     var email: String = ""
     var phone: String = ""
+    // Captured by the iPad kiosk; not yet round-tripped to the backend's
+    // CSV format (the diarization pipeline only consumes name + email +
+    // phone). Held client-side for now so the agent can see them in the
+    // Leads view; we'll surface them server-side once the analysis schema
+    // can store structured guest answers.
+    var hasAgent: HasAgent? = nil
+    var marketingConsent: Bool = false
+    var recordingConsent: Bool = false
+
+    enum HasAgent: String, Codable, CaseIterable, Identifiable {
+        case yes, no
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .yes: return "Yes"
+            case .no:  return "Not yet"
+            }
+        }
+    }
 }
 
 struct Session: Codable, Hashable, Identifiable {

@@ -284,6 +284,150 @@ actor APIClient {
         return try JSONDecoder().decode(Session.self, from: data)
     }
 
+    // Permanently delete a session and all its on-disk artifacts. The
+    // confirmation dialog is in the UI — by the time we get here, the user
+    // has already approved the destructive action.
+    func deleteSession(id: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)"))
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    // Remove a single visitor (lead) from a session by their position in
+    // the result.visitors array. The session itself stays around so the
+    // recording + transcript remain available for other leads.
+    func deleteVisitor(sessionId: String, visitorIndex: Int) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/\(visitorIndex)"))
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: – Contact verification (kiosk form)
+
+    struct ContactCheck: Codable {
+        let valid: Bool
+        let reason: String?
+        let formatted: String?
+        let e164: String?
+    }
+
+    struct ContactVerifyResult: Codable {
+        let email: ContactCheck?
+        let phone: ContactCheck?
+    }
+
+    func verifyContact(email: String? = nil, phone: String? = nil) async throws -> ContactVerifyResult {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("verify/contact"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let email { body["email"] = email }
+        if let phone { body["phone"] = phone }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ContactVerifyResult.self, from: data)
+    }
+
+    // MARK: – Gmail send (separate from sign-in OAuth)
+
+    struct GmailStatus: Codable {
+        let connected: Bool
+        let email: String?
+    }
+
+    func gmailStatus() async throws -> GmailStatus {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/gmail/status"))
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(GmailStatus.self, from: data)
+    }
+
+    func disconnectGmail() async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/gmail/disconnect"))
+        req.httpMethod = "POST"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    struct SendEmailResult: Codable {
+        let sent: Bool
+        let messageId: String?
+        let leadState: LeadState?
+
+        enum CodingKeys: String, CodingKey {
+            case sent
+            case messageId = "message_id"
+            case leadState = "lead_state"
+        }
+    }
+
+    enum SendEmailError: Error, LocalizedError {
+        case gmailNotConnected
+        case noRecipient
+        case generic(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .gmailNotConnected: return "Connect Gmail to send."
+            case .noRecipient:       return "No email on file for this lead."
+            case .generic(let s):    return s
+            }
+        }
+    }
+
+    func sendVisitorEmail(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        to: String? = nil,
+        subject: String? = nil,
+        body: String? = nil
+    ) async throws -> SendEmailResult {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/send_email"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+
+        var payload: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+        ]
+        if let to { payload["to"] = to }
+        if let subject { payload["subject"] = subject }
+        if let body { payload["body"] = body }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await self.session.data(for: req)
+        // Distinguish "Gmail not connected" (400 with specific message) from
+        // generic failures so the UI can prompt to connect rather than
+        // surface a scary error.
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 400 {
+                let txt = String(data: data, encoding: .utf8) ?? ""
+                if txt.contains("Gmail not connected") {
+                    throw SendEmailError.gmailNotConnected
+                }
+                if txt.contains("No recipient email") {
+                    throw SendEmailError.noRecipient
+                }
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw SendEmailError.generic(String(data: data, encoding: .utf8) ?? "Send failed")
+            }
+        }
+        return try JSONDecoder().decode(SendEmailResult.self, from: data)
+    }
+
     // Re-run the analysis pipeline on a session's saved audio with a new
     // speakers_expected hint. Used by the Summary "Re-analyze" control.
     // Returns once the backend has *queued* the work; caller should poll.
@@ -594,6 +738,59 @@ enum GoogleAuthDriver {
             // won't see a Google login form if they already have a session
             // in Safari/iCloud Keychain. prefersEphemeralWebBrowserSession
             // would force a fresh login each time; keep it off for UX.
+            session.prefersEphemeralWebBrowserSession = false
+            session.start()
+        }
+    }
+}
+
+// Same pattern as GoogleAuthDriver, but for the secondary Gmail-send grant.
+// The backend's /auth/gmail/start needs to know which user is connecting,
+// and ASWebAuthenticationSession can't attach Authorization headers, so we
+// pass the current session JWT as a query param. Backend verifies it the
+// same way as a header bearer.
+enum GmailConnectDriver {
+    enum ConnectError: Error, LocalizedError {
+        case notSignedIn
+        case cancelled
+        var errorDescription: String? {
+            switch self {
+            case .notSignedIn: return "Sign in before connecting Gmail."
+            case .cancelled:   return "Gmail connection cancelled."
+            }
+        }
+    }
+
+    @MainActor
+    static func run(presentationAnchor: ASPresentationAnchor) async throws {
+        guard let userToken = AuthStore.shared.token else {
+            throw ConnectError.notSignedIn
+        }
+        let url = Config.backendURL.appendingPathComponent("auth/gmail/start")
+            .appending(queryItems: [URLQueryItem(name: "user_token", value: userToken)])
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "com.openhouseboss.app"
+            ) { callbackURL, error in
+                if let error {
+                    cont.resume(throwing: error)
+                    return
+                }
+                // The callback URL is `com.openhouseboss.app://gmail-connected`
+                // — no payload needed, presence of the callback signals
+                // success. The refresh token is already stored server-side.
+                if callbackURL != nil {
+                    cont.resume(returning: ())
+                } else {
+                    cont.resume(throwing: ConnectError.cancelled)
+                }
+            }
+            session.presentationContextProvider = AuthAnchorProvider.shared(anchor: presentationAnchor)
+            // Force a fresh consent every time — Google omits refresh_token
+            // on subsequent grants otherwise, and the backend rejects the
+            // callback when refresh_token is missing.
             session.prefersEphemeralWebBrowserSession = false
             session.start()
         }

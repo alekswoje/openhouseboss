@@ -1,67 +1,305 @@
+import AuthenticationServices
+import LocalAuthentication
+import MapKit
 import SwiftUI
+import UIKit
 
-// iPad agent surface — runs on the open-house iPad. Side rail picks the
-// section; the main pane hosts Home / Kiosk / Leads / Listings.
+// iPad agent surface — runs on the open-house iPad.
 //
-// Data model: reads SessionStore.shared for listings + past sessions, and
-// for the active session's visitors/lead state when reviewing one. Mock
-// arrays (SampleData) are no longer referenced here — every list is real.
+// Visual direction: Notion side rail (icon nav + collapsible recent-sessions
+// list), Instagram-black canvas with image-forward cards, YouTube-style
+// session feed on Home, ChatGPT/Claude single-column reading layout for the
+// lead detail, Spotify-style card grid for Listings, and a sticky "now
+// playing"-style live-session bar pinned to the bottom whenever there's an
+// active session or queued kiosk guests.
+//
+// Data: SessionStore.shared is the single source of truth. Listings come
+// from store.listings (UserDefaults-persisted); past sessions from
+// store.pastSessions (GET /sessions); the active session's visitors from
+// APIClient.getSession; lead state mutations go through
+// APIClient.updateLeadState. No SampleData references here.
 struct IPadAgentApp: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case home, kiosk, leads, listings
+        case home, record, kiosk, leads, listings, profile
         var id: String { rawValue }
         var label: String {
             switch self {
             case .home:     return "Home"
-            case .kiosk:    return "Sign in"
+            case .record:   return "Record"
+            case .kiosk:    return "Kiosk"
             case .leads:    return "Leads"
             case .listings: return "Listings"
+            case .profile:  return "Profile"
             }
         }
-        var icon: String {
+        var iconOutline: String {
             switch self {
             case .home:     return "house"
+            case .record:   return "waveform"
             case .kiosk:    return "person.badge.plus"
-            case .leads:    return "person.2"
+            case .leads:    return "tray"
             case .listings: return "square.grid.2x2"
+            case .profile:  return "person.crop.circle"
+            }
+        }
+        var iconFilled: String {
+            switch self {
+            case .home:     return "house.fill"
+            case .record:   return "waveform.circle.fill"
+            case .kiosk:    return "person.badge.plus.fill"
+            case .leads:    return "tray.fill"
+            case .listings: return "square.grid.2x2.fill"
+            case .profile:  return "person.crop.circle.fill"
             }
         }
     }
 
     @State private var tab: Tab = .home
     @State private var store = SessionStore.shared
-    // Listing the kiosk is currently hosting. Set when the agent taps a
-    // listing on Home or in Listings; passed through to IPadKiosk so the
-    // sign-in form shows the right property.
+    @State private var auth = AuthStore.shared
     @State private var activeListing: Listing?
-    // Session the agent is reviewing leads for in the Leads tab. nil means
-    // "show every lead across every recorded session, newest first."
     @State private var activeSessionId: String?
+    // When set, the main pane shows the Session Detail view (playback +
+    // metadata) instead of the tab content. Set by tapping a recent session
+    // in the side rail or a row on Home; cleared by the detail view's back
+    // arrow or by tapping any tab. activeSessionId is reserved for seeding
+    // the Leads filter when the user drills from detail → leads.
+    @State private var viewingPastSession: String?
+    // Sidebar collapse — chevron in the brand row toggles between the full
+    // 232pt rail and a compact 68pt rail (icons only). Stored in
+    // UserDefaults so the agent's preference survives launches.
+    @State private var sidebarCollapsed: Bool = UserDefaults.standard.bool(forKey: "ipad.sidebarCollapsed")
+    // True while the agent has handed the iPad to guests. Sidebar + chrome
+    // are hidden; getting out requires biometric (or passcode) auth so a
+    // curious guest can't navigate away from the form.
+    @State private var kioskLocked: Bool = false
+    @State private var lockAuthFailed: Bool = false
+    // Sheet flag for the Add Listing flow opened from the Kiosk launcher
+    // or the Listings tab. Both surfaces present the same editor.
+    @State private var showAddListing: Bool = false
+
+    // Plays once per cold launch when the user is signed in. Starts hidden
+    // and gets flipped on AFTER the SplashView dismisses (~1.75s) so the
+    // ripple animation is actually visible. The static flag survives view-
+    // struct re-creations so we don't replay the welcome on tab switches.
+    @State private var showWelcome: Bool = false
+    private static var welcomeShownThisLaunch = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            sideRail
-            mainPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack(alignment: .bottom) {
+            if kioskLocked {
+                IPadKiosk(
+                    store: store,
+                    listing: activeListing ?? store.listings.first,
+                    locked: true,
+                    onPickListing: {},
+                    onLaunch: {},
+                    onRequestExit: requestKioskExit
+                )
+                .transition(.opacity)
+            } else {
+                HStack(spacing: 0) {
+                    IPadSideRail(
+                        tab: $tab,
+                        viewingPastSession: $viewingPastSession,
+                        collapsed: $sidebarCollapsed,
+                        store: store,
+                        auth: auth,
+                        onSelectTab: { selectTab($0) },
+                        onSelectRecent: { id in viewingPastSession = id },
+                        onToggleCollapse: {
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                                sidebarCollapsed.toggle()
+                            }
+                            UserDefaults.standard.set(sidebarCollapsed, forKey: "ipad.sidebarCollapsed")
+                        }
+                    )
+                    Rectangle()
+                        .fill(FoyerTheme.hairline)
+                        .frame(width: 1)
+                    mainPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                if hasLiveContext {
+                    LiveSessionBar(
+                        store: store,
+                        recorder: AudioRecorder.shared,
+                        onOpen: {
+                            // Tapping the bar should land on whichever
+                            // surface is currently "live": recording → Record
+                            // tab; otherwise → Kiosk.
+                            if AudioRecorder.shared.isRecording {
+                                selectTab(.record)
+                            } else {
+                                selectTab(.kiosk)
+                            }
+                        },
+                        onStopRecording: { stopRecording() }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
+                }
+            }
+            if showWelcome {
+                WelcomeOverlay(name: firstName)
+                    .transition(.opacity)
+                    .zIndex(10)
+            }
         }
-        .background(FoyerTheme.bgDeep.ignoresSafeArea())
+        .background(Color.black.ignoresSafeArea())
         .task {
             await store.refreshSessions()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openhousebossStopRecording)) { _ in
+            // Posted by StopRecordingIntent from the Live Activity Stop
+            // button. LiveActivityIntent runs in this app's process, so
+            // NotificationCenter delivers the post directly — no IPC.
+            guard AudioRecorder.shared.isRecording else { return }
+            stopRecording()
+        }
+        .sheet(isPresented: $showAddListing) {
+            IPadListingEditor(
+                store: store,
+                onDone: { listing in
+                    if let listing { activeListing = listing }
+                    showAddListing = false
+                }
+            )
+        }
+        .onAppear {
+            guard !Self.welcomeShownThisLaunch else { return }
+            Self.welcomeShownThisLaunch = true
+            Task {
+                // Wait for SplashView's 1.4s hold + 0.35s crossfade to clear.
+                try? await Task.sleep(for: .milliseconds(1500))
+                withAnimation(.easeOut(duration: 0.25)) { showWelcome = true }
+                // Hold the welcome on screen long enough for the rings +
+                // checkmark + name reveal to land.
+                try? await Task.sleep(for: .milliseconds(2400))
+                withAnimation(.easeInOut(duration: 0.55)) { showWelcome = false }
+            }
+        }
+    }
+
+    private var firstName: String {
+        let full = auth.currentUser?.name ?? "there"
+        let trimmed = full.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return "there" }
+        return String(trimmed.split(separator: " ").first ?? Substring(trimmed))
+    }
+
+    private func lockKiosk() {
+        withAnimation(.easeInOut(duration: 0.35)) {
+            kioskLocked = true
+        }
+    }
+
+    // Triggered by the lock icon inside the fullscreen kiosk. Runs the
+    // system biometric/passcode prompt; on success we drop kioskLocked
+    // and the sidebar comes back. On failure we leave the kiosk locked.
+    private func requestKioskExit() {
+        Task {
+            let context = LAContext()
+            context.localizedFallbackTitle = "Use Passcode"
+            var error: NSError?
+            // .deviceOwnerAuthentication = biometrics with passcode fallback.
+            // Safer than biometrics-only because devices without Face/Touch
+            // ID (or with biometrics locked out) can still exit kiosk mode.
+            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+                await MainActor.run { lockAuthFailed = true }
+                return
+            }
+            do {
+                let ok = try await context.evaluatePolicy(
+                    .deviceOwnerAuthentication,
+                    localizedReason: "Exit kiosk mode"
+                )
+                if ok {
+                    await MainActor.run {
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            kioskLocked = false
+                        }
+                    }
+                }
+            } catch {
+                // User cancelled or failed — stay locked.
+            }
+        }
+    }
+
+    private var hasLiveContext: Bool {
+        // Show the sticky bar only while something is actively in flight.
+        // Specifically: recording, uploading, processing, OR queued kiosk
+        // guests waiting to be matched. A completed (.ready) or failed
+        // (.failed) session shouldn't keep the bar up — that was the bug
+        // where the bar stayed pinned forever after the first session.
+        if AudioRecorder.shared.isRecording { return true }
+        switch store.phase {
+        case .uploading, .processing: return true
+        default: break
+        }
+        return !store.pendingKioskGuests.isEmpty
+    }
+
+    // Stops the in-progress recording from anywhere in the app (called by
+    // the LiveSessionBar's stop button). Mirrors IPadRecord.endSession —
+    // hands the audio off to SessionStore.uploadAndProcess and bounces the
+    // user to the Record tab so they can watch the job finish.
+    private func stopRecording() {
+        guard let url = AudioRecorder.shared.stopRecording() else { return }
+        store.uploadAndProcess(audioURL: url)
+        selectTab(.record)
+    }
+
+    private func selectTab(_ t: Tab) {
+        viewingPastSession = nil
+        tab = t
     }
 
     @ViewBuilder
     private var mainPane: some View {
+        if let id = viewingPastSession {
+            IPadSessionDetail(
+                sessionId: id,
+                store: store,
+                onBack: { viewingPastSession = nil },
+                onOpenLeads: { sid in
+                    activeSessionId = sid
+                    viewingPastSession = nil
+                    tab = .leads
+                }
+            )
+        } else {
+            tabPane
+        }
+    }
+
+    @ViewBuilder
+    private var tabPane: some View {
         switch tab {
         case .home:
             IPadHome(
                 store: store,
+                auth: auth,
                 onStartKiosk: { listing in
                     activeListing = listing
                     tab = .kiosk
                 },
+                onStartRecording: { listing in
+                    activeListing = listing
+                    tab = .record
+                },
                 onOpenSession: { id in
-                    activeSessionId = id
+                    viewingPastSession = id
+                }
+            )
+        case .record:
+            IPadRecord(
+                store: store,
+                listing: activeListing,
+                onSelectListing: { activeListing = $0 },
+                onOpenLeads: { sessionId in
+                    activeSessionId = sessionId
                     tab = .leads
                 }
             )
@@ -69,286 +307,712 @@ struct IPadAgentApp: View {
             IPadKiosk(
                 store: store,
                 listing: activeListing ?? store.listings.first,
-                onLaunchListing: { tab = .listings }
+                locked: false,
+                onPickListing: { tab = .listings },
+                onSelectListing: { activeListing = $0 },
+                onAddListing: { showAddListing = true },
+                onLaunch: { lockKiosk() },
+                onRequestExit: {}
             )
         case .leads:
-            IPadLeads(
-                store: store,
-                sessionId: $activeSessionId
-            )
+            IPadLeads(store: store, initialFilter: activeSessionId)
         case .listings:
             IPadListings(
                 store: store,
                 onPickListing: { listing in
                     activeListing = listing
                     tab = .kiosk
-                }
+                },
+                onAdd: { showAddListing = true }
             )
+        case .profile:
+            IPadProfile(store: store, auth: auth)
         }
-    }
-
-    private var sideRail: some View {
-        VStack(spacing: 24) {
-            Text("F")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 40, height: 40)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(FoyerTheme.gold.opacity(0.5), lineWidth: 1)
-                )
-                .padding(.top, 6)
-
-            VStack(spacing: 4) {
-                ForEach(Tab.allCases) { t in
-                    Button { tab = t } label: {
-                        VStack(spacing: 5) {
-                            Image(systemName: t.icon)
-                                .font(.system(size: 19, weight: tab == t ? .semibold : .regular))
-                                .frame(width: 44, height: 44)
-                                .foregroundStyle(tab == t ? FoyerTheme.gold : FoyerTheme.creamDim)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(tab == t ? FoyerTheme.goldSoft : Color.clear)
-                                )
-                            Text(t.label)
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(tab == t ? FoyerTheme.gold : FoyerTheme.textMuted)
-                                .lineLimit(1)
-                                .frame(width: 70)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Spacer()
-
-            Text("JH")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(FoyerTheme.creamDim)
-                .frame(width: 36, height: 36)
-                .background(FoyerTheme.bgElev, in: Circle())
-                .padding(.bottom, 8)
-        }
-        .frame(width: 88)
-        .padding(.vertical, 20)
     }
 }
 
-// MARK: – Home
+// MARK: – Side rail (Notion + ChatGPT)
 
-// Greeting, active listing card, and a real list of recent recorded
-// sessions pulled from SessionStore.pastSessions. Tapping the listing card
-// jumps to the kiosk for that property; tapping a session jumps to Leads
-// with that session preselected.
-private struct IPadHome: View {
+// Always-expanded rail with two regions:
+//   1. Brand mark + nav buttons (Notion-style icon rows with labels)
+//   2. "Recent" list of past sessions (ChatGPT-style sidebar history)
+// Bottom corner has the agent avatar. Filled icons in the active row, soft
+// fill on the row background — no hard borders or stroked outlines.
+private struct IPadSideRail: View {
+    @Binding var tab: IPadAgentApp.Tab
+    @Binding var viewingPastSession: String?
+    @Binding var collapsed: Bool
     let store: SessionStore
-    var onStartKiosk: (Listing) -> Void
-    var onOpenSession: (String) -> Void
+    let auth: AuthStore
+    var onSelectTab: (IPadAgentApp.Tab) -> Void
+    var onSelectRecent: (String) -> Void
+    var onToggleCollapse: () -> Void
+
+    @State private var pendingDeleteId: String?
+
+    private var railWidth: CGFloat { collapsed ? 68 : 232 }
+
+    private var recordedSessions: [SessionSummary] {
+        store.pastSessions.filter { $0.kind == "recorded" }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
-                greeting
-                if let listing = store.listings.first {
-                    activeListingCard(listing)
-                } else {
-                    emptyListingCard
+        VStack(alignment: .leading, spacing: 0) {
+            brand
+                .padding(.horizontal, collapsed ? 12 : 16)
+                .padding(.top, 22)
+                .padding(.bottom, 22)
+
+            VStack(spacing: 2) {
+                ForEach(IPadAgentApp.Tab.allCases) { t in
+                    navRow(t)
                 }
-                recentSessions
             }
-            .padding(.horizontal, 40)
-            .padding(.top, 32)
-            .padding(.bottom, 48)
-        }
-        .background(FoyerTheme.bgDeep)
-    }
+            .padding(.horizontal, collapsed ? 8 : 10)
 
-    private var greeting: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(dateGreeting)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(FoyerTheme.textDim)
-            Text("Hello, John")
-                .font(.system(size: 38, weight: .semibold))
-                .foregroundStyle(FoyerTheme.cream)
-                .tracking(-0.6)
-        }
-    }
+            if !collapsed && !recordedSessions.isEmpty {
+                Text("Recent")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 28)
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
 
-    private var dateGreeting: String {
-        let now = Date()
-        let dayFormatter = DateFormatter()
-        dayFormatter.dateFormat = "EEEE"
-        let dayPart = dayFormatter.string(from: now)
-        let hour = Calendar.current.component(.hour, from: now)
-        let period: String
-        switch hour {
-        case 5..<12:  period = "morning"
-        case 12..<17: period = "afternoon"
-        case 17..<22: period = "evening"
-        default:      period = "night"
-        }
-        return "\(dayPart) \(period)"
-    }
-
-    private func activeListingCard(_ listing: Listing) -> some View {
-        Button { onStartKiosk(listing) } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topLeading) {
-                    listingPhoto(listing)
-                        .frame(height: 220)
-                        .clipped()
-                    HStack(spacing: 6) {
-                        Circle().fill(FoyerTheme.terracotta).frame(width: 6, height: 6)
-                        Text("Hosting now")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 1) {
+                        ForEach(recordedSessions.prefix(20)) { s in
+                            recentRow(s)
+                        }
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(.black.opacity(0.55), in: Capsule())
-                    .padding(16)
+                    .padding(.horizontal, 10)
                 }
+                .transition(.opacity)
+            } else {
+                Spacer()
+            }
 
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(listing.address)
-                            .font(.system(size: 24, weight: .semibold))
+            Spacer(minLength: 0)
+
+            avatar
+                .padding(.horizontal, collapsed ? 12 : 16)
+                .padding(.vertical, 14)
+        }
+        .frame(width: railWidth)
+        .background(Color(white: 0.04))
+        .clipped()
+        .alert(
+            "Delete this session?",
+            isPresented: Binding(
+                get: { pendingDeleteId != nil },
+                set: { if !$0 { pendingDeleteId = nil } }
+            ),
+            presenting: pendingDeleteId
+        ) { id in
+            Button("Cancel", role: .cancel) { pendingDeleteId = nil }
+            Button("Delete permanently", role: .destructive) {
+                Task { await performDelete(id) }
+            }
+        } message: { _ in
+            Text("This permanently removes the recording, transcript, analysis, and all leads from this session. It can't be undone.")
+        }
+    }
+
+    @MainActor
+    private func performDelete(_ id: String) async {
+        defer { pendingDeleteId = nil }
+        do {
+            try await APIClient.shared.deleteSession(id: id)
+            await store.refreshSessions()
+            if viewingPastSession == id { viewingPastSession = nil }
+        } catch {
+            // Silent fail — surfacing an alert from the rail mid-deletion
+            // gets noisy; the user can retry from the detail view if needed.
+        }
+    }
+
+    private var brand: some View {
+        HStack(spacing: 10) {
+            Text("F")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(FoyerTheme.gold)
+                .frame(width: 32, height: 32)
+                .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+            if !collapsed {
+                Text("Foyer")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.3)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                Spacer()
+            }
+            Button(action: onToggleCollapse) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.left")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .frame(width: 24, height: 24)
+                    .background(Color.white.opacity(0.05), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func navRow(_ t: IPadAgentApp.Tab) -> some View {
+        let active = (tab == t) && (viewingPastSession == nil)
+        return Button { onSelectTab(t) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: active ? t.iconFilled : t.iconOutline)
+                    .font(.system(size: 16, weight: active ? .semibold : .regular))
+                    .frame(width: 22)
+                    .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
+                if !collapsed {
+                    Text(t.label)
+                        .font(.system(size: 14, weight: active ? .semibold : .medium))
+                        .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.creamDim)
+                        .transition(.opacity)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, collapsed ? 10 : 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: collapsed ? .center : .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(active ? Color.white.opacity(0.06) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(collapsed ? t.label : "")
+    }
+
+    private func recentRow(_ s: SessionSummary) -> some View {
+        let active = (viewingPastSession == s.id)
+        return Button {
+            onSelectRecent(s.id)
+        } label: {
+            HStack(spacing: 10) {
+                Text(s.displayTitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.creamDim)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(s.visitorCount)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(active ? Color.white.opacity(0.06) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) {
+                pendingDeleteId = s.id
+            } label: {
+                Label("Delete session", systemImage: "trash")
+            }
+        }
+    }
+
+    private var avatar: some View {
+        Button { onSelectTab(.profile) } label: {
+            HStack(spacing: 10) {
+                avatarBubble
+                if !collapsed {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(displayName)
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(FoyerTheme.cream)
                             .lineLimit(1)
-                        Text(subtitle(for: listing))
-                            .font(.system(size: 14))
-                            .foregroundStyle(FoyerTheme.creamDim)
+                        Text(auth.currentUser?.email ?? "Agent")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 16)
-                    HStack(spacing: 8) {
-                        Text("Start sign-in")
-                            .font(.system(size: 14, weight: .semibold))
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 18).padding(.vertical, 12)
-                    .background(FoyerTheme.gold, in: Capsule())
+                    .transition(.opacity)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.textMuted)
                 }
-                .padding(20)
             }
-            .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 20))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder
-    private func listingPhoto(_ listing: Listing) -> some View {
+    private var avatarBubble: some View {
+        if let str = auth.currentUser?.picture, let url = URL(string: str) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().aspectRatio(contentMode: .fill)
+                default:
+                    initialsBubble
+                }
+            }
+            .frame(width: 30, height: 30)
+            .clipShape(Circle())
+        } else {
+            initialsBubble
+        }
+    }
+
+    private var initialsBubble: some View {
+        Text(initials)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(FoyerTheme.creamDim)
+            .frame(width: 30, height: 30)
+            .background(FoyerTheme.bgElev, in: Circle())
+    }
+
+    private var displayName: String {
+        auth.currentUser?.name ?? "Signed in"
+    }
+
+    private var initials: String {
+        let name = auth.currentUser?.name ?? auth.currentUser?.email ?? "?"
+        let parts = name.split(separator: " ").prefix(2)
+        return parts.compactMap { $0.first.map(String.init) }.joined().uppercased()
+    }
+}
+
+// MARK: – Sticky live-session bar (Spotify now-playing)
+
+// Pinned to the bottom of the iPad when there's either an active recorded
+// session or guests queued on the kiosk. One tap jumps to whichever surface
+// is relevant. Visually: dark elevated capsule that floats above content.
+private struct LiveSessionBar: View {
+    let store: SessionStore
+    let recorder: AudioRecorder
+    var onOpen: () -> Void
+    var onStopRecording: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onOpen) {
+                HStack(spacing: 14) {
+                    leadIcon
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .lineLimit(1)
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if recorder.isRecording {
+                // Stop button — pulled out as its own tap target so the
+                // bar's main tap still routes to the Record tab while
+                // the stop pill ends the session in-place. Matches the
+                // user's "widget to stop recording" requirement.
+                Button(action: onStopRecording) {
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(.white)
+                            .frame(width: 9, height: 9)
+                        Text("Stop")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(FoyerTheme.terracotta, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            } else {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(white: 0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(recorder.isRecording ? FoyerTheme.terracotta.opacity(0.5) : Color.white.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    @ViewBuilder
+    private var leadIcon: some View {
+        if recorder.isRecording {
+            ZStack {
+                Circle().fill(FoyerTheme.terracotta.opacity(0.18))
+                    .frame(width: 44, height: 44)
+                Circle().fill(FoyerTheme.terracotta)
+                    .frame(width: 12, height: 12)
+                    .modifier(PulseAnimation())
+            }
+        } else {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(FoyerTheme.goldSoft)
+                .frame(width: 44, height: 44)
+                .overlay(
+                    Image(systemName: pulseIcon)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                )
+        }
+    }
+
+    private var pulseIcon: String {
+        store.session != nil ? "waveform" : "person.badge.plus.fill"
+    }
+
+    private var title: String {
+        if recorder.isRecording {
+            return store.pendingAddress ?? "Recording"
+        }
+        if let s = store.session {
+            return s.address ?? "Live session"
+        }
+        return store.pendingAddress ?? "Ready to start"
+    }
+
+    private var subtitle: String {
+        if recorder.isRecording {
+            return "Live · \(elapsedString)"
+        }
+        let count = store.pendingKioskGuests.count
+        if store.session != nil {
+            return "Processing · \(count) guest\(count == 1 ? "" : "s")"
+        }
+        return "\(count) signed in"
+    }
+
+    private var elapsedString: String {
+        let total = Int(recorder.elapsed)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
+    }
+}
+
+// MARK: – Home (Spotify/YouTube — content feed)
+
+// Greeting → big featured listing card (Instagram-style image-forward) →
+// vertical session feed (YouTube rows). Sessions list is real — pulled
+// from store.pastSessions.
+private struct IPadHome: View {
+    let store: SessionStore
+    let auth: AuthStore
+    var onStartKiosk: (Listing) -> Void
+    var onStartRecording: (Listing?) -> Void
+    var onOpenSession: (String) -> Void
+
+    @State private var pendingDeleteId: String?
+    @State private var deleting: Bool = false
+    @State private var deleteError: String?
+
+    private var recorded: [SessionSummary] {
+        store.pastSessions.filter { $0.kind == "recorded" }
+    }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 36) {
+                greeting
+                if let listing = store.listings.first {
+                    heroListing(listing)
+                } else {
+                    emptyHero
+                }
+                if !recorded.isEmpty {
+                    sessionFeed
+                }
+            }
+            .padding(.horizontal, 44)
+            .padding(.top, 36)
+            .padding(.bottom, 120) // breathing room for the sticky bar
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+    }
+
+    private var greeting: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(periodOfDay)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text("Good \(periodOfDayShort), \(firstName)")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.6)
+        }
+    }
+
+    private var firstName: String {
+        let full = auth.currentUser?.name ?? "there"
+        let trimmed = full.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return "there" }
+        return String(trimmed.split(separator: " ").first ?? Substring(trimmed))
+    }
+
+    private var periodOfDay: String {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE, MMM d"
+        return f.string(from: Date())
+    }
+
+    private var periodOfDayShort: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12:  return "morning"
+        case 12..<17: return "afternoon"
+        case 17..<22: return "evening"
+        default:      return "evening"
+        }
+    }
+
+    private func heroListing(_ listing: Listing) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            listingImage(listing)
+                .frame(height: 360)
+                .clipped()
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.2), .black.opacity(0.85)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 360, alignment: .bottom)
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 7) {
+                    Circle().fill(FoyerTheme.terracotta).frame(width: 7, height: 7)
+                        .modifier(PulseAnimation())
+                    Text("Hosting today")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                Text(listing.address)
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .tracking(-0.7)
+                    .lineLimit(2)
+                HStack(spacing: 16) {
+                    if !listing.displayPrice.isEmpty {
+                        Text(listing.displayPrice)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(listing.displaySpecs)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(0.85))
+                    Spacer()
+                    Button { onStartKiosk(listing) } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Sign-in")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.cream)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .background(Color.white.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Button { onStartRecording(listing) } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Record")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .background(FoyerTheme.gold, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(28)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func listingImage(_ listing: Listing) -> some View {
         if let data = listing.photoData, let img = UIImage(data: data) {
             Image(uiImage: img)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            // Subtle gradient placeholder when no photo is attached.
-            LinearGradient(
-                colors: [FoyerTheme.bgElev2, FoyerTheme.bgCard],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .overlay(
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.13, green: 0.16, blue: 0.21),
+                        Color(red: 0.05, green: 0.06, blue: 0.08),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
                 Image(systemName: "house")
-                    .font(.system(size: 48, weight: .light))
-                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
-            )
+                    .font(.system(size: 64, weight: .light))
+                    .foregroundStyle(.white.opacity(0.12))
+            }
         }
     }
 
-    private func subtitle(for listing: Listing) -> String {
-        var parts: [String] = []
-        if !listing.displayPrice.isEmpty { parts.append(listing.displayPrice) }
-        if !listing.neighborhood.isEmpty { parts.append(listing.neighborhood) }
-        parts.append(listing.displaySpecs)
-        return parts.joined(separator: "  ·  ")
-    }
-
-    private var emptyListingCard: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "plus")
-                .font(.system(size: 24, weight: .light))
-                .frame(width: 56, height: 56)
-                .foregroundStyle(FoyerTheme.gold)
-                .background(FoyerTheme.goldSoft, in: Circle())
-            Text("No listings yet")
-                .font(.system(size: 18, weight: .semibold))
+    private var emptyHero: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(FoyerTheme.goldSoft).frame(width: 64, height: 64)
+                Image(systemName: "waveform")
+                    .font(.system(size: 24, weight: .light))
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+            Text("Ready when you are")
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(FoyerTheme.cream)
-            Text("Add an open house to start a sign-in session.")
+            Text("Record your next open-house walkthrough.\nWe'll separate the voices and draft follow-ups.")
                 .font(.system(size: 14))
                 .foregroundStyle(FoyerTheme.textDim)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+            Button { onStartRecording(nil) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Start recording")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 56)
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 20))
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(white: 0.06))
+        )
     }
 
-    private var recentSessions: some View {
-        let recorded = store.pastSessions.filter { $0.kind == "recorded" }
-        return VStack(alignment: .leading, spacing: 16) {
+    private var sessionFeed: some View {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Recent sessions")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                 Spacer()
-                if recorded.count > 5 {
+                if recorded.count > 6 {
                     Text("\(recorded.count) total")
                         .font(.system(size: 12))
                         .foregroundStyle(FoyerTheme.textDim)
                 }
             }
-            if recorded.isEmpty {
-                Text("No recordings yet.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .padding(.vertical, 24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(recorded.prefix(8)) { s in
-                        Button { onOpenSession(s.id) } label: {
-                            sessionRow(s)
-                        }
-                        .buttonStyle(.plain)
-                        if s.id != recorded.prefix(8).last?.id {
-                            Hairline().padding(.horizontal, 4)
+            VStack(spacing: 10) {
+                ForEach(recorded.prefix(8)) { s in
+                    Button { onOpenSession(s.id) } label: {
+                        sessionRow(s)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            pendingDeleteId = s.id
+                        } label: {
+                            Label("Delete session", systemImage: "trash")
                         }
                     }
                 }
-                .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
             }
+        }
+        .alert(
+            "Delete this session?",
+            isPresented: Binding(
+                get: { pendingDeleteId != nil },
+                set: { if !$0 { pendingDeleteId = nil } }
+            ),
+            presenting: pendingDeleteId
+        ) { id in
+            Button("Cancel", role: .cancel) { pendingDeleteId = nil }
+            Button("Delete permanently", role: .destructive) {
+                Task { await performDelete(id) }
+            }
+        } message: { _ in
+            Text("This permanently removes the recording, transcript, analysis, and all leads from this session. It can't be undone.")
+        }
+    }
+
+    @MainActor
+    private func performDelete(_ id: String) async {
+        deleting = true
+        deleteError = nil
+        defer { deleting = false; pendingDeleteId = nil }
+        do {
+            try await APIClient.shared.deleteSession(id: id)
+            await store.refreshSessions()
+        } catch {
+            deleteError = error.localizedDescription
         }
     }
 
     private func sessionRow(_ s: SessionSummary) -> some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 16) {
+            // Thumbnail tile — uses a placeholder gradient since session
+            // summaries don't carry a photo. YouTube-row feel.
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.12, green: 0.14, blue: 0.19),
+                            Color(red: 0.05, green: 0.06, blue: 0.08),
+                        ],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 92, height: 64)
+                .overlay(
+                    Image(systemName: "waveform")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(FoyerTheme.gold.opacity(0.55))
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
                 Text(s.displayTitle)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .lineLimit(1)
-                Text(relativeTime(s.createdDate))
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textDim)
+                HStack(spacing: 8) {
+                    Text(relativeTime(s.createdDate))
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    Text("·")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Text("\(s.visitorCount) \(s.visitorCount == 1 ? "lead" : "leads")")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
             }
             Spacer()
-            HStack(spacing: 4) {
-                Text("\(s.visitorCount)")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                Text(s.visitorCount == 1 ? "lead" : "leads")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textDim)
-            }
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(FoyerTheme.textMuted)
         }
-        .padding(.horizontal, 18).padding(.vertical, 16)
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(Rectangle())
     }
 
@@ -360,114 +1024,336 @@ private struct IPadHome: View {
     }
 }
 
-// MARK: – Kiosk (sign-in form)
+// MARK: – Kiosk (Instagram — image-forward sign-in)
 
-// The on-iPad sign-in form guests fill out at the open house. Left pane
-// shows the listing they're walking through; right pane collects name +
-// email + phone and pushes onto SessionStore.pendingKioskGuests. On Done
-// we don't navigate — the agent picks the iPad back up and starts a
-// session from Home (LiveView reads the guest list from the store).
+// Big listing photo on the left, minimal form on the right. Submitting
+// appends to SessionStore.pendingKioskGuests — same wire as the iPhone
+// KioskSignInView so LiveView can read the guest list from the store.
 private struct IPadKiosk: View {
     let store: SessionStore
     let listing: Listing?
-    var onLaunchListing: () -> Void
+    // When true, the kiosk renders fullscreen for guests: no sidebar (the
+    // parent already hides it), and a discreet back arrow in the top-left
+    // triggers biometric auth to return to the agent view. When false, the
+    // view sits inside the agent's Kiosk tab and shows a "Launch kiosk"
+    // button instead.
+    var locked: Bool = false
+    var onPickListing: () -> Void
+    var onSelectListing: (Listing) -> Void = { _ in }
+    var onAddListing: () -> Void = {}
+    var onLaunch: () -> Void
+    var onRequestExit: () -> Void
 
-    @State private var name: String = ""
+    // Form state — split first/last per the agent's UX preference. The
+    // pendingKioskGuests list is no longer read here (it caused a re-render
+    // on every keystroke), so the form pane stays cheap.
+    @State private var first: String = ""
+    @State private var last: String = ""
     @State private var email: String = ""
     @State private var phone: String = ""
+    // Default to "Not yet" so guests with no agent can sail through; agents
+    // who are already working with someone toggle to Yes.
+    @State private var hasAgent: VisitorInput.HasAgent? = .no
+    // One combined acceptance — covers both the ambient-recording consent
+    // and the marketing-email opt-in. The visible label is intentionally
+    // generic ("agree to Terms & Privacy"); the substance lives in those
+    // documents so the guest just taps once instead of reading two lines.
+    @State private var termsAccepted: Bool = false
+
+    @State private var emailCheck: ValidationState = .idle
+    @State private var phoneCheck: ValidationState = .idle
+    @State private var emailDebounce: Task<Void, Never>?
+    @State private var phoneDebounce: Task<Void, Never>?
+
+    @State private var showSuccess: Bool = false
+    @State private var submitting: Bool = false
+    @State private var submitError: String?
+    @FocusState private var focused: Field?
+
+    private enum Field { case first, last, email, phone }
+
+    enum ValidationState: Equatable {
+        case idle
+        case checking
+        case valid(String?)         // optional friendly hint, e.g. "Looks good"
+        case invalid(String)        // user-facing reason
+
+        var isValid: Bool { if case .valid = self { return true }; return false }
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            listingPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(FoyerTheme.bgDeep)
-            formPane
-                .frame(maxWidth: 520, maxHeight: .infinity)
-                .background(FoyerTheme.bg)
+        ZStack(alignment: .topLeading) {
+            if locked {
+                // Guest-facing: full listing photo on the left, sign-in
+                // form on the right. This is the only place the form
+                // actually renders — the agent's pre-launch view is a
+                // distinct config surface, so it doesn't look like the
+                // real kiosk and there's no chance of confusing the two.
+                HStack(spacing: 0) {
+                    listingPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    formPane
+                        .frame(maxWidth: 560, maxHeight: .infinity)
+                        .background(Color.black)
+                }
+                exitButton
+                    .padding(.top, 18)
+                    .padding(.leading, 18)
+            } else {
+                agentLauncher
+            }
+            if showSuccess {
+                KioskSuccessOverlay(name: first.isEmpty ? "you" : first)
+                    .transition(.opacity)
+                    .zIndex(10)
+            }
         }
+    }
+
+    // Pre-launch surface inside the Kiosk tab. Pared down: just the agent's
+    // listings as cards (each with its own Launch button) and, when there
+    // are no listings, a pair of stark options — launch without one, or
+    // add one first.
+    private var agentLauncher: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Kiosk")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.5)
+
+                if store.listings.isEmpty {
+                    emptyListingsLauncher
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(store.listings) { listing in
+                            launchRow(listing)
+                        }
+                        Button(action: onLaunch) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text("Launch without a listing")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Color.white.opacity(0.06), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 6)
+                    }
+                }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 80)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.black)
+    }
+
+    private func launchRow(_ listing: Listing) -> some View {
+        HStack(spacing: 14) {
+            listingThumb(listing)
+                .frame(width: 84, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(listing.address)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if !listing.displayPrice.isEmpty {
+                        Text(listing.displayPrice)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(listing.displaySpecs)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            Button {
+                onSelectListing(listing)
+                onLaunch()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Launch")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var emptyListingsLauncher: some View {
+        VStack(spacing: 12) {
+            Button(action: onLaunch) {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Launch kiosk without a listing")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onAddListing) {
+                HStack(spacing: 10) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Add a listing")
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .foregroundStyle(FoyerTheme.cream)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func listingThumb(_ listing: Listing) -> some View {
+        if let data = listing.photoData, let img = UIImage(data: data) {
+            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.10, green: 0.12, blue: 0.16),
+                    Color(red: 0.03, green: 0.04, blue: 0.06),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            .overlay(
+                Image(systemName: "house")
+                    .font(.system(size: 16, weight: .light))
+                    .foregroundStyle(.white.opacity(0.18))
+            )
+        }
+    }
+
+    private var exitButton: some View {
+        Button(action: onRequestExit) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 44, height: 44)
+                .background(.black.opacity(0.35), in: Circle())
+                .overlay(
+                    Circle().stroke(.white.opacity(0.12), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var listingPane: some View {
         if let listing {
             ZStack(alignment: .bottomLeading) {
-                listingPhoto(listing)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
+                listingImage(listing)
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.4), .black.opacity(0.85)],
+                    colors: [.clear, .black.opacity(0.4), .black.opacity(0.88)],
                     startPoint: .top, endPoint: .bottom
                 )
-                .frame(maxHeight: .infinity)
 
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 6) {
-                        Circle().fill(FoyerTheme.gold).frame(width: 5, height: 5)
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 7) {
+                        Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
                         Text("Open house")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(FoyerTheme.gold)
+                            .tracking(0.4)
                     }
                     Text(listing.address)
-                        .font(.system(size: 56, weight: .semibold))
+                        .font(.system(size: 60, weight: .semibold))
                         .foregroundStyle(.white)
-                        .tracking(-1)
+                        .tracking(-1.2)
                         .lineLimit(2)
                     if !listing.neighborhood.isEmpty {
                         Text(listing.neighborhood)
                             .font(.system(size: 22, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream)
+                            .foregroundStyle(.white.opacity(0.85))
                     }
                     HStack(alignment: .firstTextBaseline) {
                         if !listing.displayPrice.isEmpty {
                             Text(listing.displayPrice)
-                                .font(.system(size: 32, weight: .semibold))
+                                .font(.system(size: 34, weight: .semibold))
                                 .foregroundStyle(FoyerTheme.gold)
+                                .tracking(-0.5)
                         }
                         Spacer()
                         Text(listing.displaySpecs)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream.opacity(0.85))
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.75))
                     }
-                    .padding(.top, 4)
+                    .padding(.top, 6)
                 }
-                .padding(40)
+                .padding(44)
             }
+            .clipped()
         } else {
-            VStack(spacing: 18) {
-                Image(systemName: "house")
-                    .font(.system(size: 44, weight: .light))
-                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.4))
-                Text("No listing picked")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                Text("Pick the property guests are signing in to.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(FoyerTheme.textDim)
-                Button(action: onLaunchListing) {
-                    Text("Pick a listing")
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 22).padding(.vertical, 12)
-                        .foregroundStyle(FoyerTheme.inkOnGold)
-                        .background(FoyerTheme.gold, in: Capsule())
+            // No listing — show a calm welcome panel. The Foyer brand mark
+            // is intentionally dropped here because the back arrow lives in
+            // the same top-left corner and they'd visually collide.
+            ZStack(alignment: .bottomLeading) {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.10, green: 0.12, blue: 0.16),
+                        Color(red: 0.03, green: 0.04, blue: 0.06),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 7) {
+                        Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
+                        Text("Welcome")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.gold)
+                            .tracking(0.4)
+                    }
+                    Text("Come on in.")
+                        .font(.system(size: 60, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .tracking(-1.2)
+                    Text("Sign in over there so we can\nfollow up after the tour.")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineSpacing(4)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 6)
+                .padding(44)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
         }
     }
 
     @ViewBuilder
-    private func listingPhoto(_ listing: Listing) -> some View {
+    private func listingImage(_ listing: Listing) -> some View {
         if let data = listing.photoData, let img = UIImage(data: data) {
             Image(uiImage: img)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
+                .clipped()
         } else {
             LinearGradient(
                 colors: [
-                    Color(red: 0.12, green: 0.14, blue: 0.17),
-                    Color(red: 0.04, green: 0.05, blue: 0.07),
+                    Color(red: 0.10, green: 0.12, blue: 0.16),
+                    Color(red: 0.03, green: 0.04, blue: 0.06),
                 ],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
@@ -475,227 +1361,763 @@ private struct IPadKiosk: View {
     }
 
     private var formPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text("Welcome in")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(FoyerTheme.gold)
-                Spacer()
-                Text("\(store.pendingKioskGuests.count) signed in")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(FoyerTheme.creamDim)
-            }
-            .padding(.bottom, 18)
+                    .tracking(0.4)
+                    .padding(.bottom, 16)
 
-            Text("A few quick details.")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(FoyerTheme.cream)
-                .tracking(-0.5)
-            Text("Shared with the listing agent so they can follow up.")
-                .font(.system(size: 14))
-                .foregroundStyle(FoyerTheme.textDim)
-                .padding(.top, 6)
+                Text("A few details.")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.6)
+                Text("Shared with the listing agent so they can follow up.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .padding(.top, 6)
 
-            VStack(spacing: 14) {
-                kioskField(label: "Full name", value: $name, keyboard: .default, content: .name)
-                kioskField(label: "Email", value: $email, keyboard: .emailAddress, content: .emailAddress)
-                kioskField(label: "Phone", value: $phone, keyboard: .phonePad, content: .telephoneNumber)
-            }
-            .padding(.top, 28)
+                VStack(spacing: 14) {
+                    HStack(spacing: 10) {
+                        KioskField(
+                            label: "First name",
+                            text: $first,
+                            keyboard: .default,
+                            content: .givenName,
+                            isFocused: focused == .first,
+                            indicator: nil
+                        )
+                        .focused($focused, equals: .first)
 
-            if !store.pendingKioskGuests.isEmpty {
-                checkedInStrip
-                    .padding(.top, 22)
-            }
+                        KioskField(
+                            label: "Last name",
+                            text: $last,
+                            keyboard: .default,
+                            content: .familyName,
+                            isFocused: focused == .last,
+                            indicator: nil
+                        )
+                        .focused($focused, equals: .last)
+                    }
 
-            Spacer()
+                    KioskField(
+                        label: "Email",
+                        text: $email,
+                        keyboard: .emailAddress,
+                        content: .emailAddress,
+                        isFocused: focused == .email,
+                        indicator: emailCheck
+                    )
+                    .focused($focused, equals: .email)
+                    .onChange(of: email) { _, newValue in
+                        scheduleEmailCheck(newValue)
+                    }
 
-            HStack(spacing: 10) {
-                Button { saveGuest(andClear: true) } label: {
-                    Text("Sign in another")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(FoyerTheme.cream)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
+                    KioskField(
+                        label: "Phone",
+                        text: $phone,
+                        keyboard: .numberPad,
+                        content: .telephoneNumber,
+                        isFocused: focused == .phone,
+                        indicator: phoneCheck
+                    )
+                    .focused($focused, equals: .phone)
+                    .onChange(of: phone) { old, new in
+                        // Format inside onChange (not a custom Binding) — the
+                        // custom-Binding approach skipped intermediate
+                        // formatting on rapid keystrokes; onChange runs on
+                        // every commit so "(555) 1" appears as you type.
+                        let formatted = formatPhone(new)
+                        if formatted != new {
+                            phone = formatted
+                        }
+                        schedulePhoneCheck(formatted)
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-                .opacity(name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+                .padding(.top, 24)
 
-                Button { saveGuest(andClear: false) } label: {
+                agentChooser
+                    .padding(.top, 20)
+
+                termsRow
+                    .padding(.top, 22)
+
+                if let submitError {
+                    Text(submitError)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                        .padding(.top, 12)
+                }
+
+                Button {
+                    Task { await submit() }
+                } label: {
                     HStack(spacing: 8) {
-                        Text("Done")
-                            .font(.system(size: 14, weight: .semibold))
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 13, weight: .semibold))
+                        if submitting {
+                            ProgressView().scaleEffect(0.75).tint(FoyerTheme.inkOnGold)
+                        } else {
+                            Text("Done")
+                                .font(.system(size: 15, weight: .semibold))
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
                     }
                     .foregroundStyle(FoyerTheme.inkOnGold)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.vertical, 18)
+                    .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 14))
+                    .opacity(canSubmit ? 1 : 0.5)
                 }
                 .buttonStyle(.plain)
+                .disabled(!canSubmit || submitting)
+                .padding(.top, 24)
             }
-            .padding(.top, 16)
+            .padding(.horizontal, 40).padding(.vertical, 40)
         }
-        .padding(.horizontal, 36).padding(.vertical, 36)
     }
 
-    private func kioskField(
-        label: String,
-        value: Binding<String>,
-        keyboard: UIKeyboardType,
-        content: UITextContentType
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
+    private var agentChooser: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Working with an agent?")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(FoyerTheme.textDim)
-            TextField("", text: value)
+            HStack(spacing: 8) {
+                ForEach(VisitorInput.HasAgent.allCases) { opt in
+                    Button { hasAgent = opt } label: {
+                        Text(opt.label)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(hasAgent == opt ? FoyerTheme.inkOnGold : FoyerTheme.creamDim)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(hasAgent == opt ? FoyerTheme.gold : Color(white: 0.06))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // Single combined acceptance. The visible label is intentionally vague
+    // — the substance (recording consent, marketing opt-in, data handling)
+    // is in the Terms + Privacy docs that link out from "find out more".
+    private var termsRow: some View {
+        Button { termsAccepted.toggle() } label: {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(termsAccepted ? FoyerTheme.gold : Color.white.opacity(0.25), lineWidth: 1.5)
+                        .frame(width: 22, height: 22)
+                    if termsAccepted {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(FoyerTheme.gold)
+                            .frame(width: 22, height: 22)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                    }
+                }
+                .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("I agree to Foyer's Terms & Privacy Policy.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .multilineTextAlignment(.leading)
+                    Text("Includes audio recording for training purposes and listing follow-ups from your hosting agent.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .multilineTextAlignment(.leading)
+                        .lineSpacing(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var canSubmit: Bool {
+        let hasName = !first.trimmingCharacters(in: .whitespaces).isEmpty &&
+                      !last.trimmingCharacters(in: .whitespaces).isEmpty
+        return hasName
+            && emailCheck.isValid
+            && phoneCheck.isValid
+            && hasAgent != nil
+            && termsAccepted
+    }
+
+    // Phone formatting — strips non-digits, caps at 10, formats as
+    // "(555) 555-1234". Called from onChange so the field re-renders on
+    // every keystroke and the guest sees the shape build up immediately.
+    private func formatPhone(_ input: String) -> String {
+        let digits = input.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }
+        let s = String(String.UnicodeScalarView(digits.prefix(10)))
+        let n = s.count
+        switch n {
+        case 0:     return ""
+        case 1...3: return "(\(s)"
+        case 4...6:
+            let area = s.prefix(3); let mid = s.dropFirst(3)
+            return "(\(area)) \(mid)"
+        default:
+            let area = s.prefix(3); let mid = s.dropFirst(3).prefix(3); let end = s.dropFirst(6)
+            return "(\(area)) \(mid)-\(end)"
+        }
+    }
+
+    // Email regex used for offline / fail-open client checks. The backend
+    // MX lookup is the real source of truth, but if it can't be reached
+    // we don't want to block the kiosk — so we fall through to this regex
+    // + TLD whitelist and accept the value.
+    private static let emailRegex = try! NSRegularExpression(
+        pattern: #"^[A-Z0-9._%+-]+@[A-Z0-9-]+(\.[A-Z0-9-]+)*\.([A-Z]{2,})$"#,
+        options: [.caseInsensitive]
+    )
+
+    // Whitelist of TLDs we'll accept without backend MX verification.
+    // Covers the long tail of real-world emails. Anything else (e.g.
+    // "dd.dd") gets rejected at the client so the guest can't slip by
+    // when the verifier is down.
+    private static let knownTLDs: Set<String> = [
+        // generic
+        "com", "net", "org", "edu", "gov", "mil", "int",
+        "info", "biz", "name", "pro", "aero", "coop", "museum",
+        "co", "io", "ai", "app", "dev", "me", "tv", "fm",
+        "xyz", "online", "store", "site", "tech", "blog", "shop",
+        "design", "art", "club", "live", "news", "today", "world", "life",
+        "group", "agency", "page", "link", "fun", "top", "vip", "work", "zone",
+        "plus", "social", "network", "media", "digital", "cloud", "services",
+        "solutions", "consulting", "ventures", "capital", "studio", "house",
+        "realty", "estate", "homes", "properties", "realtor",
+        // country codes that show up in US open-house context
+        "us", "uk", "ca", "au", "de", "fr", "jp", "cn", "in", "br",
+        "ru", "mx", "es", "it", "nl", "se", "no", "dk", "fi", "pl",
+        "kr", "tw", "hk", "sg", "th", "vn", "ph", "my", "id",
+        "ar", "cl", "pe", "co", "ng", "ke", "za", "il", "ae", "tr",
+        "gr", "pt", "ie", "be", "ch", "at", "cz", "sk", "hu", "ro",
+        "nz", "is", "mt", "cy", "lu", "lt", "lv", "ee",
+    ]
+
+    private static func looksLikeEmail(_ s: String) -> Bool {
+        let range = NSRange(s.startIndex..<s.endIndex, in: s)
+        guard emailRegex.firstMatch(in: s, range: range) != nil else { return false }
+        // Pull the TLD (after the last dot) and check it's something real.
+        // This is what catches "something@dd.dd" — "dd" isn't a TLD.
+        guard let lastDot = s.lastIndex(of: ".") else { return false }
+        let tld = s[s.index(after: lastDot)...].lowercased()
+        return knownTLDs.contains(tld)
+    }
+
+    private func scheduleEmailCheck(_ value: String) {
+        emailDebounce?.cancel()
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            emailCheck = .idle
+            return
+        }
+        if !Self.looksLikeEmail(trimmed) {
+            // Show the live red state immediately on obvious-junk input so
+            // the guest gets a hint without waiting for the backend.
+            emailCheck = .checking
+        } else {
+            emailCheck = .checking
+        }
+        emailDebounce = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            if Task.isCancelled { return }
+            do {
+                let result = try await APIClient.shared.verifyContact(email: trimmed)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    if let check = result.email {
+                        emailCheck = check.valid
+                            ? .valid(nil)
+                            : .invalid(check.reason ?? "Invalid email")
+                    } else {
+                        // Backend didn't echo the field — fall back to
+                        // client regex so we don't get stuck "checking".
+                        emailCheck = Self.looksLikeEmail(trimmed)
+                            ? .valid(nil)
+                            : .invalid("Doesn't look like an email")
+                    }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                // Backend unreachable — fail OPEN: client regex decides.
+                // No "couldn't reach verifier" hint shown to the guest.
+                await MainActor.run {
+                    emailCheck = Self.looksLikeEmail(trimmed)
+                        ? .valid(nil)
+                        : .invalid("Doesn't look like an email")
+                }
+            }
+        }
+    }
+
+    private func schedulePhoneCheck(_ value: String) {
+        phoneDebounce?.cancel()
+        let digits = value.filter(\.isNumber)
+        if digits.isEmpty {
+            phoneCheck = .idle
+            return
+        }
+        if digits.count < 10 {
+            phoneCheck = .checking
+            return
+        }
+        phoneCheck = .checking
+        phoneDebounce = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            if Task.isCancelled { return }
+            do {
+                let result = try await APIClient.shared.verifyContact(phone: value)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    if let check = result.phone {
+                        phoneCheck = check.valid ? .valid(nil) : .invalid(check.reason ?? "Invalid phone")
+                    } else {
+                        phoneCheck = digits.count == 10 ? .valid(nil) : .invalid("Need 10 digits")
+                    }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                // Backend unreachable — accept any 10-digit number.
+                await MainActor.run {
+                    phoneCheck = digits.count == 10 ? .valid(nil) : .invalid("Need 10 digits")
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func submit() async {
+        guard canSubmit else { return }
+        submitting = true
+        defer { submitting = false }
+        submitError = nil
+
+        let fullName = (first.trimmingCharacters(in: .whitespaces) + " " +
+                        last.trimmingCharacters(in: .whitespaces))
+                       .trimmingCharacters(in: .whitespaces)
+        var guest = VisitorInput(
+            name: fullName,
+            email: email.trimmingCharacters(in: .whitespaces),
+            phone: phone
+        )
+        guest.hasAgent = hasAgent
+        // Combined consent maps to both flags for the backend, since the
+        // server schema still tracks them separately (and we want the
+        // honest legal record that both were granted, even if the UI
+        // bundled them).
+        guest.marketingConsent = termsAccepted
+        guest.recordingConsent = termsAccepted
+        store.pendingKioskGuests.append(guest)
+
+        // Show the success overlay, clear the form WHILE it's still up so
+        // the next guest sees an empty form when the overlay dismisses.
+        // Previously we cleared after dismiss, so the guest would briefly
+        // see the prior guest's data clear out in front of them.
+        withAnimation(.easeOut(duration: 0.3)) { showSuccess = true }
+        try? await Task.sleep(for: .milliseconds(2000))
+        clearForm()
+        try? await Task.sleep(for: .milliseconds(300))
+        withAnimation(.easeInOut(duration: 0.45)) { showSuccess = false }
+    }
+
+    private func clearForm() {
+        first = ""; last = ""; email = ""; phone = ""
+        hasAgent = .no
+        termsAccepted = false
+        emailCheck = .idle
+        phoneCheck = .idle
+        submitError = nil
+        focused = .first
+    }
+}
+
+// Single text field row for the kiosk. Pulled out as its own View struct
+// so SwiftUI can diff per-field instead of rebuilding the entire form
+// pane when any one field's text changes — that was the source of the
+// keystroke lag.
+private struct KioskField: View {
+    let label: String
+    @Binding var text: String
+    let keyboard: UIKeyboardType
+    let content: UITextContentType
+    let isFocused: Bool
+    let indicator: IPadKiosk.ValidationState?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isFocused ? FoyerTheme.gold : FoyerTheme.textDim)
+                Spacer()
+                indicatorView
+            }
+            TextField("", text: $text)
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(FoyerTheme.cream)
                 .tint(FoyerTheme.gold)
                 .textContentType(content)
                 .keyboardType(keyboard)
+                .textInputAutocapitalization(keyboard == .emailAddress ? .never : .words)
                 .autocorrectionDisabled()
-                .padding(.vertical, 14)
-                .padding(.horizontal, 16)
-                .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.vertical, 14).padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(white: 0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(strokeColor, lineWidth: 1)
+                )
         }
     }
 
-    private var checkedInStrip: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Already signed in")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(FoyerTheme.textDim)
-            VStack(spacing: 0) {
-                ForEach(store.pendingKioskGuests) { g in
-                    HStack {
-                        Text(g.name)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(FoyerTheme.cream)
-                        Spacer()
-                        Text(g.email.isEmpty ? g.phone : g.email)
-                            .font(.system(size: 12))
-                            .foregroundStyle(FoyerTheme.textDim)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    if g.id != store.pendingKioskGuests.last?.id {
-                        Hairline()
-                    }
+    private var strokeColor: Color {
+        if case .invalid = indicator { return FoyerTheme.terracotta.opacity(0.7) }
+        if case .valid = indicator { return FoyerTheme.sage.opacity(0.5) }
+        if isFocused { return FoyerTheme.gold.opacity(0.6) }
+        return .clear
+    }
+
+    @ViewBuilder
+    private var indicatorView: some View {
+        switch indicator {
+        case .none, .idle:
+            EmptyView()
+        case .checking:
+            ProgressView().scaleEffect(0.55).tint(FoyerTheme.textDim)
+        case .valid(let hint):
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.sage)
+                if let hint {
+                    Text(hint)
+                        .font(.system(size: 10))
+                        .foregroundStyle(FoyerTheme.textDim)
                 }
             }
-            .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 12))
-        }
-    }
-
-    private func saveGuest(andClear: Bool) {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        store.pendingKioskGuests.append(
-            VisitorInput(name: trimmed, email: email, phone: phone)
-        )
-        if andClear {
-            name = ""
-            email = ""
-            phone = ""
+        case .invalid(let reason):
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                Text(reason)
+                    .font(.system(size: 10))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
         }
     }
 }
 
-// MARK: – Leads (per-session review)
+// Fullscreen "Thanks, Aleks" celebration shown after Done is tapped. Uses
+// the same disc + checkmark vocabulary as the welcome overlay so the app
+// feels like one piece.
+private struct KioskSuccessOverlay: View {
+    let name: String
 
-// Two-pane leads viewer. Left: list of every visitor across recorded
-// sessions (or, when a session is preselected, just that session's leads).
-// Right: detail for the picked visitor including the auto-summary, signal
-// tags, and the drafted follow-up. Lead-state changes hit the backend via
-// APIClient.updateLeadState, same as the iPhone flow.
+    @State private var ringScale: CGFloat = 0.5
+    @State private var ringOpacity: Double = 0
+    @State private var discScale: CGFloat = 0
+    @State private var checkProgress: CGFloat = 0
+    @State private var textOpacity: Double = 0
+
+    var body: some View {
+        ZStack {
+            Color.black
+            VStack(spacing: 26) {
+                ZStack {
+                    Circle()
+                        .stroke(FoyerTheme.sage.opacity(0.4), lineWidth: 1.5)
+                        .frame(width: 180, height: 180)
+                        .scaleEffect(ringScale)
+                        .opacity(ringOpacity)
+                    Circle()
+                        .fill(FoyerTheme.sage)
+                        .frame(width: 96, height: 96)
+                        .scaleEffect(discScale)
+                        .shadow(color: FoyerTheme.sage.opacity(0.35), radius: 24, y: 8)
+                    Check()
+                        .trim(from: 0, to: checkProgress)
+                        .stroke(FoyerTheme.inkOnGold,
+                                style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                        .frame(width: 44, height: 36)
+                        .opacity(discScale > 0.6 ? 1 : 0)
+                }
+                .frame(height: 200)
+                VStack(spacing: 4) {
+                    Text("Thanks for signing in,")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                    Text("\(name)!")
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .tracking(-0.8)
+                }
+                .opacity(textOpacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.85)) {
+                ringScale = 1.25
+                ringOpacity = 1
+            }
+            withAnimation(.easeOut(duration: 1.3).delay(0.15)) {
+                ringScale = 1.8
+                ringOpacity = 0
+            }
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.62).delay(0.18)) {
+                discScale = 1
+            }
+            withAnimation(.easeOut(duration: 0.4).delay(0.5)) {
+                checkProgress = 1
+            }
+            withAnimation(.easeOut(duration: 0.5).delay(0.7)) {
+                textOpacity = 1
+            }
+        }
+    }
+}
+
+// MARK: – Leads (ChatGPT/Claude — single-column reading)
+
+// Compact left list (visitor name + tag + status), wide reading column on
+// the right with the visitor's profile, what the AI heard, signals as
+// inline chips, and the drafted follow-up as an editable-feeling block.
+// Real data: APIClient.getSession(id) populates visitors;
+// updateLeadState(...) flips status optimistically.
 private struct IPadLeads: View {
     let store: SessionStore
-    @Binding var sessionId: String?
+    // Optional pre-filter: when the agent taps a recent session in the
+    // side rail, we land here with that session selected. nil = "All".
+    var initialFilter: String? = nil
 
-    @State private var detailSession: Session?
-    @State private var activeVisitorId: String?
+    // A single row in the unified Leads inbox: one VisitorResult + the
+    // session it came from. We hold full Session refs (not just summaries)
+    // because the detail view needs the session id and address to send
+    // follow-ups and surface the right metadata.
+    struct LeadRow: Identifiable {
+        let visitor: VisitorResult
+        let session: Session
+        var id: String { "\(session.id):\(visitor.id)" }
+    }
+
+    @State private var allLeads: [LeadRow] = []
     @State private var loading = false
+    @State private var activeId: String?
+    @State private var filterSessionId: String?
+    @State private var showAddLead: Bool = false
+    @State private var didApplyInitialFilter: Bool = false
+
+    // Send-via-Gmail state.
+    @State private var sendingId: String?
+    @State private var sendError: String?
+    @State private var showGmailConnect: Bool = false
+
+    // Delete-lead state.
+    @State private var pendingDeleteLead: LeadRow?
+    @State private var deletingLead: Bool = false
+    @State private var deleteLeadError: String?
+
+    private var filteredLeads: [LeadRow] {
+        guard let id = filterSessionId else { return allLeads }
+        return allLeads.filter { $0.session.id == id }
+    }
+
+    private var current: LeadRow? {
+        if let id = activeId, let m = allLeads.first(where: { $0.id == id }) { return m }
+        return filteredLeads.first
+    }
+
+    private var sessionsForFilter: [Session] {
+        var seen = Set<String>()
+        var out: [Session] = []
+        for row in allLeads where !seen.contains(row.session.id) {
+            seen.insert(row.session.id)
+            out.append(row.session)
+        }
+        return out
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            list
-                .frame(width: 360)
-                .background(FoyerTheme.bg)
+            sidebar
+                .frame(width: 340)
+                .background(Color(white: 0.03))
                 .overlay(alignment: .trailing) {
                     Rectangle().fill(FoyerTheme.hairline).frame(width: 1)
                 }
-            detail
+            content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(FoyerTheme.bgDeep)
+                .background(Color.black)
         }
-        .task(id: sessionId) {
-            await loadDetail()
+        .task { await load() }
+        .onAppear {
+            if !didApplyInitialFilter, let id = initialFilter {
+                filterSessionId = id
+                didApplyInitialFilter = true
+            }
+        }
+        .onChange(of: initialFilter) { _, newValue in
+            // Re-apply when the side rail picks a different recent session.
+            if let id = newValue { filterSessionId = id; activeId = nil }
+        }
+        .sheet(isPresented: $showGmailConnect) {
+            GmailConnectSheet(
+                onConnected: { connected in
+                    showGmailConnect = false
+                    if connected, let row = current {
+                        Task { await markSent(row.visitor, session: row.session) }
+                    }
+                },
+                onCancel: { showGmailConnect = false }
+            )
+        }
+        .sheet(isPresented: $showAddLead) {
+            ManualLeadSheet(
+                onCancel: { showAddLead = false },
+                onCreated: { _ in
+                    showAddLead = false
+                    Task { await load() }
+                }
+            )
+        }
+        .alert(
+            "Delete this lead?",
+            isPresented: Binding(
+                get: { pendingDeleteLead != nil },
+                set: { if !$0 { pendingDeleteLead = nil } }
+            ),
+            presenting: pendingDeleteLead
+        ) { row in
+            Button("Cancel", role: .cancel) { pendingDeleteLead = nil }
+            Button("Delete permanently", role: .destructive) {
+                Task { await performDeleteLead(row) }
+            }
+        } message: { row in
+            Text("Permanently remove \(row.visitor.displayName) from this session. The rest of the session and its other leads are kept. This can't be undone.")
         }
     }
 
-    private var visitors: [VisitorResult] {
-        detailSession?.result?.visitors ?? []
-    }
-
-    private var currentVisitor: VisitorResult? {
-        if let id = activeVisitorId {
-            return visitors.first { $0.id == id }
-        }
-        return visitors.first
-    }
-
-    private var list: some View {
+    private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Leads")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .tracking(-0.4)
-                if let s = detailSession {
-                    Text(s.address ?? "Open house")
-                        .font(.system(size: 14))
-                        .foregroundStyle(FoyerTheme.textDim)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Leads")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .tracking(-0.4)
+                    Spacer()
+                    Button { showAddLead = true } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                            .frame(width: 30, height: 30)
+                            .background(FoyerTheme.gold, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !sessionsForFilter.isEmpty {
+                    sessionFilterMenu
                 }
             }
-            .padding(.horizontal, 24).padding(.top, 32).padding(.bottom, 20)
+            .padding(.horizontal, 22).padding(.top, 36).padding(.bottom, 14)
 
-            if loading {
+            if loading && allLeads.isEmpty {
                 Spacer()
                 ProgressView().tint(FoyerTheme.gold)
                 Spacer()
-            } else if visitors.isEmpty {
-                emptyState
+            } else if filteredLeads.isEmpty {
+                emptyList
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(visitors) { v in
-                            Button { activeVisitorId = v.id } label: {
-                                row(v)
-                            }
-                            .buttonStyle(.plain)
-                            Hairline()
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 2) {
+                        ForEach(filteredLeads) { row in
+                            Button { activeId = row.id } label: { leadRow(row) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 12)
+                }
+            }
+        }
+    }
+
+    private var sessionFilterMenu: some View {
+        Menu {
+            Button {
+                filterSessionId = nil
+                activeId = nil
+            } label: {
+                HStack {
+                    Text("All sessions")
+                    if filterSessionId == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+            Divider()
+            ForEach(sessionsForFilter, id: \.id) { s in
+                Button {
+                    filterSessionId = s.id
+                    activeId = nil
+                } label: {
+                    HStack {
+                        Text(s.address ?? "Open house")
+                        if filterSessionId == s.id {
+                            Image(systemName: "checkmark")
                         }
                     }
                 }
             }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(filterLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Color.white.opacity(0.06), in: Capsule())
         }
     }
 
-    private var emptyState: some View {
+    private var filterLabel: String {
+        guard let id = filterSessionId,
+              let s = sessionsForFilter.first(where: { $0.id == id }) else {
+            return "All sessions (\(allLeads.count))"
+        }
+        return s.address ?? "Selected session"
+    }
+
+    private var emptyList: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "person.2")
-                .font(.system(size: 32, weight: .light))
+            Image(systemName: "tray")
+                .font(.system(size: 30, weight: .light))
                 .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
-            Text(sessionId == nil ? "Pick a session from Home" : "No leads on this session")
+            Text("No leads yet")
                 .font(.system(size: 14))
                 .foregroundStyle(FoyerTheme.textDim)
+            Text("Record a session or add one manually.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             Spacer()
@@ -703,246 +2125,584 @@ private struct IPadLeads: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func row(_ v: VisitorResult) -> some View {
-        let isActive = (activeVisitorId ?? visitors.first?.id) == v.id
+    private func leadRow(_ row: LeadRow) -> some View {
+        let v = row.visitor
+        let active = (activeId ?? filteredLeads.first?.id) == row.id
         return HStack(spacing: 12) {
             Text(v.displayInitials)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 38, height: 38)
-                .background(FoyerTheme.bgElev2, in: Circle())
+                .frame(width: 36, height: 36)
+                .background(FoyerTheme.bgElev, in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(v.displayName)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    if let kind = TagPill.Kind(v.analysis.tagToken) {
-                        TagPill(kind: kind, text: v.analysis.tag)
+                    Circle()
+                        .fill(tagColor(v.analysis.tagToken))
+                        .frame(width: 5, height: 5)
+                    Text(v.analysis.tag)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    if filterSessionId == nil, let addr = row.session.address, !addr.isEmpty {
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text(addr)
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .lineLimit(1)
                     }
-                    if let state = v.leadState {
+                    if let state = v.leadState, state.status != .drafted {
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.textMuted)
                         Text(state.status.rawValue.capitalized)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 11))
                             .foregroundStyle(FoyerTheme.textDim)
                     }
                 }
             }
             Spacer()
             Text("\(v.analysis.score)")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
         }
-        .padding(.horizontal, 20).padding(.vertical, 14)
-        .background(isActive ? FoyerTheme.goldSoft : Color.clear)
-        .overlay(alignment: .leading) {
-            Rectangle().fill(isActive ? FoyerTheme.gold : Color.clear).frame(width: 2)
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(active ? Color.white.opacity(0.06) : Color.clear)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private func tagColor(_ token: String) -> Color {
+        switch token {
+        case "buyer":   return FoyerTheme.gold
+        case "seller":  return FoyerTheme.terracotta
+        case "browser": return FoyerTheme.sage
+        default:        return FoyerTheme.creamDim
         }
     }
 
     @ViewBuilder
-    private var detail: some View {
-        if let v = currentVisitor, let session = detailSession {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    detailHeader(v)
-                    summarySection(v)
-                    followupSection(v, session: session)
+    private var content: some View {
+        if let row = current {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 36) {
+                    visitorHeader(row)
+                    summary(row.visitor)
+                    followup(row.visitor, session: row.session)
+                    if let deleteLeadError {
+                        Text(deleteLeadError)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    Spacer().frame(height: 80)
                 }
-                .padding(.horizontal, 40).padding(.vertical, 32)
+                .frame(maxWidth: 720, alignment: .leading)
+                .padding(.horizontal, 56).padding(.top, 56)
             }
-        } else if !loading {
-            VStack(spacing: 14) {
-                Image(systemName: "rectangle.and.text.magnifyingglass")
-                    .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
-                Text(sessionId == nil ? "Pick a session to see its leads."
-                                       : "Pick a lead to see the summary and follow-up.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if loading {
             ProgressView().tint(FoyerTheme.gold)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            emptyContent
         }
     }
 
-    private func detailHeader(_ v: VisitorResult) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(v.displayName)
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .tracking(-0.4)
-                Spacer()
-                if let kind = TagPill.Kind(v.analysis.tagToken) {
-                    TagPill(kind: kind, text: v.analysis.tag)
+    private var emptyContent: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(FoyerTheme.creamDim.opacity(0.4))
+            Text("No leads to show yet.")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func visitorHeader(_ row: LeadRow) -> some View {
+        let v = row.visitor
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
+                Text(v.displayInitials)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .frame(width: 64, height: 64)
+                    .background(FoyerTheme.bgElev, in: Circle())
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(v.displayName)
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .tracking(-0.5)
+                    HStack(spacing: 8) {
+                        Text(v.analysis.tag)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(tagColor(v.analysis.tagToken))
+                            .padding(.horizontal, 10).padding(.vertical, 4)
+                            .background(
+                                Capsule().fill(tagColor(v.analysis.tagToken).opacity(0.12))
+                            )
+                        Text("Score \(v.analysis.score)")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                        if let state = v.leadState, state.status != .drafted {
+                            statusPill(state.status)
+                        }
+                    }
                 }
-            }
-            HStack(spacing: 12) {
-                Text(v.analysis.score.description)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
-                Text("· score")
-                    .font(.system(size: 13))
-                    .foregroundStyle(FoyerTheme.textDim)
                 Spacer()
+                Button { pendingDeleteLead = row } label: {
+                    HStack(spacing: 6) {
+                        if deletingLead {
+                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.terracotta)
+                        } else {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        Text("Delete")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(deletingLead)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: 18) {
                 if !v.visitor.email.isEmpty {
-                    Label(v.visitor.email, systemImage: "envelope")
-                        .labelStyle(.titleAndIcon)
+                    contactLine(icon: "envelope", text: v.visitor.email)
                 }
                 if !v.visitor.phone.isEmpty {
-                    Label(v.visitor.phone, systemImage: "phone")
-                        .labelStyle(.titleAndIcon)
+                    contactLine(icon: "phone", text: v.visitor.phone)
                 }
             }
-            .font(.system(size: 12))
-            .foregroundStyle(FoyerTheme.textDim)
         }
     }
 
-    private func summarySection(_ v: VisitorResult) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private func contactLine(icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 11))
+            Text(text).font(.system(size: 13))
+        }
+        .foregroundStyle(FoyerTheme.creamDim)
+    }
+
+    private func summary(_ v: VisitorResult) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
             Text("What we heard")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(FoyerTheme.textDim)
             Text(v.analysis.summary)
-                .font(.system(size: 16))
+                .font(.system(size: 17))
                 .foregroundStyle(FoyerTheme.cream)
-                .lineSpacing(5)
+                .lineSpacing(6)
             if !v.analysis.signals.isEmpty {
                 FlowLayout(spacing: 6) {
                     ForEach(v.analysis.signals, id: \.self) { s in
                         Text(s)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(FoyerTheme.gold)
-                            .padding(.horizontal, 10).padding(.vertical, 5)
-                            .background(FoyerTheme.goldSoft, in: Capsule())
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 11).padding(.vertical, 5)
+                            .background(
+                                Capsule().fill(Color(white: 0.07))
+                            )
                     }
                 }
                 .padding(.top, 4)
             }
         }
-        .padding(20)
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private func followupSection(_ v: VisitorResult, session: Session) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private func followup(_ v: VisitorResult, session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("Drafted follow-up")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(FoyerTheme.textDim)
                 Spacer()
-                if let state = v.leadState {
-                    statusPill(state.status)
-                }
+                Text(channel(v))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
             }
+
             Text(v.analysis.followUpDraft)
                 .font(.system(size: 15))
                 .foregroundStyle(FoyerTheme.cream)
-                .lineSpacing(5)
+                .lineSpacing(6)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(white: 0.05))
+                )
 
             HStack(spacing: 10) {
-                Button { } label: {
-                    Text("Regenerate")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(FoyerTheme.cream)
-                        .padding(.horizontal, 16).padding(.vertical, 11)
-                        .background(FoyerTheme.bgElev, in: Capsule())
+                let state = v.leadState?.status ?? .drafted
+                if state == .sent {
+                    stateAction("Mark replied", icon: "checkmark.circle", color: FoyerTheme.sage) {
+                        Task { await transition(v, session: session, to: .replied) }
+                    }
+                } else if state == .drafted {
+                    stateAction("Mark replied", icon: "checkmark.circle", color: FoyerTheme.sage) {
+                        Task { await transition(v, session: session, to: .replied) }
+                    }
                 }
-                .buttonStyle(.plain)
+                if state != .archived {
+                    stateAction("Archive", icon: "archivebox", color: FoyerTheme.creamDim) {
+                        Task { await transition(v, session: session, to: .archived) }
+                    }
+                } else {
+                    stateAction("Restore", icon: "tray.and.arrow.up", color: FoyerTheme.gold) {
+                        Task { await transition(v, session: session, to: .drafted) }
+                    }
+                }
                 Spacer()
-                Button { Task { await sendNow(v, session: session) } } label: {
+                let sending = (sendingId == v.id)
+                Button { Task { await markSent(v, session: session) } } label: {
                     HStack(spacing: 8) {
-                        Text("Send email")
-                            .font(.system(size: 13, weight: .semibold))
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 12, weight: .semibold))
+                        if sending {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                                .tint(FoyerTheme.inkOnGold)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        Text(sending ? "Sending…" : "Send")
+                            .font(.system(size: 14, weight: .semibold))
                     }
                     .foregroundStyle(FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    .padding(.horizontal, 18).padding(.vertical, 11)
                     .background(FoyerTheme.gold, in: Capsule())
                 }
+                .disabled(sending)
                 .buttonStyle(.plain)
             }
-            .padding(.top, 6)
-        }
-        .padding(20)
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
-    }
+            .padding(.top, 2)
 
-    private func statusPill(_ status: LeadState.Status) -> some View {
-        let (text, tone): (String, StatusPill.Tone) = {
-            switch status {
-            case .drafted:  return ("Drafted", .gold)
-            case .sent:     return ("Sent", .sage)
-            case .replied:  return ("Replied", .sage)
-            case .archived: return ("Archived", .glass)
+            if let sendError {
+                Text(sendError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.top, 4)
             }
-        }()
-        return StatusPill(text: text, tone: tone)
-    }
-
-    private func loadDetail() async {
-        guard let id = sessionId else {
-            detailSession = nil
-            activeVisitorId = nil
-            return
-        }
-        loading = true
-        defer { loading = false }
-        do {
-            let s = try await APIClient.shared.getSession(id: id)
-            detailSession = s
-            activeVisitorId = s.result?.visitors.first?.id
-        } catch {
-            detailSession = nil
         }
     }
 
-    private func sendNow(_ v: VisitorResult, session: Session) async {
+    private func channel(_ v: VisitorResult) -> String {
+        if !v.visitor.email.isEmpty { return "Email" }
+        if !v.visitor.phone.isEmpty { return "SMS" }
+        return "—"
+    }
+
+    private func stateAction(_ text: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 11, weight: .medium))
+                Text(text).font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(color.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func transition(_ v: VisitorResult, session: Session, to status: LeadState.Status) async {
         do {
-            let updated = try await APIClient.shared.updateLeadState(
+            let newState = try await APIClient.shared.updateLeadState(
                 sessionId: session.id,
                 visitorName: v.visitor.name,
                 visitorSpeaker: v.visitor.speaker,
-                status: .sent,
+                status: status,
                 snoozedUntil: nil
             )
-            await MainActor.run {
-                if let idx = detailSession?.result?.visitors.firstIndex(where: { $0.id == v.id }) {
-                    detailSession?.result?.visitors[idx].leadState = updated
-                }
+            if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
+                var row = allLeads[idx]
+                var visitor = row.visitor
+                visitor.leadState = newState
+                row = LeadRow(visitor: visitor, session: row.session)
+                allLeads[idx] = row
             }
         } catch {
-            // Silent failure here mirrors the iPhone — the UI just doesn't
-            // flip to Sent. A toast would be nicer once we have one.
+            sendError = "Couldn't update: \(error.localizedDescription)"
+        }
+    }
+
+    private func ghost(_ text: String, icon: String) -> some View {
+        Button { } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 11, weight: .medium))
+                Text(text).font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(Color(white: 0.07), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func statusPill(_ status: LeadState.Status) -> some View {
+        let (text, color): (String, Color) = {
+            switch status {
+            case .drafted:  return ("Drafted", FoyerTheme.gold)
+            case .sent:     return ("Sent", FoyerTheme.sage)
+            case .replied:  return ("Replied", FoyerTheme.sage)
+            case .archived: return ("Archived", FoyerTheme.creamDim)
+            }
+        }()
+        return Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    // Fetch every recorded session in parallel and flatten the visitors
+    // into a single inbox. The session-summary list (cheap) tells us which
+    // ids to fetch; per-session detail fetches happen concurrently. This
+    // is N round trips on the cold path — fine for the agent's own list
+    // (typically dozens). A flat /leads endpoint can replace this later.
+    private func load() async {
+        await MainActor.run { loading = true }
+        defer { Task { @MainActor in loading = false } }
+        await store.refreshSessions()
+        let summaries = store.pastSessions.filter { $0.kind == "recorded" }
+        let collected: [LeadRow] = await withTaskGroup(of: [LeadRow]?.self) { group in
+            for summary in summaries {
+                group.addTask {
+                    guard let session = try? await APIClient.shared.getSession(id: summary.id),
+                          let visitors = session.result?.visitors else { return nil }
+                    return visitors.map { LeadRow(visitor: $0, session: session) }
+                }
+            }
+            var rows: [LeadRow] = []
+            for await maybe in group {
+                if let chunk = maybe { rows.append(contentsOf: chunk) }
+            }
+            return rows
+        }
+        await MainActor.run {
+            self.allLeads = collected.sorted { lhs, rhs in
+                (lhs.session.createdAt ?? "") > (rhs.session.createdAt ?? "")
+            }
+            if activeId == nil { activeId = self.filteredLeads.first?.id }
+        }
+    }
+
+    @MainActor
+    private func performDeleteLead(_ row: LeadRow) async {
+        deletingLead = true
+        deleteLeadError = nil
+        defer { deletingLead = false; pendingDeleteLead = nil }
+        // Resolve the visitor's index inside its session — the backend
+        // identifies leads by their position in result.visitors. Fall back
+        // to load() if we can't find the index (stale local state).
+        guard let result = row.session.result,
+              let idx = result.visitors.firstIndex(where: { $0.id == row.visitor.id }) else {
+            deleteLeadError = "Couldn't locate this lead."
+            return
+        }
+        do {
+            try await APIClient.shared.deleteVisitor(
+                sessionId: row.session.id,
+                visitorIndex: idx
+            )
+            allLeads.removeAll { $0.id == row.id }
+            if activeId == row.id { activeId = filteredLeads.first?.id }
+        } catch {
+            deleteLeadError = error.localizedDescription
+        }
+    }
+
+    private func markSent(_ v: VisitorResult, session: Session) async {
+        await MainActor.run { sendingId = v.id; sendError = nil }
+        defer { Task { @MainActor in sendingId = nil } }
+        do {
+            let result = try await APIClient.shared.sendVisitorEmail(
+                sessionId: session.id,
+                visitorName: v.visitor.name,
+                visitorSpeaker: v.visitor.speaker
+            )
+            await MainActor.run {
+                let newState = result.leadState
+                    ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil)
+                if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
+                    var row = allLeads[idx]
+                    var visitor = row.visitor
+                    visitor.leadState = newState
+                    row = LeadRow(visitor: visitor, session: row.session)
+                    allLeads[idx] = row
+                }
+            }
+        } catch APIClient.SendEmailError.gmailNotConnected {
+            await MainActor.run { showGmailConnect = true }
+        } catch APIClient.SendEmailError.noRecipient {
+            await MainActor.run { sendError = "This lead has no email on file." }
+        } catch {
+            await MainActor.run { sendError = "Couldn't send: \(error.localizedDescription)" }
         }
     }
 }
 
-// MARK: – Listings (manage open houses)
+// MARK: – Manual lead entry sheet
 
+// Minimal form for typing in a lead that didn't come from a recorded
+// session — e.g. the agent met someone outside the open house and wants
+// it to flow through the same follow-up tooling. Backend creates a
+// kind="manual" Session under the hood so the lead surfaces in the inbox.
+private struct ManualLeadSheet: View {
+    var onCancel: () -> Void
+    var onCreated: (Session) -> Void
+
+    @State private var name: String = ""
+    @State private var email: String = ""
+    @State private var phone: String = ""
+    @State private var tag: String = "buyer"
+    @State private var address: String = ""
+    @State private var submitting: Bool = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    field("Full name", value: $name, keyboard: .default)
+                    field("Email", value: $email, keyboard: .emailAddress)
+                    field("Phone", value: $phone, keyboard: .phonePad)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Lead type").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        Picker("Lead type", selection: $tag) {
+                            Text("Buyer").tag("buyer")
+                            Text("Seller").tag("seller")
+                            Text("Browser").tag("browser")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    field("Address (optional)", value: $address, keyboard: .default)
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle("New lead")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { Task { await submit() } } label: {
+                        if submitting { ProgressView() } else { Text("Save") }
+                    }
+                    .foregroundStyle(canSave ? FoyerTheme.gold : FoyerTheme.textMuted)
+                    .disabled(!canSave || submitting)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func field(_ label: String, value: Binding<String>, keyboard: UIKeyboardType) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            TextField("", text: value)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .padding(.vertical, 14).padding(.horizontal, 14)
+                .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        (!email.trimmingCharacters(in: .whitespaces).isEmpty ||
+         !phone.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+
+    @MainActor
+    private func submit() async {
+        submitting = true
+        errorMessage = nil
+        defer { submitting = false }
+        do {
+            let session = try await APIClient.shared.createManualLead(
+                name: name.trimmingCharacters(in: .whitespaces),
+                email: email.trimmingCharacters(in: .whitespaces),
+                phone: phone.trimmingCharacters(in: .whitespaces),
+                tag: tag,
+                address: address.trimmingCharacters(in: .whitespaces).isEmpty ? nil : address
+            )
+            onCreated(session)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: – Listings (Spotify — card grid)
+
+// Large image-forward cards arranged in an adaptive grid. Each card jumps
+// into the Sign-in tab pre-loaded with that listing. Real listings come
+// from store.listings (UserDefaults).
 private struct IPadListings: View {
     let store: SessionStore
     var onPickListing: (Listing) -> Void
+    var onAdd: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Text("Listings")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .tracking(-0.4)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 28) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Listings")
+                            .font(.system(size: 34, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .tracking(-0.5)
+                        Text("Tap a property to open the sign-in form.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                    Spacer()
+                    Button(action: onAdd) {
+                        HStack(spacing: 7) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Add listing")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(FoyerTheme.gold, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 if store.listings.isEmpty {
-                    emptyState
+                    Button(action: onAdd) { emptyState }
+                        .buttonStyle(.plain)
                 } else {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 280), spacing: 18)],
@@ -957,67 +2717,2023 @@ private struct IPadListings: View {
                     }
                 }
             }
-            .padding(.horizontal, 40).padding(.top, 32).padding(.bottom, 48)
+            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
         }
-        .background(FoyerTheme.bgDeep)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
     }
 
     private func card(_ listing: Listing) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
             ZStack {
                 if let data = listing.photoData, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
                 } else {
                     LinearGradient(
-                        colors: [FoyerTheme.bgElev2, FoyerTheme.bgCard],
+                        colors: [
+                            Color(red: 0.12, green: 0.14, blue: 0.19),
+                            Color(red: 0.05, green: 0.06, blue: 0.08),
+                        ],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     )
                     .overlay(
                         Image(systemName: "house")
-                            .font(.system(size: 32, weight: .light))
-                            .foregroundStyle(FoyerTheme.creamDim.opacity(0.3))
+                            .font(.system(size: 36, weight: .light))
+                            .foregroundStyle(.white.opacity(0.15))
                     )
                 }
             }
-            .frame(height: 160)
+            .frame(height: 200)
             .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(listing.address)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .lineLimit(1)
-                if !listing.displayPrice.isEmpty {
-                    Text(listing.displayPrice)
-                        .font(.system(size: 13))
-                        .foregroundStyle(FoyerTheme.gold)
+                HStack(spacing: 6) {
+                    if !listing.displayPrice.isEmpty {
+                        Text(listing.displayPrice)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(listing.displaySpecs)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(1)
                 }
-                Text(listing.displaySpecs)
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textDim)
-                    .lineLimit(1)
             }
-            .padding(16)
+            .padding(.horizontal, 4)
         }
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "house")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(FoyerTheme.creamDim.opacity(0.35))
+        VStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color(white: 0.07)).frame(width: 64, height: 64)
+                Image(systemName: "house")
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundStyle(FoyerTheme.creamDim.opacity(0.4))
+            }
             Text("No listings yet")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(FoyerTheme.cream)
-            Text("Add a listing from the iPhone app — it'll sync here.")
+            Text("Add open houses from the iPhone app — they'll sync here.")
                 .font(.system(size: 13))
                 .foregroundStyle(FoyerTheme.textDim)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .background(FoyerTheme.bgCard, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.vertical, 80)
+        .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 20))
+    }
+}
+
+// MARK: – Profile (account + integrations + settings)
+
+// Settings-style tab pulled out of the side rail's avatar. Surfaces the
+// agent's Google account info, the default script that applies to every
+// session unless overridden, the Gmail connection status, and a sign-out.
+// All state comes from existing singletons — no new persistence layer.
+private struct IPadProfile: View {
+    let store: SessionStore
+    let auth: AuthStore
+
+    @State private var gmail: APIClient.GmailStatus?
+    @State private var gmailLoading: Bool = false
+    @State private var gmailError: String?
+    @State private var showGmailConnect: Bool = false
+    @State private var showSignOutConfirm: Bool = false
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 28) {
+                header
+                accountCard
+                gmailCard
+                defaultScriptCard
+                signOutCard
+                Spacer().frame(height: 80)
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .task { await refreshGmail() }
+        .sheet(isPresented: $showGmailConnect) {
+            GmailConnectSheet(
+                onConnected: { _ in
+                    showGmailConnect = false
+                    Task { await refreshGmail() }
+                },
+                onCancel: { showGmailConnect = false }
+            )
+        }
+        .alert("Sign out?", isPresented: $showSignOutConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Sign out", role: .destructive) { auth.signOut() }
+        } message: {
+            Text("You'll need to sign back in with Google to access your sessions and leads.")
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("PROFILE")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .tracking(2.0)
+                .foregroundStyle(FoyerTheme.gold)
+            Text("Settings")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.6)
+        }
+    }
+
+    private var accountCard: some View {
+        HStack(spacing: 16) {
+            avatarBubble
+            VStack(alignment: .leading, spacing: 3) {
+                Text(auth.currentUser?.name ?? "Signed in")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(auth.currentUser?.email ?? "")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Spacer()
+        }
+        .padding(18)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    @ViewBuilder
+    private var avatarBubble: some View {
+        if let str = auth.currentUser?.picture, let url = URL(string: str) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().aspectRatio(contentMode: .fill)
+                default:
+                    initialsBubble
+                }
+            }
+            .frame(width: 60, height: 60)
+            .clipShape(Circle())
+        } else {
+            initialsBubble
+        }
+    }
+
+    private var initialsBubble: some View {
+        let name = auth.currentUser?.name ?? auth.currentUser?.email ?? "?"
+        let initials = name.split(separator: " ").prefix(2)
+            .compactMap { $0.first.map(String.init) }
+            .joined().uppercased()
+        return Text(initials.isEmpty ? "?" : initials)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(FoyerTheme.creamDim)
+            .frame(width: 60, height: 60)
+            .background(FoyerTheme.bgElev, in: Circle())
+    }
+
+    private var gmailCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "envelope.fill",
+                title: "Gmail",
+                subtitle: "Send follow-ups from your own address."
+            )
+            HStack(spacing: 12) {
+                connectionDot
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(gmailStatusLine)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    if let err = gmailError {
+                        Text(err)
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    } else if let addr = gmail?.email {
+                        Text(addr)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                }
+                Spacer()
+                gmailActionButton
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var connectionDot: some View {
+        Circle()
+            .fill(gmail?.connected == true ? FoyerTheme.sage : FoyerTheme.creamDim.opacity(0.4))
+            .frame(width: 10, height: 10)
+    }
+
+    private var gmailStatusLine: String {
+        if gmailLoading && gmail == nil { return "Checking…" }
+        return gmail?.connected == true ? "Connected" : "Not connected"
+    }
+
+    @ViewBuilder
+    private var gmailActionButton: some View {
+        if gmail?.connected == true {
+            Button { Task { await disconnectGmail() } } label: {
+                Text(gmailLoading ? "Working…" : "Disconnect")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(gmailLoading)
+        } else {
+            Button { showGmailConnect = true } label: {
+                Text("Connect")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var defaultScriptCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            cardHeader(
+                icon: "doc.text.fill",
+                title: "Default script",
+                subtitle: "Used for coverage grading unless overridden per session."
+            )
+            Menu {
+                Button {
+                    store.defaultScriptId = nil
+                } label: {
+                    HStack {
+                        Text("No script")
+                        if store.defaultScriptId == nil {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                if !store.availableScripts.isEmpty {
+                    Divider()
+                    ForEach(store.availableScripts) { s in
+                        Button {
+                            store.defaultScriptId = s.id
+                        } label: {
+                            HStack {
+                                Text(s.name)
+                                if store.defaultScriptId == s.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.gold)
+                    Text(currentScriptLabel)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .task { await store.refreshScripts() }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var currentScriptLabel: String {
+        if let id = store.defaultScriptId,
+           let s = store.availableScripts.first(where: { $0.id == id }) {
+            return s.name
+        }
+        return "No script"
+    }
+
+    private var signOutCard: some View {
+        Button { showSignOutConfirm = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.portrait.and.arrow.right")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Sign out")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(FoyerTheme.terracotta)
+            .padding(20)
+            .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func cardHeader(icon: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FoyerTheme.gold)
+                .frame(width: 32, height: 32)
+                .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Spacer()
+        }
+    }
+
+    @MainActor
+    private func refreshGmail() async {
+        gmailLoading = true
+        gmailError = nil
+        defer { gmailLoading = false }
+        do {
+            gmail = try await APIClient.shared.gmailStatus()
+        } catch {
+            gmailError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func disconnectGmail() async {
+        gmailLoading = true
+        gmailError = nil
+        defer { gmailLoading = false }
+        do {
+            try await APIClient.shared.disconnectGmail()
+            gmail = nil
+            await refreshGmail()
+        } catch {
+            gmailError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: – Post-sign-in welcome animation
+
+// Plays once per cold launch, layered over the iPad app. A pair of cyan
+// rings ripple outward from center, a checkmark draws into a filled cyan
+// disc, then "Welcome, [name]" fades up underneath. After ~2 seconds the
+// parent fades the whole overlay out and the home content takes over.
+private struct WelcomeOverlay: View {
+    let name: String
+
+    @State private var ringScale: CGFloat = 0.4
+    @State private var ringOpacity: Double = 0
+    @State private var discScale: CGFloat = 0.0
+    @State private var checkProgress: CGFloat = 0
+    @State private var textOpacity: Double = 0
+    @State private var textOffset: CGFloat = 14
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            VStack(spacing: 28) {
+                ZStack {
+                    // Two ripples on a stagger so it reads as a pulse.
+                    Circle()
+                        .stroke(FoyerTheme.gold.opacity(0.5), lineWidth: 1.5)
+                        .frame(width: 140, height: 140)
+                        .scaleEffect(ringScale)
+                        .opacity(ringOpacity)
+                    Circle()
+                        .stroke(FoyerTheme.gold.opacity(0.3), lineWidth: 1)
+                        .frame(width: 200, height: 200)
+                        .scaleEffect(ringScale * 1.05)
+                        .opacity(ringOpacity * 0.7)
+
+                    // Filled cyan disc with a check drawn into it.
+                    Circle()
+                        .fill(FoyerTheme.gold)
+                        .frame(width: 88, height: 88)
+                        .scaleEffect(discScale)
+                        .shadow(color: FoyerTheme.gold.opacity(0.4), radius: 24, y: 8)
+
+                    Check()
+                        .trim(from: 0, to: checkProgress)
+                        .stroke(FoyerTheme.inkOnGold,
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        .frame(width: 40, height: 32)
+                        .opacity(discScale > 0.6 ? 1 : 0)
+                }
+                .frame(height: 220)
+
+                VStack(spacing: 6) {
+                    Text("Welcome,")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                    Text(name)
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .tracking(-0.8)
+                }
+                .opacity(textOpacity)
+                .offset(y: textOffset)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        .onAppear { runAnimation() }
+    }
+
+    private func runAnimation() {
+        // Rings expand + fade in
+        withAnimation(.easeOut(duration: 0.9)) {
+            ringScale = 1.2
+            ringOpacity = 1
+        }
+        withAnimation(.easeOut(duration: 1.4).delay(0.15)) {
+            ringScale = 1.8
+            ringOpacity = 0
+        }
+        // Disc pops in with a slight overshoot
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.62).delay(0.20)) {
+            discScale = 1.0
+        }
+        // Check draws after the disc settles
+        withAnimation(.easeOut(duration: 0.45).delay(0.55)) {
+            checkProgress = 1.0
+        }
+        // Name slides up and fades in
+        withAnimation(.easeOut(duration: 0.55).delay(0.75)) {
+            textOpacity = 1
+            textOffset = 0
+        }
+    }
+}
+
+// MARK: – Gmail connect sheet
+
+// Shown when the agent taps Send and the backend reports Gmail isn't yet
+// connected. One CTA: open the ASWebAuthenticationSession that runs the
+// Gmail-send OAuth grant. On success we fire `onConnected(true)` and the
+// caller re-tries the send; on cancel we fire `onConnected(false)`.
+private struct GmailConnectSheet: View {
+    var onConnected: (Bool) -> Void
+    var onCancel: () -> Void
+
+    @State private var connecting = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack {
+                Image(systemName: "envelope.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .frame(width: 44, height: 44)
+                    .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 12))
+                Spacer()
+                Button { onCancel() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Connect Gmail")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                Text("Send follow-ups directly from your Gmail. The agent's address is used for replies — guests reply to you, not to us.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(4)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                bullet("Sends from your own email address")
+                bullet("Stored only as a refresh token — no inbox access")
+                bullet("Disconnect anytime in your Google account settings")
+            }
+
+            if let error {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+
+            Spacer()
+
+            Button { Task { await connect() } } label: {
+                HStack(spacing: 10) {
+                    if connecting {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.inkOnGold)
+                    } else {
+                        Image(systemName: "envelope.badge")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    Text(connecting ? "Opening Google…" : "Continue with Google")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .disabled(connecting)
+        }
+        .padding(28)
+        .frame(maxWidth: 460, maxHeight: 540)
+        .background(Color(white: 0.06))
+    }
+
+    private func bullet(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle().fill(FoyerTheme.gold).frame(width: 5, height: 5).padding(.top, 7)
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+        }
+    }
+
+    @MainActor
+    private func connect() async {
+        connecting = true
+        error = nil
+        defer { connecting = false }
+        // Resolve a presentation anchor from the active scene's key window
+        // so ASWebAuthenticationSession knows what to attach to.
+        let anchor: ASPresentationAnchor = {
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows)
+                .first(where: \.isKeyWindow) ?? UIWindow()
+        }()
+        do {
+            try await GmailConnectDriver.run(presentationAnchor: anchor)
+            onConnected(true)
+        } catch GmailConnectDriver.ConnectError.cancelled {
+            // User dismissed the web sheet without consenting — just stay
+            // on this sheet so they can retry.
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+// Check mark shape — three points: down-left, center-low, up-right.
+// Drawn inside a 40×32 bounding box so it scales cleanly inside the disc.
+private struct Check: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX + rect.width * 0.10,
+                           y: rect.minY + rect.height * 0.55))
+        p.addLine(to: CGPoint(x: rect.minX + rect.width * 0.40,
+                              y: rect.minY + rect.height * 0.88))
+        p.addLine(to: CGPoint(x: rect.minX + rect.width * 0.92,
+                              y: rect.minY + rect.height * 0.18))
+        return p
+    }
+}
+
+// MARK: – Listing editor (with MapKit address validation)
+
+// Sheet presented from Listings tab + the Kiosk launcher. Wraps the
+// existing Listing model — same data shape the iPhone editor produces, so
+// the listings UserDefaults blob stays compatible. Address input uses
+// MKLocalSearchCompleter for live suggestions; picking one runs an
+// MKLocalSearch to confirm the address resolves to a real place and
+// pulls a canonical postal-formatted string back into the field.
+private struct IPadListingEditor: View {
+    let store: SessionStore
+    var onDone: (Listing?) -> Void
+
+    @State private var address: String = ""
+    @State private var neighborhood: String = ""
+    @State private var priceText: String = ""
+    @State private var beds: Int = 0
+    @State private var baths: Double = 0
+    @State private var sqftText: String = ""
+    @State private var addressValidated: Bool = false
+
+    @StateObject private var completer = AddressCompleter()
+    @State private var showSuggestions: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 22) {
+                    addressField
+
+                    HStack(spacing: 10) {
+                        textField(label: "Neighborhood", value: $neighborhood, keyboard: .default)
+                    }
+
+                    HStack(spacing: 10) {
+                        textField(label: "Price", value: $priceText, keyboard: .numberPad)
+                        textField(label: "Sq ft", value: $sqftText, keyboard: .numberPad)
+                    }
+
+                    HStack(spacing: 10) {
+                        stepperField(label: "Beds", value: $beds, range: 0...10, step: 1, format: { "\($0)" })
+                        stepperField(label: "Baths", value: $beds, range: 0...10, step: 1, format: { "\($0)" })
+                            .hidden()  // baths uses different stepper
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Baths").font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(FoyerTheme.textDim)
+                            HStack {
+                                Text(bathsString)
+                                    .font(.system(size: 18, weight: .medium))
+                                    .foregroundStyle(FoyerTheme.cream)
+                                Spacer()
+                                Stepper("", value: $baths, in: 0...10, step: 0.5)
+                                    .labelsHidden()
+                            }
+                            .padding(.vertical, 10).padding(.horizontal, 14)
+                            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle("New listing")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onDone(nil) }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                        .foregroundStyle(canSave ? FoyerTheme.gold : FoyerTheme.textMuted)
+                        .disabled(!canSave)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onChange(of: address) { _, newValue in
+            completer.update(query: newValue)
+            addressValidated = false
+            showSuggestions = !newValue.isEmpty
+        }
+    }
+
+    private var bathsString: String {
+        baths.truncatingRemainder(dividingBy: 1) == 0
+            ? "\(Int(baths))"
+            : String(format: "%.1f", baths)
+    }
+
+    @ViewBuilder
+    private var addressField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Address")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Spacer()
+                if addressValidated {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.sage)
+                        Text("Verified on Maps")
+                            .font(.system(size: 10))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                }
+            }
+
+            TextField("", text: $address,
+                      prompt: Text("Start typing an address…").foregroundStyle(FoyerTheme.textMuted))
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .textContentType(.fullStreetAddress)
+                .autocorrectionDisabled()
+                .padding(.vertical, 14).padding(.horizontal, 16)
+                .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(addressValidated ? FoyerTheme.sage.opacity(0.5) : Color.clear, lineWidth: 1)
+                )
+
+            if showSuggestions && !completer.results.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(completer.results.prefix(5).enumerated()), id: \.offset) { _, item in
+                        Button { selectSuggestion(item) } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: "mappin.and.ellipse")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(FoyerTheme.gold)
+                                    .padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(FoyerTheme.cream)
+                                    Text(item.subtitle)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(FoyerTheme.textDim)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if item !== completer.results.prefix(5).last {
+                            Hairline()
+                        }
+                    }
+                }
+                .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private func textField(label: String, value: Binding<String>, keyboard: UIKeyboardType) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            TextField("", text: value)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .keyboardType(keyboard)
+                .autocorrectionDisabled()
+                .padding(.vertical, 14).padding(.horizontal, 14)
+                .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func stepperField(label: String, value: Binding<Int>, range: ClosedRange<Int>, step: Int, format: @escaping (Int) -> String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            HStack {
+                Text(format(value.wrappedValue))
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(FoyerTheme.cream)
+                Spacer()
+                Stepper("", value: value, in: range, step: step)
+                    .labelsHidden()
+            }
+            .padding(.vertical, 10).padding(.horizontal, 14)
+            .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var canSave: Bool {
+        !address.trimmingCharacters(in: .whitespaces).isEmpty && addressValidated
+    }
+
+    private func selectSuggestion(_ item: MKLocalSearchCompletion) {
+        showSuggestions = false
+        // Run a real search against MapKit so we get back a precise
+        // postal-formatted line; this is what marks the address as
+        // "verified". The full title + subtitle becomes the canonical
+        // address stored on the Listing.
+        let request = MKLocalSearch.Request(completion: item)
+        MKLocalSearch(request: request).start { response, _ in
+            DispatchQueue.main.async {
+                if let mapItem = response?.mapItems.first {
+                    let line = postalLine(for: mapItem)
+                    address = line.isEmpty ? "\(item.title) \(item.subtitle)" : line
+                    addressValidated = true
+                } else {
+                    address = "\(item.title) \(item.subtitle)"
+                    addressValidated = true
+                }
+            }
+        }
+    }
+
+    private func postalLine(for item: MKMapItem) -> String {
+        // Build the canonical address from CLPlacemark fields. Avoids
+        // pulling in the Contacts framework just for CNPostalAddress.
+        let pm = item.placemark
+        let street: String = {
+            let num = pm.subThoroughfare ?? ""
+            let road = pm.thoroughfare ?? ""
+            return [num, road].filter { !$0.isEmpty }.joined(separator: " ")
+        }()
+        let parts = [street, pm.locality ?? "", pm.administrativeArea ?? "", pm.postalCode ?? ""]
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: ", ")
+    }
+
+    private func save() {
+        let listing = Listing(
+            id: UUID().uuidString,
+            address: address.trimmingCharacters(in: .whitespaces),
+            neighborhood: neighborhood.trimmingCharacters(in: .whitespaces),
+            price: Int(priceText.filter(\.isNumber)) ?? 0,
+            beds: beds,
+            baths: baths,
+            sqft: Int(sqftText.filter(\.isNumber)) ?? 0,
+            photoData: nil
+        )
+        store.addListing(listing)
+        onDone(listing)
+    }
+}
+
+// MARK: – MapKit autocomplete adapter
+
+// Thin ObservableObject wrapping MKLocalSearchCompleter so the listing
+// editor can observe live address suggestions as the agent types.
+@MainActor
+private final class AddressCompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var results: [MKLocalSearchCompletion] = []
+
+    private let completer: MKLocalSearchCompleter = {
+        let c = MKLocalSearchCompleter()
+        c.resultTypes = .address
+        return c
+    }()
+
+    override init() {
+        super.init()
+        completer.delegate = self
+    }
+
+    func update(query: String) {
+        completer.queryFragment = query
+    }
+
+    nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        let snapshot = completer.results
+        Task { @MainActor in
+            self.results = snapshot
+        }
+    }
+
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.results = []
+        }
+    }
+}
+
+// MARK: – Record (iPad recording surface)
+
+// Three-state surface that mirrors the iPhone LiveView + SummaryView flow:
+//   1. setup    — pick a listing (or none), set the guest count, tap Begin
+//   2. recording — cinematic mic + live waveform + elapsed timer + End
+//   3. done     — processing card → ready summary with a CTA to Leads
+// State comes from SessionStore.phase, which moves through .uploading →
+// .processing → .ready as the upload + diarization job completes. Pressing
+// End hands the audio off to SessionStore.uploadAndProcess and resets the
+// recorder; we stay on this view so the agent can watch the job finish.
+private struct IPadRecord: View {
+    let store: SessionStore
+    let listing: Listing?
+    var onSelectListing: (Listing) -> Void
+    var onOpenLeads: (String) -> Void
+
+    // Shared recorder so the recording survives tab switches — the agent
+    // can start recording, then jump to the Kiosk tab to take guest sign-ins
+    // while the mic keeps capturing in the background.
+    @State private var recorder = AudioRecorder.shared
+    @State private var permissionDenied = false
+    @State private var paused = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            content
+        }
+        .onAppear {
+            resetIfFinishedSession()
+            paused = recorder.isPaused
+        }
+        .alert("Microphone access needed", isPresented: $permissionDenied) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Enable microphone access in Settings to record audio.")
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        // Drive the visible state off the recorder + store. The recorder
+        // owns the "currently capturing" bit; the store owns the post-end
+        // upload/processing/ready lifecycle.
+        if recorder.isRecording {
+            recordingPane
+        } else {
+            switch store.phase {
+            case .uploading, .processing:
+                processingPane
+            case .ready:
+                readyPane
+            case .failed(let msg):
+                failedPane(msg)
+            case .idle:
+                setupPane
+            }
+        }
+    }
+
+    // MARK: Setup
+
+    // Mirrors the kiosk launcher pattern the user already validated: a list
+    // of listing rows each with its own Record button, plus a "Record
+    // without a listing" fallback for the no-listing path. No address field
+    // and no guests selector — if the agent wants the address attached to
+    // the session, they pick the listing. Speaker count is left on auto
+    // (AssemblyAI's default) which handles 1-to-many open houses cleanly.
+    private var setupPane: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                if store.listings.isEmpty {
+                    emptyListingsLauncher
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(store.listings) { listing in
+                            launchRow(listing)
+                        }
+                        Button { Task { await beginRecording(with: nil) } } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text("Record without a listing")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Color.white.opacity(0.06), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 6)
+                    }
+                }
+                if !store.pendingKioskGuests.isEmpty {
+                    kioskGuestsNote
+                }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("RECORD")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .tracking(2.0)
+                .foregroundStyle(FoyerTheme.gold)
+            Text("Start a session")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.6)
+            Text("Pick the listing you're walking through — we'll attach it to the session.")
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.textDim)
+                .lineSpacing(3)
+                .padding(.top, 2)
+        }
+    }
+
+    private func launchRow(_ listing: Listing) -> some View {
+        HStack(spacing: 14) {
+            listingThumb(listing)
+                .frame(width: 84, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(listing.address)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if !listing.displayPrice.isEmpty {
+                        Text(listing.displayPrice)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    Text(listing.displaySpecs)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            Button { Task { await beginRecording(with: listing) } } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(.white).frame(width: 8, height: 8)
+                    Text("Record")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(FoyerTheme.terracotta, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var emptyListingsLauncher: some View {
+        Button { Task { await beginRecording(with: nil) } } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(.white.opacity(0.18)).frame(width: 32, height: 32)
+                    Circle().fill(.white).frame(width: 12, height: 12)
+                }
+                Text("Begin recording")
+                    .font(.system(size: 17, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 22)
+            .background(FoyerTheme.terracotta, in: RoundedRectangle(cornerRadius: 18))
+            .shadow(color: FoyerTheme.terracotta.opacity(0.4), radius: 18, y: 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func listingThumb(_ listing: Listing) -> some View {
+        if let data = listing.photoData, let img = UIImage(data: data) {
+            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.10, green: 0.12, blue: 0.16),
+                    Color(red: 0.03, green: 0.04, blue: 0.06),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            .overlay(
+                Image(systemName: "house")
+                    .font(.system(size: 18, weight: .light))
+                    .foregroundStyle(.white.opacity(0.18))
+            )
+        }
+    }
+
+    private var kioskGuestsNote: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.2.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FoyerTheme.gold)
+            Text("\(store.pendingKioskGuests.count) signed in at the kiosk — we'll match voices to them after the session.")
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(FoyerTheme.goldSoft.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func resetIfFinishedSession() {
+        // If the user navigates into Record after a prior session finished,
+        // clear the old phase so they see Setup again instead of a stale
+        // ready/failed pane.
+        if case .ready = store.phase { store.reset() }
+        if case .failed = store.phase { store.reset() }
+    }
+
+    // MARK: Recording
+
+    private var recordingPane: some View {
+        VStack(spacing: 0) {
+            recordingHeader
+            Spacer(minLength: 0)
+            voiceVisualizer
+                .padding(.horizontal, 56)
+            Spacer(minLength: 0)
+            recordingControls
+                .padding(.horizontal, 56).padding(.bottom, 36)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var recordingHeader: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
+                    .frame(width: 8, height: 8)
+                    .modifier(PulseAnimation())
+                Text(paused ? "PAUSED" : "LIVE")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .tracking(2.0)
+                    .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
+            }
+            Spacer()
+            Text(timeString)
+                .font(.system(size: 22, weight: .medium, design: .monospaced))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(2)
+        }
+        .padding(.horizontal, 56).padding(.top, 36).padding(.bottom, 8)
+    }
+
+    private var voiceVisualizer: some View {
+        VStack(spacing: 36) {
+            VStack(spacing: 10) {
+                Text(store.pendingAddress ?? "Open house")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                Text(paused ? "Recording paused" : "Listening")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            IPadMicOrb(level: rmsLevel, recording: recorder.isRecording && !paused)
+                .frame(height: 240)
+            IPadWaveform(levels: recorder.levels)
+                .frame(height: 80)
+        }
+    }
+
+    private var recordingControls: some View {
+        HStack(spacing: 14) {
+            Button {
+                if paused { recorder.resume() } else { recorder.pause() }
+                paused.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: paused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(paused ? "Resume" : "Pause")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.cream)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+
+            Button(action: endSession) {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(.white)
+                        .frame(width: 12, height: 12)
+                    Text("End session")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(FoyerTheme.terracotta, in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var rmsLevel: CGFloat {
+        let recent = recorder.levels.suffix(8)
+        let avg = recent.reduce(0, +) / Float(max(recent.count, 1))
+        return CGFloat(min(1, max(0, avg)))
+    }
+
+    private var timeString: String {
+        let total = Int(recorder.elapsed)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return String(format: "%02d:%02d:%02d", h, m, s)
+    }
+
+    // MARK: Processing / Ready / Failed
+
+    private var processingPane: some View {
+        VStack(spacing: 22) {
+            ZStack {
+                Circle().stroke(FoyerTheme.gold.opacity(0.25), lineWidth: 1.5)
+                    .frame(width: 110, height: 110)
+                ProgressView()
+                    .tint(FoyerTheme.gold)
+                    .scaleEffect(1.3)
+            }
+            VStack(spacing: 6) {
+                Text("Processing the session")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(processingSubtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var processingSubtitle: String {
+        switch store.phase {
+        case .uploading: return "Uploading audio…"
+        case .processing: return "Separating voices and drafting follow-ups…"
+        default: return "Working on it…"
+        }
+    }
+
+    private var readyPane: some View {
+        VStack(spacing: 24) {
+            ZStack {
+                Circle()
+                    .fill(FoyerTheme.sage)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: FoyerTheme.sage.opacity(0.35), radius: 22, y: 8)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+            }
+            VStack(spacing: 8) {
+                Text("Session ready")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                Text(readySubtitle)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            HStack(spacing: 12) {
+                Button { store.reset() } label: {
+                    Text("Record another")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .padding(.horizontal, 20).padding(.vertical, 13)
+                        .background(Color.white.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    if let id = store.session?.id {
+                        onOpenLeads(id)
+                        store.reset()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Open leads")
+                            .font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 20).padding(.vertical, 13)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var readySubtitle: String {
+        let count = store.session?.result?.visitors.count ?? 0
+        if count == 0 { return "Drafts are ready." }
+        return "\(count) lead\(count == 1 ? "" : "s") drafted."
+    }
+
+    private func failedPane(_ msg: String) -> some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(FoyerTheme.terracotta.opacity(0.18)).frame(width: 80, height: 80)
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+            VStack(spacing: 8) {
+                Text("Something went wrong")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            Button { store.reset() } label: {
+                Text("Try again")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 20).padding(.vertical, 13)
+                    .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Actions
+
+    @MainActor
+    private func beginRecording(with chosen: Listing?) async {
+        let granted = await recorder.requestPermission()
+        guard granted else { permissionDenied = true; return }
+        if let chosen {
+            onSelectListing(chosen)
+            store.pendingAddress = chosen.address
+        } else {
+            store.pendingAddress = nil
+        }
+        // Speakers-expected left on auto — diarization handles open-house
+        // crowd sizes well on its own, and asking the agent to count guests
+        // up front was friction (the user nuked the picker for that reason).
+        store.pendingSpeakersExpected = nil
+        do { try recorder.startRecording(address: store.pendingAddress ?? "") }
+        catch { permissionDenied = true }
+        paused = false
+    }
+
+    private func endSession() {
+        guard let url = recorder.stopRecording() else { return }
+        store.uploadAndProcess(audioURL: url)
+        paused = false
+    }
+}
+
+// MARK: – Session detail (playback + metadata)
+
+// Shown when the agent taps a recent session in the side rail or a row on
+// Home. Loads the full Session via APIClient.getSession (lazy — summaries
+// in the side rail only carry id/address/visitor_count), shows an
+// AVPlayer-backed audio scrubber, and lists every lead in the session with
+// the same tag-pill + score vocabulary the Leads tab uses. Drilling into
+// a lead jumps to Leads filtered by this session so the agent lands on the
+// detail view they already know.
+private struct IPadSessionDetail: View {
+    let sessionId: String
+    let store: SessionStore
+    var onBack: () -> Void
+    var onOpenLeads: (String) -> Void
+
+    @State private var session: Session?
+    @State private var loading = true
+    @State private var loadError: String?
+    @State private var player = AudioPlayer()
+    @State private var seeking = false
+    @State private var seekTarget: Double = 0
+    @State private var showDeleteConfirm = false
+    @State private var deleting = false
+    @State private var deleteError: String?
+
+    private var audioURL: URL {
+        Config.backendURL
+            .appendingPathComponent("sessions")
+            .appendingPathComponent(sessionId)
+            .appendingPathComponent("audio")
+    }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 28) {
+                topBar
+                if loading && session == nil {
+                    loadingState
+                } else if let session {
+                    header(session)
+                    if let deleteError {
+                        errorCard(deleteError)
+                    }
+                    playbackBar
+                    if let result = session.result {
+                        leadsList(result.visitors, session: session)
+                        if let utts = result.utterances, !utts.isEmpty {
+                            speakerTranscript(utts, result: result)
+                        } else if !result.fullTranscript.isEmpty {
+                            transcriptSection(result.fullTranscript)
+                        }
+                    } else if session.status == "processing" {
+                        processingNote
+                    } else if let err = session.error {
+                        errorCard(err)
+                    }
+                } else if let loadError {
+                    errorCard(loadError)
+                }
+                Spacer().frame(height: 60)
+            }
+            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 44).padding(.top, 28).padding(.bottom, 120)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .task(id: sessionId) { await load() }
+        .onDisappear { player.stop() }
+        .alert("Delete this session?", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete permanently", role: .destructive) {
+                Task { await performDelete() }
+            }
+        } message: {
+            Text("This permanently removes the recording, transcript, analysis, and all leads from this session. It can't be undone.")
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 14) {
+            Button(action: onBack) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Back")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .foregroundStyle(FoyerTheme.creamDim)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.white.opacity(0.06), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            if let session, session.status == "ready" {
+                Button { onOpenLeads(session.id) } label: {
+                    HStack(spacing: 6) {
+                        Text("Open in Leads")
+                            .font(.system(size: 13, weight: .semibold))
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            if session != nil {
+                Button { showDeleteConfirm = true } label: {
+                    HStack(spacing: 6) {
+                        if deleting {
+                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.terracotta)
+                        } else {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        Text("Delete")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(deleting)
+            }
+        }
+    }
+
+    @MainActor
+    private func performDelete() async {
+        guard let id = session?.id else { return }
+        deleting = true
+        deleteError = nil
+        defer { deleting = false }
+        do {
+            try await APIClient.shared.deleteSession(id: id)
+            await store.refreshSessions()
+            onBack()
+        } catch {
+            deleteError = error.localizedDescription
+        }
+    }
+
+    private var loadingState: some View {
+        HStack {
+            Spacer()
+            ProgressView().tint(FoyerTheme.gold)
+            Spacer()
+        }
+        .padding(.top, 80)
+    }
+
+    private func header(_ session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SESSION")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .tracking(2.0)
+                .foregroundStyle(FoyerTheme.gold)
+            Text(session.address ?? "Open house")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.5)
+                .lineLimit(2)
+            HStack(spacing: 10) {
+                Text(relativeTime(session.createdAt))
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Text("·")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textMuted)
+                statusBadge(session.status)
+                if let n = session.result?.visitors.count, n > 0 {
+                    Text("·")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Text("\(n) lead\(n == 1 ? "" : "s")")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.textDim)
+                }
+            }
+        }
+    }
+
+    private func statusBadge(_ status: String) -> some View {
+        let color: Color = {
+            switch status {
+            case "ready":      return FoyerTheme.sage
+            case "processing": return FoyerTheme.gold
+            case "error":      return FoyerTheme.terracotta
+            default:           return FoyerTheme.creamDim
+            }
+        }()
+        return Text(status.capitalized)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    private var playbackBar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 14) {
+                Button { player.playPause() } label: {
+                    ZStack {
+                        Circle()
+                            .fill(FoyerTheme.gold)
+                            .frame(width: 52, height: 52)
+                            .shadow(color: FoyerTheme.gold.opacity(0.35), radius: 14, y: 6)
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                            .offset(x: player.isPlaying ? 0 : 1)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.white.opacity(0.08))
+                                .frame(height: 4)
+                            Capsule()
+                                .fill(FoyerTheme.gold)
+                                .frame(width: progressWidth(geo.size.width), height: 4)
+                            Circle()
+                                .fill(FoyerTheme.cream)
+                                .frame(width: 12, height: 12)
+                                .offset(x: max(0, progressWidth(geo.size.width) - 6))
+                        }
+                        .contentShape(Rectangle())
+                        .gesture(scrubGesture(width: geo.size.width))
+                    }
+                    .frame(height: 14)
+
+                    HStack {
+                        Text(formatTime(player.currentTime))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(FoyerTheme.textDim)
+                        Spacer()
+                        Text(formatTime(displayDuration))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(FoyerTheme.textDim)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+        .onAppear {
+            if player.loadedURL != audioURL { player.load(url: audioURL) }
+        }
+    }
+
+    private var displayDuration: TimeInterval {
+        seeking ? max(seekTarget, 0) : player.duration
+    }
+
+    private func progressWidth(_ total: CGFloat) -> CGFloat {
+        let duration = player.duration
+        guard duration > 0 else { return 0 }
+        let value = seeking ? seekTarget : player.currentTime
+        let frac = max(0, min(1, value / duration))
+        return total * frac
+    }
+
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                seeking = true
+                let frac = max(0, min(1, v.location.x / width))
+                seekTarget = frac * player.duration
+            }
+            .onEnded { _ in
+                player.seek(to: seekTarget)
+                seeking = false
+            }
+    }
+
+    private func formatTime(_ t: TimeInterval) -> String {
+        let total = Int(t)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+
+    private func leadsList(_ visitors: [VisitorResult], session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Leads in this session")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+
+            VStack(spacing: 10) {
+                ForEach(visitors) { v in
+                    Button { onOpenLeads(session.id) } label: {
+                        leadRow(v)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func leadRow(_ v: VisitorResult) -> some View {
+        HStack(spacing: 14) {
+            Text(v.displayInitials)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FoyerTheme.gold)
+                .frame(width: 42, height: 42)
+                .background(FoyerTheme.bgElev, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(v.displayName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Circle().fill(tagColor(v.analysis.tagToken)).frame(width: 5, height: 5)
+                    Text(v.analysis.tag)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    if !v.visitor.email.isEmpty {
+                        Text("·")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text(v.visitor.email)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Spacer()
+            Text("\(v.analysis.score)")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FoyerTheme.textMuted)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(Rectangle())
+    }
+
+    private func tagColor(_ token: String) -> Color {
+        switch token {
+        case "buyer":   return FoyerTheme.gold
+        case "seller":  return FoyerTheme.terracotta
+        case "browser": return FoyerTheme.sage
+        default:        return FoyerTheme.creamDim
+        }
+    }
+
+    private func transcriptSection(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Transcript")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text(text)
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(5)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
+    // Speaker-labeled transcript. The backend already produces per-turn
+    // utterances with a speaker label (e.g. "A", "B"); each visitor has a
+    // matched `speaker` field, and the agent's label is in
+    // result.agentSpeaker. We resolve each utterance's speaker to a name
+    // and color so the agent can scan who said what.
+    private func speakerTranscript(_ utterances: [Utterance], result: SessionResult) -> some View {
+        let nameByLabel = speakerNameMap(result: result)
+        let agentLabel = result.agentSpeaker
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Transcript")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textDim)
+                Spacer()
+                Text("\(utterances.count) turns · speaker-labeled")
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            VStack(spacing: 1) {
+                ForEach(utterances) { utt in
+                    transcriptTurn(
+                        utt,
+                        displayName: nameByLabel[utt.speaker] ?? "Speaker \(utt.speaker)",
+                        isAgent: utt.speaker == agentLabel,
+                        color: speakerColor(utt.speaker, agentLabel: agentLabel, result: result)
+                    )
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
+    private func transcriptTurn(_ utt: Utterance, displayName: String, isAgent: Bool, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(displayName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                if isAgent {
+                    Text("agent")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .padding(.top, 1)
+                }
+                Text(formatTimestamp(utt.startMs))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(FoyerTheme.textMuted)
+                    .padding(.top, 2)
+            }
+            .frame(width: 90, alignment: .leading)
+
+            Text(utt.text)
+                .font(.system(size: 14))
+                .foregroundStyle(FoyerTheme.cream)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 4)
+        .background(alignment: .bottom) {
+            Rectangle().fill(FoyerTheme.hairline).frame(height: 0.5)
+        }
+    }
+
+    // Map backend speaker labels ("A", "B", "C", …) to display names. The
+    // agent gets "You"; visitors get their captured first name; speakers
+    // we never matched stay as "Speaker X".
+    private func speakerNameMap(result: SessionResult) -> [String: String] {
+        var map: [String: String] = [:]
+        if !result.agentSpeaker.isEmpty {
+            map[result.agentSpeaker] = "You"
+        }
+        for v in result.visitors {
+            if let label = v.visitor.speaker, !label.isEmpty {
+                let first = v.visitor.name
+                    .split(separator: " ")
+                    .first
+                    .map(String.init) ?? v.visitor.name
+                map[label] = first
+            }
+        }
+        return map
+    }
+
+    private func speakerColor(_ label: String, agentLabel: String, result: SessionResult) -> Color {
+        if label == agentLabel { return FoyerTheme.gold }
+        // Cycle through a small palette so different guests are visually
+        // distinguishable even when speaker-name matching failed.
+        let palette: [Color] = [
+            FoyerTheme.terracotta,
+            FoyerTheme.sage,
+            Color(red: 0.55, green: 0.65, blue: 0.95),
+            Color(red: 0.85, green: 0.55, blue: 0.75),
+            Color(red: 0.70, green: 0.80, blue: 0.55),
+        ]
+        // Stable index by alphabetical position of the label among non-agent
+        // labels that appear in this session.
+        let nonAgent = Set(result.visitors.compactMap(\.visitor.speaker))
+            .filter { $0 != agentLabel }
+            .sorted()
+        let idx = nonAgent.firstIndex(of: label) ?? label.hashValue
+        return palette[(idx % palette.count + palette.count) % palette.count]
+    }
+
+    private func formatTimestamp(_ ms: Int) -> String {
+        let total = ms / 1000
+        let m = total / 60, s = total % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private var processingNote: some View {
+        HStack(spacing: 12) {
+            ProgressView().tint(FoyerTheme.gold).scaleEffect(0.85)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Still processing")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text("Voices are being separated. Check back in a minute.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func errorCard(_ msg: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(FoyerTheme.terracotta)
+                Text("Something went wrong")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+            }
+            Text(msg)
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textDim)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func relativeTime(_ iso: String?) -> String {
+        guard let iso, let date = ISO8601DateFormatter.fractionalSeconds.date(from: iso)
+            ?? ISO8601DateFormatter().date(from: iso)
+        else { return "—" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            let s = try await APIClient.shared.getSession(id: sessionId)
+            await MainActor.run { self.session = s }
+        } catch {
+            await MainActor.run { self.loadError = error.localizedDescription }
+        }
+    }
+}
+
+// MARK: – iPad mic orb + waveform
+
+// Larger version of the iPhone LiveView's MicOrb. Same vocabulary —
+// ambient halo, three concentric PulseRings, a level-driven outer ring,
+// and the brass mic disc — scaled up for the iPad canvas.
+private struct IPadMicOrb: View {
+    var level: CGFloat
+    var recording: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [FoyerTheme.terracotta.opacity(0.32), .clear],
+                        center: .center, startRadius: 12, endRadius: 160
+                    )
+                )
+                .scaleEffect(1 + level * 0.20)
+                .animation(.easeOut(duration: 0.15), value: level)
+
+            PulseRing(color: FoyerTheme.terracotta, delay: 0.0)
+                .frame(width: 180, height: 180)
+                .opacity(recording ? 0.85 : 0.25)
+            PulseRing(color: FoyerTheme.terracotta, delay: 0.7)
+                .frame(width: 180, height: 180)
+                .opacity(recording ? 0.55 : 0.18)
+            PulseRing(color: FoyerTheme.gold, delay: 1.4)
+                .frame(width: 180, height: 180)
+                .opacity(recording ? 0.45 : 0.12)
+
+            Circle()
+                .stroke(FoyerTheme.terracotta.opacity(0.8), lineWidth: 1.5)
+                .frame(width: 150 + level * 90, height: 150 + level * 90)
+                .opacity(level * 0.9 + 0.15)
+                .animation(.easeOut(duration: 0.18), value: level)
+
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [FoyerTheme.goldBright, FoyerTheme.goldDeep],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .frame(width: 116, height: 116)
+                .shadow(color: FoyerTheme.gold.opacity(0.6), radius: 30, x: 0, y: 10)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                        .blendMode(.overlay)
+                )
+
+            Image(systemName: "mic.fill")
+                .font(.system(size: 46, weight: .semibold))
+                .foregroundStyle(FoyerTheme.inkOnGold)
+        }
+    }
+}
+
+// Symmetric live waveform — newest samples on the right glow terracotta,
+// older samples fade through brass. Tween between frames so the motion
+// reads as continuous, not stepped.
+private struct IPadWaveform: View {
+    var levels: [Float]
+
+    @State private var animated: [CGFloat] = []
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = max(levels.count, 1)
+            let barCount = min(count, 72)
+            let spacing: CGFloat = 3
+            let totalSpacing = spacing * CGFloat(barCount - 1)
+            let width = max(2.5, (geo.size.width - totalSpacing) / CGFloat(barCount))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(0..<barCount, id: \.self) { i in
+                    let value = level(at: i, barCount: barCount)
+                    let isNow = i >= barCount - 8
+                    Capsule()
+                        .fill(isNow ? FoyerTheme.terracotta : FoyerTheme.gold)
+                        .opacity(isNow ? min(1, 0.55 + Double(value) * 0.6)
+                                       : 0.35 + Double(value) * 0.5)
+                        .frame(
+                            width: width,
+                            height: max(3, value * (geo.size.height - 6))
+                        )
+                        .shadow(color: isNow ? FoyerTheme.terracotta.opacity(0.55) : .clear,
+                                radius: isNow ? 6 : 0)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear { syncAnimated() }
+        .onChange(of: levels) { _, _ in
+            withAnimation(.easeOut(duration: 0.18)) {
+                syncAnimated()
+            }
+        }
+    }
+
+    private func level(at index: Int, barCount: Int) -> CGFloat {
+        let count = animated.count
+        guard count > 0 else { return 0 }
+        let offset = max(0, count - barCount)
+        let idx = min(count - 1, offset + index)
+        return animated[idx]
+    }
+
+    private func syncAnimated() {
+        let mapped = levels.map { CGFloat($0) }
+        if animated.count != mapped.count {
+            animated = mapped
+        } else {
+            animated = zip(animated, mapped).map { current, target in
+                current + (target - current) * 0.85
+            }
+        }
     }
 }
 

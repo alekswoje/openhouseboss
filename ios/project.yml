@@ -4,6 +4,26 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# Only ship a scheme for the main app — widget extensions can't be launched
+# standalone (Xcode tries to "Run" them and fails with
+# deviceprocesscontrolservice Code=8). The widget is embedded automatically
+# via the OpenHouseBoss → OpenHouseBossWidgets target dependency below.
+schemes:
+  OpenHouseBoss:
+    build:
+      targets:
+        OpenHouseBoss: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
   OpenHouseBoss:
     type: application
@@ -12,12 +32,20 @@ targets:
       - path: OpenHouseBoss
         excludes:
           - "Generated-Info.plist"
+      # LiveActivityIntent — must compile into the app target too because
+      # iOS dispatches the intent's `perform()` inside the host app's
+      # process. The widget references the same type to render its button.
+      - path: OpenHouseBossWidgets/StopRecordingIntent.swift
+    dependencies:
+      - target: OpenHouseBossWidgets
     info:
       path: OpenHouseBoss/Generated-Info.plist
       properties:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSMicrophoneUsageDescription: "Record audio during open houses to identify speakers and generate follow-ups"
+        NSFaceIDUsageDescription: "Authenticate to exit kiosk mode so only the agent can leave the sign-in screen"
+        NSSupportsLiveActivities: true
         UIBackgroundModes:
           - audio
         UIFileSharingEnabled: true
@@ -39,3 +67,26 @@ targets:
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
+
+  OpenHouseBossWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: OpenHouseBossWidgets
+      # Shared with the main app — Live Activity attributes type lives in
+      # the app's source tree so renames stay in sync between both targets.
+      - path: OpenHouseBoss/RecordingActivityAttributes.swift
+    info:
+      path: OpenHouseBossWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: OpenHouseBossWidgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openhouseboss.app.widgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES

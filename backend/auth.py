@@ -292,3 +292,184 @@ def migrate_orphan_sessions_to(user_id: str, sessions_dir: Path) -> int:
         except OSError:
             continue
     return count
+
+
+# --------------------------------------------------------------------------
+# Gmail send — separate OAuth grant
+# --------------------------------------------------------------------------
+#
+# The base /auth/google/* flow uses `openid email profile` for identity
+# only. To send mail on the agent's behalf we run a second consent
+# (`gmail.send`) with `access_type=offline` so Google hands us a refresh
+# token. The refresh token is stored per-user (next to google_sub) and the
+# short-lived access token is fetched on-demand right before each send.
+
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+GMAIL_REDIRECT_URI = f"{BACKEND_BASE}/auth/gmail/callback"
+GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
+
+
+def encode_gmail_state(user_id: str, platform: str = "ios") -> str:
+    """Like encode_state but carries the user_id forward so the callback
+    knows which agent to attach the refresh token to."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "kind": "gmail",
+        "user_id": user_id,
+        "platform": platform if platform in ("ios", "web") else "ios",
+        "nonce": secrets.token_urlsafe(16),
+        "exp": int((now + STATE_TTL).timestamp()),
+    }
+    return jwt.encode(payload, BACKEND_JWT_SECRET, algorithm="HS256")
+
+
+def build_gmail_authorize_url(state: str) -> str:
+    qs = urllib.parse.urlencode({
+        "client_id": GOOGLE_WEB_CLIENT_ID,
+        "redirect_uri": GMAIL_REDIRECT_URI,
+        "response_type": "code",
+        # `openid email` lets us read the Gmail address the agent chose in
+        # the consent picker — that's the From: address we send under.
+        "scope": f"openid email {GMAIL_SCOPE}",
+        "state": state,
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        # consent forces a fresh refresh_token even if the agent had
+        # previously granted this scope; Google omits refresh_token
+        # otherwise. Cheap insurance.
+        "prompt": "consent",
+    })
+    return f"{GOOGLE_AUTH_URL}?{qs}"
+
+
+def exchange_code_for_full_tokens(code: str, redirect_uri: str) -> dict:
+    """Returns the full token response (access_token + refresh_token +
+    id_token) — distinct from exchange_code_for_id_token which throws the
+    refresh token away."""
+    if not (GOOGLE_WEB_CLIENT_ID and GOOGLE_WEB_CLIENT_SECRET):
+        raise HTTPException(500, "Server is missing Google web client credentials")
+    resp = requests.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": GOOGLE_WEB_CLIENT_ID,
+            "client_secret": GOOGLE_WEB_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+        timeout=10,
+    )
+    if not resp.ok:
+        raise HTTPException(401, f"Google token exchange failed: {resp.text}")
+    return resp.json()
+
+
+def refresh_gmail_access_token(refresh_token: str) -> str:
+    """Trade a stored refresh token for a fresh ~1-hour access token."""
+    if not (GOOGLE_WEB_CLIENT_ID and GOOGLE_WEB_CLIENT_SECRET):
+        raise HTTPException(500, "Server is missing Google web client credentials")
+    resp = requests.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "refresh_token": refresh_token,
+            "client_id": GOOGLE_WEB_CLIENT_ID,
+            "client_secret": GOOGLE_WEB_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+        },
+        timeout=10,
+    )
+    if not resp.ok:
+        # 400 invalid_grant means the user revoked access — caller should
+        # surface "reconnect Gmail" rather than treat this as a real 500.
+        raise HTTPException(401, f"Gmail token refresh failed: {resp.text}")
+    return resp.json()["access_token"]
+
+
+def set_gmail_credential(user_id: str, refresh_token: str, gmail_email: str) -> None:
+    """Attach Gmail connection details to the user record."""
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            u["gmail_refresh_token"] = refresh_token
+            u["gmail_account_email"] = gmail_email
+            u["gmail_connected_at"] = datetime.now(timezone.utc).isoformat()
+            _save_users(data)
+            return
+    raise HTTPException(404, "User not found")
+
+
+def clear_gmail_credential(user_id: str) -> None:
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            u.pop("gmail_refresh_token", None)
+            u.pop("gmail_account_email", None)
+            u.pop("gmail_connected_at", None)
+            _save_users(data)
+            return
+
+
+def gmail_status_for(user_id: str) -> dict:
+    """{connected, email} — used by iOS to decide whether to show the
+    Connect Gmail prompt or jump straight to sending."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return {"connected": False, "email": None}
+    return {
+        "connected": bool(user.get("gmail_refresh_token")),
+        "email": user.get("gmail_account_email"),
+    }
+
+
+def gmail_refresh_token_for(user_id: str) -> Optional[str]:
+    user = get_user_by_id(user_id)
+    return user.get("gmail_refresh_token") if user else None
+
+
+def gmail_email_for(user_id: str) -> Optional[str]:
+    user = get_user_by_id(user_id)
+    return user.get("gmail_account_email") if user else None
+
+
+def send_gmail_email(
+    user_id: str,
+    to: str,
+    subject: str,
+    body: str,
+) -> dict:
+    """Send a plain-text email through the agent's connected Gmail account.
+
+    Returns Gmail's message resource ({id, threadId, labelIds, ...}). Raises
+    HTTPException(400) when Gmail isn't connected — the iOS client treats
+    that as "show the Connect Gmail prompt".
+    """
+    import base64
+    from email.message import EmailMessage
+
+    refresh = gmail_refresh_token_for(user_id)
+    if not refresh:
+        raise HTTPException(400, "Gmail not connected")
+
+    access = refresh_gmail_access_token(refresh)
+    from_email = gmail_email_for(user_id) or ""
+
+    msg = EmailMessage()
+    msg["To"] = to
+    if from_email:
+        msg["From"] = from_email
+    msg["Subject"] = subject
+    msg.set_content(body or "")
+    raw = base64.urlsafe_b64encode(bytes(msg)).decode()
+
+    resp = requests.post(
+        f"{GMAIL_API_BASE}/users/me/messages/send",
+        headers={
+            "Authorization": f"Bearer {access}",
+            "Content-Type": "application/json",
+        },
+        json={"raw": raw},
+        timeout=20,
+    )
+    if not resp.ok:
+        raise HTTPException(502, f"Gmail send failed: {resp.text}")
+    return resp.json()

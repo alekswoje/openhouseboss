@@ -136,6 +136,168 @@ def google_ios(payload: dict):
         },
     }
 
+
+# --------------------------------------------------------------------------
+# Gmail send — separate OAuth grant for the agent's sender account
+# --------------------------------------------------------------------------
+
+@app.get("/auth/gmail/start")
+def gmail_start(user_token: str):
+    """Kicks off the Gmail-send OAuth grant. ASWebAuthenticationSession on
+    iOS can't attach an Authorization header, so the client passes its
+    session JWT as a query param. We decode it here, attach the user_id to
+    the OAuth state, and redirect to Google."""
+    if not user_token:
+        raise HTTPException(401, "Not signed in")
+    payload = auth_lib.decode_session_jwt(user_token)
+    user_id = payload.get("sub", "")
+    user = auth_lib.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(401, "User no longer exists")
+    state = auth_lib.encode_gmail_state(user["id"])
+    return RedirectResponse(auth_lib.build_gmail_authorize_url(state), status_code=302)
+
+
+@app.get("/auth/gmail/callback")
+def gmail_callback(code: str, state: str):
+    state_data = auth_lib.decode_state(state)
+    if state_data.get("kind") != "gmail":
+        raise HTTPException(400, "OAuth state was not issued for Gmail")
+    user_id = state_data.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "OAuth state is missing user_id")
+
+    tokens = auth_lib.exchange_code_for_full_tokens(code, auth_lib.GMAIL_REDIRECT_URI)
+    refresh = tokens.get("refresh_token")
+    if not refresh:
+        # Should be impossible with prompt=consent + access_type=offline,
+        # but Google has been known to drop it if the user re-grants too
+        # fast. Tell the client so they can retry with a fresh consent.
+        raise HTTPException(401, "Google did not return a refresh token — retry the connection")
+
+    # Pull the agent's Gmail address out of the id_token so we can use it as
+    # the From: header on every outgoing message.
+    gmail_email = ""
+    id_token_str = tokens.get("id_token")
+    if id_token_str:
+        try:
+            id_payload = auth_lib.verify_google_id_token(id_token_str)
+            gmail_email = id_payload.get("email", "") or ""
+        except HTTPException:
+            gmail_email = ""
+
+    auth_lib.set_gmail_credential(user_id, refresh, gmail_email)
+    return RedirectResponse(
+        f"{auth_lib.IOS_CUSTOM_SCHEME}://gmail-connected", status_code=302
+    )
+
+
+@app.get("/auth/gmail/status")
+def gmail_status(current_user: dict = Depends(auth_lib.get_current_user)):
+    return auth_lib.gmail_status_for(current_user["id"])
+
+
+@app.post("/auth/gmail/disconnect")
+def gmail_disconnect(current_user: dict = Depends(auth_lib.get_current_user)):
+    auth_lib.clear_gmail_credential(current_user["id"])
+    return {"connected": False}
+
+
+# --------------------------------------------------------------------------
+# Contact verification for the kiosk sign-in form
+# --------------------------------------------------------------------------
+
+# Lightweight email + phone validation called as the guest fills out the
+# iPad sign-in form. We never block on this — the iOS client shows live
+# state ("checking", "looks good", "looks off") so the guest can correct
+# obvious typos before tapping Done.
+
+import re as _re
+import phonenumbers as _phonenumbers
+from phonenumbers import NumberParseException as _NumberParseException
+import dns.resolver as _dns_resolver
+import dns.exception as _dns_exception
+
+_EMAIL_REGEX = _re.compile(
+    r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+)
+
+# Domains we've seen in disposable-email lists. The guest can still submit
+# but we flag them so the agent knows the lead is junky.
+_DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com", "guerrillamail.com", "10minutemail.com", "tempmail.com",
+    "yopmail.com", "throwawaymail.com", "trashmail.com", "fakeinbox.com",
+    "maildrop.cc", "getnada.com", "sharklasers.com", "dispostable.com",
+}
+
+
+def _verify_email(raw: str) -> dict:
+    s = (raw or "").strip().lower()
+    if not s:
+        return {"valid": False, "reason": "Email is required"}
+    if not _EMAIL_REGEX.match(s):
+        return {"valid": False, "reason": "Doesn't look like an email"}
+    domain = s.split("@", 1)[1]
+    if domain in _DISPOSABLE_EMAIL_DOMAINS:
+        return {"valid": False, "reason": "Disposable inbox — won't reach you"}
+    try:
+        answers = _dns_resolver.resolve(domain, "MX", lifetime=2.5)
+        if not list(answers):
+            return {"valid": False, "reason": "Domain can't receive mail"}
+    except _dns_resolver.NXDOMAIN:
+        return {"valid": False, "reason": "Domain doesn't exist"}
+    except _dns_resolver.NoAnswer:
+        # Some domains use A-only mail — uncommon but valid per RFC 5321.
+        try:
+            _dns_resolver.resolve(domain, "A", lifetime=2.5)
+        except _dns_exception.DNSException:
+            return {"valid": False, "reason": "Domain doesn't exist"}
+    except _dns_exception.DNSException:
+        # Timeout / network issue — don't block the guest, just say "couldn't
+        # check". The iOS client treats unknown as soft-valid.
+        return {"valid": True, "reason": "unverified", "checked": False, "formatted": s}
+    return {"valid": True, "reason": "ok", "formatted": s}
+
+
+def _verify_phone(raw: str) -> dict:
+    s = (raw or "").strip()
+    if not s:
+        return {"valid": False, "reason": "Phone is required"}
+    try:
+        parsed = _phonenumbers.parse(s, "US")
+    except _NumberParseException:
+        return {"valid": False, "reason": "Doesn't look like a phone number"}
+    if not _phonenumbers.is_valid_number(parsed):
+        return {"valid": False, "reason": "Not a valid US number"}
+    formatted = _phonenumbers.format_number(
+        parsed, _phonenumbers.PhoneNumberFormat.NATIONAL
+    )
+    e164 = _phonenumbers.format_number(
+        parsed, _phonenumbers.PhoneNumberFormat.E164
+    )
+    return {"valid": True, "reason": "ok", "formatted": formatted, "e164": e164}
+
+
+@app.post("/verify/contact")
+def verify_contact(payload: dict):
+    """Validate an email and/or phone the guest just typed into the kiosk.
+
+    Body: {email?, phone?}. Either field is optional — only the ones that
+    are present are checked, so the iOS client can debounce per-field.
+
+    Returns: {email?: {valid, reason, formatted?}, phone?: {valid, reason,
+    formatted?, e164?}}. valid=true with reason="unverified" means we
+    couldn't reach DNS to do an MX check; the client treats that as
+    soft-valid so a flaky network doesn't block sign-ins.
+    """
+    out: dict = {}
+    if "email" in payload:
+        out["email"] = _verify_email(payload.get("email") or "")
+    if "phone" in payload:
+        out["phone"] = _verify_phone(payload.get("phone") or "")
+    return out
+
+
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
@@ -241,9 +403,32 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         _update(
             session_id,
             status="error",
-            error=str(e),
+            error=_friendly_error(str(e)),
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
+
+
+def _friendly_error(raw: str) -> str:
+    """Translate raw provider errors into something a real estate agent can
+    actually act on. Falls through to the original string if nothing maps —
+    we still want the technical detail somewhere, just not as the only
+    thing the user sees."""
+    lower = raw.lower()
+    if "language_detection" in lower and "no spoken audio" in lower:
+        return (
+            "We couldn't hear any speech in this recording. "
+            "The mic may have been muted or too far from the conversation — "
+            "try recording again, ideally with the iPad on a table near the group."
+        )
+    if "no spoken audio" in lower or "silent" in lower:
+        return "The recording was silent. Try again with the mic closer to the conversation."
+    if "audio is too short" in lower or "too short" in lower:
+        return "The recording was too short to analyze. Try one that's at least 15 seconds long."
+    if "rate limit" in lower or "429" in lower:
+        return "We're being rate-limited by the transcription service. Wait a minute and try again."
+    if "timeout" in lower or "timed out" in lower:
+        return "The transcription service took too long to respond. Try the session again."
+    return raw
 
 
 @app.post("/sessions")
@@ -547,6 +732,96 @@ def update_visitor_state(
         return state
 
 
+@app.post("/sessions/{session_id}/visitors/send_email")
+def send_visitor_email(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Send a follow-up email via the agent's connected Gmail account, then
+    flip the visitor's lead_state to `sent`.
+
+    Body: {name, speaker?, to?, subject?, body?}
+        name        — visitor display name, matches the iOS VisitorResult.id
+        speaker     — diarization label, disambiguates same-named visitors
+        to          — recipient; defaults to the visitor's captured email
+        subject     — defaults to "Following up — {session address}"
+        body        — defaults to the AI-drafted follow-up
+
+    Returns {sent, message_id, lead_state}. 400 here means Gmail isn't
+    connected; the iOS client treats that as "show Connect Gmail prompt".
+    """
+    name = (payload.get("name") or "").strip()
+    speaker = payload.get("speaker")
+    speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+        _require_owner(session, current_user, session_id)
+
+        result = session.get("result")
+        if not result:
+            raise HTTPException(409, "Session has no result yet")
+
+        visitors = result.get("visitors") or []
+        target = None
+        for entry in visitors:
+            v = entry.get("visitor") or {}
+            if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                target = entry
+                break
+        if target is None:
+            raise HTTPException(404, f"Visitor {name!r} (speaker={speaker!r}) not found")
+
+        visitor_info = target.get("visitor") or {}
+        analysis = target.get("analysis") or {}
+        to_addr = (payload.get("to") or visitor_info.get("email") or "").strip()
+        if not to_addr:
+            raise HTTPException(400, "No recipient email — visitor has no email on file")
+
+        address = session.get("address") or "the open house"
+        subject = (payload.get("subject") or f"Following up — {address}").strip()
+        body = (payload.get("body") or analysis.get("follow_up_draft") or "").strip()
+        if not body:
+            raise HTTPException(400, "Email body is empty")
+
+    # Gmail send runs outside the session lock so a slow Google call
+    # doesn't block other writes against this session.
+    gmail_result = auth_lib.send_gmail_email(
+        user_id=current_user["id"],
+        to=to_addr,
+        subject=subject,
+        body=body,
+    )
+    message_id = gmail_result.get("id")
+
+    # Mirror the visitor-state endpoint: flip to sent + record sent_at.
+    with _sessions_lock:
+        session = _sessions.get(session_id) or session
+        result = session.get("result") or {}
+        for entry in result.get("visitors") or []:
+            v = entry.get("visitor") or {}
+            if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                state = dict(entry.get("lead_state") or {})
+                state["status"] = "sent"
+                state["updated_at"] = now_iso
+                if not state.get("sent_at"):
+                    state["sent_at"] = now_iso
+                entry["lead_state"] = state
+                _persist(session_id)
+                return {"sent": True, "message_id": message_id, "lead_state": state}
+
+    return {"sent": True, "message_id": message_id, "lead_state": None}
+
+
 @app.get("/sessions/{session_id}/audio")
 def get_session_audio(
     session_id: str,
@@ -648,6 +923,70 @@ def list_sessions(current_user: dict = Depends(auth_lib.get_current_user)):
         ]
     items.sort(key=lambda x: x["created_at"], reverse=True)
     return {"sessions": items}
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Permanently delete a session and its on-disk artifacts (audio,
+    transcript, analysis). The iOS confirmation dialog is the only safety
+    net — server-side this is irreversible. Lead state for any visitors in
+    this session goes away with it since lead records live nested inside
+    the session payload."""
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+    if session is None:
+        path = SESSIONS_DIR / session_id / "session.json"
+        if path.exists():
+            session = json.loads(path.read_text())
+    _require_owner(session, current_user, session_id)
+
+    with _sessions_lock:
+        _sessions.pop(session_id, None)
+
+    session_dir = SESSIONS_DIR / session_id
+    if session_dir.exists():
+        import shutil
+        try:
+            shutil.rmtree(session_dir)
+        except OSError as exc:
+            raise HTTPException(500, f"Could not delete session files: {exc}")
+
+    return {"deleted": session_id}
+
+
+@app.delete("/sessions/{session_id}/visitors/{visitor_index}")
+def delete_visitor(
+    session_id: str,
+    visitor_index: int,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Drop a single lead from a session without affecting the rest. The
+    index is the visitor's position in result.visitors (0-based). Used by
+    the iOS Leads inbox swipe-to-delete. We keep the session record itself
+    so the audio + transcript remain available for the other leads."""
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+    if session is None:
+        path = SESSIONS_DIR / session_id / "session.json"
+        if path.exists():
+            session = json.loads(path.read_text())
+            with _sessions_lock:
+                _sessions[session_id] = session
+    _require_owner(session, current_user, session_id)
+
+    result = session.get("result") or {}
+    visitors = result.get("visitors") or []
+    if visitor_index < 0 or visitor_index >= len(visitors):
+        raise HTTPException(404, "Visitor index out of range")
+
+    removed = visitors.pop(visitor_index)
+    result["visitors"] = visitors
+    session["result"] = result
+    _persist(session_id)
+    return {"deleted_visitor": removed.get("visitor", {}).get("name"), "remaining": len(visitors)}
 
 
 WEB_DIR = Path(__file__).parent.parent / "web"
