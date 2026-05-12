@@ -579,6 +579,66 @@ _VALID_LEAD_STATUSES = {"drafted", "sent", "replied", "archived"}
 _VALID_LEAD_TAGS = {"Buyer", "Seller", "Browser"}
 
 
+def _load_session(session_id: str) -> Optional[dict]:
+    """Pull a session from the in-memory cache, falling back to disk. Caller
+    still has to acquire `_sessions_lock` for write operations."""
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+    if session is None:
+        path = SESSIONS_DIR / session_id / "session.json"
+        if path.exists():
+            session = json.loads(path.read_text())
+            with _sessions_lock:
+                _sessions[session_id] = session
+    return session
+
+
+def _find_visitor_entry(session: dict, name: str, speaker: str) -> Optional[dict]:
+    """Locate a visitor inside a session by (name, speaker) — the same
+    composite key the iOS app uses as VisitorResult.id. Returns the dict
+    in-place so callers can mutate it and persist."""
+    result = session.get("result") or {}
+    for entry in result.get("visitors") or []:
+        v = entry.get("visitor") or {}
+        if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+            return entry
+    return None
+
+
+def _ensure_lead_state(entry: dict) -> dict:
+    """Lead state is created lazily so older sessions don't need a migration.
+    Initializes notes/tasks/sent_emails arrays + scheduled_email field too."""
+    state = dict(entry.get("lead_state") or {})
+    state.setdefault("status", "drafted")
+    state.setdefault("notes", [])
+    state.setdefault("tasks", [])
+    state.setdefault("sent_emails", [])
+    state.setdefault("scheduled_email", None)
+    entry["lead_state"] = state
+    return state
+
+
+def _resolve_visitor(
+    session_id: str, payload_or_query: dict, current_user: dict
+) -> tuple[dict, dict, dict]:
+    """Shared front-half of every notes/tasks/schedule endpoint: load the
+    session, verify ownership, locate the visitor by (name, speaker), and
+    return (session, entry, lead_state). Raises the appropriate HTTPException
+    if anything's missing."""
+    name = (payload_or_query.get("name") or "").strip()
+    speaker = payload_or_query.get("speaker")
+    speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+    if not name:
+        raise HTTPException(400, "name is required")
+    session = _load_session(session_id)
+    _require_owner(session, current_user, session_id)
+    entry = _find_visitor_entry(session, name, speaker)
+    if entry is None:
+        raise HTTPException(404, f"Visitor {name!r} (speaker={speaker!r}) not found")
+    state = _ensure_lead_state(entry)
+    return session, entry, state
+
+
 def _require_owner(session: Optional[dict], user: dict, session_id: str) -> None:
     """Raises 404 if session missing, 403 if owned by someone else. Sessions
     created before auth landed have no user_id — fall through so the first
@@ -798,7 +858,9 @@ def send_visitor_email(
     )
     message_id = gmail_result.get("id")
 
-    # Mirror the visitor-state endpoint: flip to sent + record sent_at.
+    # Mirror the visitor-state endpoint: flip to sent + record sent_at, and
+    # append to the lead's sent_emails history so the agent can see what was
+    # already sent without digging into Gmail.
     with _sessions_lock:
         session = _sessions.get(session_id) or session
         result = session.get("result") or {}
@@ -806,16 +868,365 @@ def send_visitor_email(
             v = entry.get("visitor") or {}
             if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
                 now_iso = datetime.now(timezone.utc).isoformat()
-                state = dict(entry.get("lead_state") or {})
+                state = _ensure_lead_state(entry)
                 state["status"] = "sent"
                 state["updated_at"] = now_iso
                 if not state.get("sent_at"):
                     state["sent_at"] = now_iso
+                state["sent_emails"].append({
+                    "id": str(uuid.uuid4()),
+                    "to": to_addr,
+                    "subject": subject,
+                    "body": body,
+                    "sent_at": now_iso,
+                    "message_id": message_id,
+                    "scheduled": False,
+                })
                 entry["lead_state"] = state
                 _persist(session_id)
                 return {"sent": True, "message_id": message_id, "lead_state": state}
 
     return {"sent": True, "message_id": message_id, "lead_state": None}
+
+
+# --------------------------------------------------------------------------
+# Lead CRM — notes, tasks, scheduled sends, sent-email history
+# --------------------------------------------------------------------------
+
+
+@app.post("/sessions/{session_id}/visitors/notes")
+def add_note(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Append a free-text note to a lead. Notes are agent-only — never sent
+    anywhere — used for context the agent picks up across calls/visits."""
+    body = (payload.get("body") or "").strip()
+    if not body:
+        raise HTTPException(400, "body is required")
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(session_id, payload, current_user)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        note = {
+            "id": str(uuid.uuid4()),
+            "body": body,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        state["notes"].append(note)
+        state["updated_at"] = now_iso
+        _persist(session_id)
+        return {"lead_state": state, "note": note}
+
+
+@app.patch("/sessions/{session_id}/visitors/notes/{note_id}")
+def update_note(
+    session_id: str,
+    note_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    body = (payload.get("body") or "").strip()
+    if not body:
+        raise HTTPException(400, "body is required")
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(session_id, payload, current_user)
+        for note in state["notes"]:
+            if note.get("id") == note_id:
+                note["body"] = body
+                note["updated_at"] = datetime.now(timezone.utc).isoformat()
+                state["updated_at"] = note["updated_at"]
+                _persist(session_id)
+                return {"lead_state": state, "note": note}
+        raise HTTPException(404, f"Note {note_id} not found")
+
+
+@app.delete("/sessions/{session_id}/visitors/notes/{note_id}")
+def delete_note(
+    session_id: str,
+    note_id: str,
+    name: str,
+    speaker: str = "",
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(
+            session_id, {"name": name, "speaker": speaker}, current_user
+        )
+        before = len(state["notes"])
+        state["notes"] = [n for n in state["notes"] if n.get("id") != note_id]
+        if len(state["notes"]) == before:
+            raise HTTPException(404, f"Note {note_id} not found")
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist(session_id)
+        return {"lead_state": state}
+
+
+@app.post("/sessions/{session_id}/visitors/tasks")
+def add_task(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Append a task (to-do) to a lead — e.g. 'Send comps Thursday', 'Call
+    back after inspection'. Optional due_at is an ISO8601 string; the iPad
+    surfaces it next to the task title."""
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    due_at = payload.get("due_at")
+    if due_at is not None and not isinstance(due_at, str):
+        raise HTTPException(400, "due_at must be an ISO8601 string or null")
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(session_id, payload, current_user)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        task = {
+            "id": str(uuid.uuid4()),
+            "title": title,
+            "due_at": due_at,
+            "done": False,
+            "created_at": now_iso,
+            "done_at": None,
+        }
+        state["tasks"].append(task)
+        state["updated_at"] = now_iso
+        _persist(session_id)
+        return {"lead_state": state, "task": task}
+
+
+@app.patch("/sessions/{session_id}/visitors/tasks/{task_id}")
+def update_task(
+    session_id: str,
+    task_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(session_id, payload, current_user)
+        for task in state["tasks"]:
+            if task.get("id") == task_id:
+                if "title" in payload:
+                    title = (payload.get("title") or "").strip()
+                    if not title:
+                        raise HTTPException(400, "title cannot be empty")
+                    task["title"] = title
+                if "due_at" in payload:
+                    task["due_at"] = payload.get("due_at")
+                if "done" in payload:
+                    done = bool(payload.get("done"))
+                    task["done"] = done
+                    task["done_at"] = (
+                        datetime.now(timezone.utc).isoformat() if done else None
+                    )
+                state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                _persist(session_id)
+                return {"lead_state": state, "task": task}
+        raise HTTPException(404, f"Task {task_id} not found")
+
+
+@app.delete("/sessions/{session_id}/visitors/tasks/{task_id}")
+def delete_task(
+    session_id: str,
+    task_id: str,
+    name: str,
+    speaker: str = "",
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(
+            session_id, {"name": name, "speaker": speaker}, current_user
+        )
+        before = len(state["tasks"])
+        state["tasks"] = [t for t in state["tasks"] if t.get("id") != task_id]
+        if len(state["tasks"]) == before:
+            raise HTTPException(404, f"Task {task_id} not found")
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist(session_id)
+        return {"lead_state": state}
+
+
+@app.post("/sessions/{session_id}/visitors/schedule_email")
+def schedule_email(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Queue a Gmail send for a future time. A background worker
+    (_scheduled_send_worker) sweeps every 30s and fires anything whose
+    send_at has passed. Only one scheduled send per lead — submitting again
+    replaces the queued send. Body: {name, speaker?, send_at, to?, subject?, body?}.
+    send_at is an ISO8601 timestamp."""
+    send_at_raw = (payload.get("send_at") or "").strip()
+    if not send_at_raw:
+        raise HTTPException(400, "send_at is required")
+    try:
+        send_at = datetime.fromisoformat(send_at_raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "send_at must be an ISO8601 timestamp")
+    if send_at.tzinfo is None:
+        send_at = send_at.replace(tzinfo=timezone.utc)
+    if send_at <= datetime.now(timezone.utc):
+        raise HTTPException(400, "send_at must be in the future")
+
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(session_id, payload, current_user)
+        visitor_info = entry.get("visitor") or {}
+        analysis = entry.get("analysis") or {}
+        to_addr = (payload.get("to") or visitor_info.get("email") or "").strip()
+        if not to_addr:
+            raise HTTPException(400, "No recipient email — visitor has no email on file")
+        address = session.get("address") or "the open house"
+        subject = (payload.get("subject") or f"Following up — {address}").strip()
+        body = (payload.get("body") or analysis.get("follow_up_draft") or "").strip()
+        if not body:
+            raise HTTPException(400, "Email body is empty")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        state["scheduled_email"] = {
+            "send_at": send_at.isoformat(),
+            "to": to_addr,
+            "subject": subject,
+            "body": body,
+            "queued_at": now_iso,
+            # Cache the agent's user_id so the worker can find the right
+            # Gmail refresh token when it fires (the session has user_id but
+            # we keep it duplicated here for clarity).
+            "user_id": current_user["id"],
+        }
+        state["updated_at"] = now_iso
+        _persist(session_id)
+        return {"lead_state": state, "scheduled_email": state["scheduled_email"]}
+
+
+@app.delete("/sessions/{session_id}/visitors/schedule_email")
+def cancel_scheduled_email(
+    session_id: str,
+    name: str,
+    speaker: str = "",
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    with _sessions_lock:
+        session, entry, state = _resolve_visitor(
+            session_id, {"name": name, "speaker": speaker}, current_user
+        )
+        state["scheduled_email"] = None
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist(session_id)
+        return {"lead_state": state}
+
+
+# --------------------------------------------------------------------------
+# Scheduled-send worker
+# --------------------------------------------------------------------------
+
+
+def _scheduled_send_worker() -> None:
+    """Background thread that fires queued Gmail sends as their send_at
+    passes. Sleeps 30s between sweeps — fine for a real-estate workflow
+    where minute-level precision is plenty. Falls back gracefully on any
+    single-lead error so one bad address can't stall the queue."""
+    import time
+
+    while True:
+        try:
+            time.sleep(30)
+            now = datetime.now(timezone.utc)
+            # Snapshot a list of (session_id, name, speaker, payload) for
+            # anything that's due so we don't iterate while mutating.
+            due: list[tuple[str, str, str, dict]] = []
+            with _sessions_lock:
+                for sid, session in list(_sessions.items()):
+                    for entry in ((session.get("result") or {}).get("visitors") or []):
+                        sched = ((entry.get("lead_state") or {}).get("scheduled_email")) or None
+                        if not sched:
+                            continue
+                        try:
+                            sa = datetime.fromisoformat(
+                                (sched.get("send_at") or "").replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            continue
+                        if sa.tzinfo is None:
+                            sa = sa.replace(tzinfo=timezone.utc)
+                        if sa <= now:
+                            v = entry.get("visitor") or {}
+                            due.append((
+                                sid,
+                                v.get("name") or "",
+                                v.get("speaker") or "",
+                                dict(sched),
+                            ))
+
+            for sid, name, speaker, sched in due:
+                user_id = sched.get("user_id") or ""
+                to_addr = sched.get("to") or ""
+                subject = sched.get("subject") or ""
+                body = sched.get("body") or ""
+                try:
+                    gmail_result = auth_lib.send_gmail_email(
+                        user_id=user_id,
+                        to=to_addr,
+                        subject=subject,
+                        body=body,
+                    )
+                    message_id = gmail_result.get("id")
+                    error = None
+                except Exception as ex:
+                    message_id = None
+                    error = str(ex)
+
+                with _sessions_lock:
+                    session = _sessions.get(sid)
+                    if not session:
+                        continue
+                    for entry in ((session.get("result") or {}).get("visitors") or []):
+                        v = entry.get("visitor") or {}
+                        if (v.get("name") or "") != name or (v.get("speaker") or "") != speaker:
+                            continue
+                        state = _ensure_lead_state(entry)
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        if error is None:
+                            state["status"] = "sent"
+                            if not state.get("sent_at"):
+                                state["sent_at"] = now_iso
+                            state["sent_emails"].append({
+                                "id": str(uuid.uuid4()),
+                                "to": to_addr,
+                                "subject": subject,
+                                "body": body,
+                                "sent_at": now_iso,
+                                "message_id": message_id,
+                                "scheduled": True,
+                            })
+                            state["scheduled_email"] = None
+                        else:
+                            # Don't auto-retry forever — record the failure
+                            # on the scheduled record and stop trying. Agent
+                            # can resubmit from the UI.
+                            sched["error"] = error
+                            sched["failed_at"] = now_iso
+                            state["scheduled_email"] = sched
+                        state["updated_at"] = now_iso
+                        _persist(sid)
+                        break
+        except Exception:
+            # Worker must never crash — sleep and try again next sweep.
+            continue
+
+
+_worker_thread: Optional[threading.Thread] = None
+
+
+@app.on_event("startup")
+def _start_scheduled_worker():
+    global _worker_thread
+    if _worker_thread is None or not _worker_thread.is_alive():
+        _hydrate_sessions_from_disk()
+        _worker_thread = threading.Thread(
+            target=_scheduled_send_worker, daemon=True, name="scheduled-send-worker"
+        )
+        _worker_thread.start()
 
 
 @app.get("/sessions/{session_id}/audio")
