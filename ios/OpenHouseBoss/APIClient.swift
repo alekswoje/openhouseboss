@@ -510,6 +510,11 @@ actor APIClient {
         ))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Gmail send is synchronous on the backend (with its own 20s timeout
+        // talking to Google) and can ride a Render cold-start wake-up. The
+        // global 8s session timeout is way too tight for this path — bump
+        // per-request so a real send doesn't surface as "request timed out".
+        req.timeoutInterval = 60
         authorize(&req)
 
         var payload: [String: Any] = [
