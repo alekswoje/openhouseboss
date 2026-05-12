@@ -301,6 +301,13 @@ struct IPadAgentApp: View {
                 onOpenLeads: { sessionId in
                     activeSessionId = sessionId
                     tab = .leads
+                },
+                onOpenSession: { sessionId in
+                    // Land the user directly on the just-finished session
+                    // rather than the readyPane prompt. They can still tap
+                    // the "Open in Leads" CTA inside Session detail if they
+                    // want to draft follow-ups next.
+                    viewingPastSession = sessionId
                 }
             )
         case .kiosk:
@@ -5620,6 +5627,11 @@ private struct IPadRecord: View {
     let listing: Listing?
     var onSelectListing: (Listing) -> Void
     var onOpenLeads: (String) -> Void
+    // Called when the final-pass snapshot finishes and the session is ready.
+    // The parent uses this to navigate the user directly to Session detail
+    // instead of stopping at a "Session ready / Open leads" prompt — which
+    // was extra clicks for what's obviously the next step.
+    var onOpenSession: (String) -> Void
 
     // Shared recorder so the recording survives tab switches — the agent
     // can start recording, then jump to the Kiosk tab to take guest sign-ins
@@ -5627,6 +5639,10 @@ private struct IPadRecord: View {
     @State private var recorder = AudioRecorder.shared
     @State private var permissionDenied = false
     @State private var paused = false
+    // Guard so onOpenSession only fires once per session — onChange will
+    // otherwise re-fire if the user navigates back to Record while a ready
+    // session is still on the store.
+    @State private var openedSessionId: String?
 
     var body: some View {
         ZStack {
@@ -5636,6 +5652,19 @@ private struct IPadRecord: View {
         .onAppear {
             resetIfFinishedSession()
             paused = recorder.isPaused
+        }
+        // When the End-Session pass finishes, auto-navigate to the Session
+        // detail. Without this the agent landed on a prompt pane asking
+        // which screen to go to — the answer is almost always "open the
+        // session I just finished," so just do it.
+        .onChange(of: store.phase) { _, newPhase in
+            if case .ready = newPhase,
+               let id = store.session?.id,
+               openedSessionId != id {
+                openedSessionId = id
+                onOpenSession(id)
+                store.reset()
+            }
         }
         .alert("Microphone access needed", isPresented: $permissionDenied) {
             Button("OK", role: .cancel) {}
