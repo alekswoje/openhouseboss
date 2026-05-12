@@ -4596,12 +4596,28 @@ private struct DraftEditorPane: View {
     }
 }
 
-// Pretty-print the network errors we see most often: Render's 502 HTML
-// page (cold start / proxy timeout) and URLError.timedOut. Lets the UI
-// say something the agent can act on instead of dumping a stack trace.
+// Pretty-print the network errors we see most often:
+//   - Render/Cloudflare's 502/503/504 HTML page (cold start / proxy
+//     timeout / dyno still booting),
+//   - URLError.timedOut (iOS gave up before backend responded),
+//   - APIError.http(50x, ...) thrown by validate() when the backend
+//     surfaces an upstream proxy failure.
+// Lets the UI say something the agent can act on instead of dumping an
+// HTML stack trace into the panel.
 private func friendlyErrorMessage(_ prefix: String, error: Error) -> String {
     let raw = error.localizedDescription
-    if raw.contains("<title>502</title>") || raw.contains("<!DOCTYPE html>") {
+    let lower = raw.lowercased()
+    // HTML proxy error pages from Cloudflare or Render — recognised by
+    // the title or body text rather than exact tag formatting.
+    if lower.contains("502 bad gateway")
+        || lower.contains("503 service")
+        || lower.contains("504 gateway")
+        || (lower.contains("<title>502") && lower.contains("</title>"))
+        || lower.contains("cloudflare")
+        || lower.contains("<!doctype html>") {
+        return "\(prefix): backend is waking up. Wait a few seconds and retry."
+    }
+    if case let APIError.http(code, _) = error, [502, 503, 504].contains(code) {
         return "\(prefix): backend is waking up. Wait a few seconds and retry."
     }
     if let urlError = error as? URLError, urlError.code == .timedOut {

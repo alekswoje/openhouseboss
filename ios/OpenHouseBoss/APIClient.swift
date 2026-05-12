@@ -104,6 +104,64 @@ actor APIClient {
         }
     }
 
+    // Cold-start-tolerant POST for IDEMPOTENT ops (refine draft, AI agent
+    // ask, etc.) that are safe to retry. Same retry strategy as
+    // coldStartGET but works with a pre-built URLRequest (since POST
+    // bodies are set by the caller). Retries on URLError transients AND
+    // on HTTP 502/503/504 — those usually mean Render's edge couldn't
+    // talk to the origin (cold start mid-flight), which a quick retry
+    // typically clears.
+    //
+    // DO NOT use this for non-idempotent ops like send_email — they
+    // would silently double-send. Use the single-shot path for those
+    // and surface failures to the user.
+    private func coldStartPOST(
+        request original: URLRequest,
+        timeout: TimeInterval = 120,
+        maxAttempts: Int = 3
+    ) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            var req = original
+            req.timeoutInterval = timeout
+            do {
+                let (data, response) = try await self.session.data(for: req)
+                if let http = response as? HTTPURLResponse,
+                   [502, 503, 504].contains(http.statusCode) {
+                    // Render / Cloudflare edge failed to reach a healthy
+                    // worker. Treat as transient and retry.
+                    lastError = APIError.http(http.statusCode,
+                                              String(data: data, encoding: .utf8) ?? "")
+                    if attempt < maxAttempts - 1 {
+                        let delay = UInt64((attempt + 1) * 1_500_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
+                        continue
+                    }
+                    return (data, response)
+                }
+                return (data, response)
+            } catch let urlErr as URLError {
+                switch urlErr.code {
+                case .timedOut,
+                     .cannotConnectToHost,
+                     .networkConnectionLost,
+                     .dnsLookupFailed,
+                     .notConnectedToInternet:
+                    lastError = urlErr
+                    if attempt < maxAttempts - 1 {
+                        let delay = UInt64((attempt + 1) * 1_500_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
+                        continue
+                    }
+                    throw urlErr
+                default:
+                    throw urlErr
+                }
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
     // Cold-start-tolerant GET. Render's free tier can take 30-60s to wake
     // up an idle service, so the first request after the app launches often
     // blows past the snappy 8s default. This helper:
@@ -774,12 +832,11 @@ actor APIClient {
     }
 
     func askLeadsAgent(message: String) async throws -> LeadsAgentReply {
-        var req = try crmRequest(
+        let req = try crmRequest(
             "me/leads/agent", method: "POST", body: ["message": message]
         )
-        // Claude over the whole lead corpus can take a moment.
-        req.timeoutInterval = 90
-        let (data, response) = try await self.session.data(for: req)
+        // Asking the agent is read-only — safe to retry on transient 502s.
+        let (data, response) = try await coldStartPOST(request: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(LeadsAgentReply.self, from: data)
     }
@@ -828,14 +885,13 @@ actor APIClient {
             "instruction": instruction,
         ]
         if let baseBody { payload["base_body"] = baseBody }
-        var req = try crmRequest(
+        let req = try crmRequest(
             "sessions/\(sessionId)/visitors/draft/refine", method: "POST", body: payload
         )
-        // Haiku rewrite is ~1-3s, but a cold Render service can prepend
-        // 30-50s of wake-up. Give it plenty of headroom so a real refine
-        // doesn't surface as "request timed out" while the dyno boots.
-        req.timeoutInterval = 120
-        let (data, response) = try await self.session.data(for: req)
+        // Refine is idempotent — safe to auto-retry on 502/timeout. The
+        // first call usually wakes a cold Render dyno; the retry lands
+        // on a hot worker and succeeds.
+        let (data, response) = try await coldStartPOST(request: req)
         try validate(response: response, data: data)
         struct Wrapper: Codable { let body: String }
         return try JSONDecoder().decode(Wrapper.self, from: data).body
