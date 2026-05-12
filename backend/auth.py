@@ -489,7 +489,20 @@ def send_gmail_email(
             # disconnected — the UI will then offer Connect Gmail.
             clear_gmail_credential(user_id)
             raise HTTPException(400, "Gmail not connected")
-        if resp.status_code == 403 or "insufficient" in message.lower():
+        if "insufficient" in message.lower() or "insufficient_scope" in message.lower():
+            # Token came back without gmail.send — almost always means
+            # the user's Google Workspace admin blocks unverified third-
+            # party apps. Wipe so they can reconnect with a personal
+            # account without first manually clicking Disconnect.
+            clear_gmail_credential(user_id)
+            raise HTTPException(
+                400,
+                "Your Google account didn't grant permission to send mail "
+                "(often a Workspace admin policy that blocks third-party "
+                "apps). Reconnect with a personal Gmail account, or have "
+                "your admin allow this app."
+            )
+        if resp.status_code == 403:
             raise HTTPException(400, f"Gmail rejected the send: {message}")
         # Anything else — quota, malformed message, etc. — surface the
         # underlying reason rather than bare 502.
