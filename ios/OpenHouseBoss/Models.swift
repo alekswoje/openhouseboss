@@ -231,15 +231,94 @@ struct LeadState: Codable, Hashable {
     var sentAt: String?
     var snoozedUntil: String?
     var updatedAt: String?
+    // CRM fields — backend defaults each to [] / nil so older sessions still
+    // decode cleanly. iOS treats them as the lead's history feed.
+    var notes: [LeadNote]?
+    var tasks: [LeadTask]?
+    var sentEmails: [SentEmail]?
+    var scheduledEmail: ScheduledEmail?
 
     enum CodingKeys: String, CodingKey {
-        case status
+        case status, notes, tasks
         case sentAt = "sent_at"
         case snoozedUntil = "snoozed_until"
         case updatedAt = "updated_at"
+        case sentEmails = "sent_emails"
+        case scheduledEmail = "scheduled_email"
     }
 
-    static let defaultDrafted = LeadState(status: .drafted, sentAt: nil, snoozedUntil: nil, updatedAt: nil)
+    static let defaultDrafted = LeadState(
+        status: .drafted, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
+        notes: [], tasks: [], sentEmails: [], scheduledEmail: nil
+    )
+}
+
+struct LeadNote: Codable, Hashable, Identifiable {
+    let id: String
+    var body: String
+    let createdAt: String?
+    var updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, body
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct LeadTask: Codable, Hashable, Identifiable {
+    let id: String
+    var title: String
+    var dueAt: String?
+    var done: Bool
+    let createdAt: String?
+    var doneAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, done
+        case dueAt = "due_at"
+        case createdAt = "created_at"
+        case doneAt = "done_at"
+    }
+}
+
+struct SentEmail: Codable, Hashable, Identifiable {
+    let id: String
+    let to: String
+    let subject: String
+    let body: String
+    let sentAt: String?
+    let messageId: String?
+    let scheduled: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, to, subject, body, scheduled
+        case sentAt = "sent_at"
+        case messageId = "message_id"
+    }
+}
+
+struct ScheduledEmail: Codable, Hashable {
+    let sendAt: String?
+    let to: String?
+    let subject: String?
+    let body: String?
+    let queuedAt: String?
+    let error: String?
+    let failedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case to, subject, body, error
+        case sendAt = "send_at"
+        case queuedAt = "queued_at"
+        case failedAt = "failed_at"
+    }
+
+    var sendDate: Date? {
+        guard let s = sendAt else { return nil }
+        return ISO8601DateFormatter.fractionalSeconds.date(from: s)
+            ?? ISO8601DateFormatter().date(from: s)
+    }
 }
 
 extension LeadState {

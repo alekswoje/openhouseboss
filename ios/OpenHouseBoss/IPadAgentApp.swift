@@ -2007,6 +2007,22 @@ private struct IPadLeads: View {
     @State private var deletingLead: Bool = false
     @State private var deleteLeadError: String?
 
+    // Send-success toast — shown above the detail pane for ~2s after a
+    // Gmail send succeeds, so the agent gets a clear "yes that went out"
+    // signal that doesn't depend on noticing the small status pill flip.
+    @State private var sentToast: String?
+    @State private var toastTask: Task<Void, Never>?
+
+    // CRM panel state — per-lead draft text for new notes/tasks so the
+    // agent's typing persists when they switch leads and back. Keyed by
+    // LeadRow.id (which is session_id + visitor_id).
+    @State private var newNoteText: [String: String] = [:]
+    @State private var newTaskText: [String: String] = [:]
+    @State private var crmError: String?
+
+    // Schedule-send sheet — non-nil means a date picker is up for that lead.
+    @State private var scheduleForLead: LeadRow?
+
     private var filteredLeads: [LeadRow] {
         guard let id = filterSessionId else { return allLeads }
         return allLeads.filter { $0.session.id == id }
@@ -2038,6 +2054,14 @@ private struct IPadLeads: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
+                .overlay(alignment: .top) {
+                    if let toast = sentToast {
+                        sentToastView(toast)
+                            .padding(.top, 24)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: sentToast)
         }
         .task { await load() }
         .onAppear {
@@ -2067,6 +2091,17 @@ private struct IPadLeads: View {
                 onCreated: { _ in
                     showAddLead = false
                     Task { await load() }
+                }
+            )
+        }
+        .sheet(item: $scheduleForLead) { row in
+            ScheduleSendSheet(
+                row: row,
+                onCancel: { scheduleForLead = nil },
+                onScheduled: { state in
+                    apply(state, to: row)
+                    scheduleForLead = nil
+                    showToast("Scheduled for \(row.visitor.displayName.split(separator: " ").first.map(String.init) ?? row.visitor.displayName)")
                 }
             )
         }
@@ -2274,6 +2309,15 @@ private struct IPadLeads: View {
                     visitorHeader(row)
                     summary(row.visitor)
                     followup(row.visitor, session: row.session)
+                    scheduledSection(row)
+                    historySection(row)
+                    notesSection(row)
+                    tasksSection(row)
+                    if let crmError {
+                        Text(crmError)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
                     if let deleteLeadError {
                         Text(deleteLeadError)
                             .font(.system(size: 12))
@@ -2444,6 +2488,21 @@ private struct IPadLeads: View {
                 }
                 Spacer()
                 let sending = (sendingId == v.id)
+                Button {
+                    if let row = current { scheduleForLead = row }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Schedule")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Color(white: 0.07), in: Capsule())
+                }
+                .disabled(sending)
+                .buttonStyle(.plain)
                 Button { Task { await markSent(v, session: session) } } label: {
                     HStack(spacing: 8) {
                         if sending {
@@ -2617,7 +2676,8 @@ private struct IPadLeads: View {
             )
             await MainActor.run {
                 let newState = result.leadState
-                    ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil)
+                    ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
+                                 notes: nil, tasks: nil, sentEmails: nil, scheduledEmail: nil)
                 if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
                     var row = allLeads[idx]
                     var visitor = row.visitor
@@ -2625,6 +2685,8 @@ private struct IPadLeads: View {
                     row = LeadRow(visitor: visitor, session: row.session)
                     allLeads[idx] = row
                 }
+                let first = v.visitor.name.split(separator: " ").first.map(String.init) ?? v.visitor.name
+                showToast("Email sent to \(first)")
             }
         } catch APIClient.SendEmailError.gmailNotConnected {
             await MainActor.run { showGmailConnect = true }
@@ -2632,6 +2694,601 @@ private struct IPadLeads: View {
             await MainActor.run { sendError = "This lead has no email on file." }
         } catch {
             await MainActor.run { sendError = "Couldn't send: \(error.localizedDescription)" }
+        }
+    }
+
+    // MARK: – Toast
+
+    @MainActor
+    private func showToast(_ text: String) {
+        sentToast = text
+        toastTask?.cancel()
+        toastTask = Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            if !Task.isCancelled {
+                await MainActor.run { sentToast = nil }
+            }
+        }
+    }
+
+    private func sentToastView(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(FoyerTheme.sage)
+            Text(text)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(white: 0.07))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(FoyerTheme.sage.opacity(0.35), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
+        )
+    }
+
+    // MARK: – CRM helpers
+
+    @MainActor
+    private func apply(_ state: LeadState, to row: LeadRow) {
+        guard let idx = allLeads.firstIndex(where: { $0.id == row.id }) else { return }
+        var existing = allLeads[idx]
+        var visitor = existing.visitor
+        visitor.leadState = state
+        existing = LeadRow(visitor: visitor, session: existing.session)
+        allLeads[idx] = existing
+    }
+
+    private func sectionHeader(_ title: String, count: Int? = nil) -> some View {
+        HStack(spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textDim)
+            if let count, count > 0 {
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Color(white: 0.10)))
+            }
+            Rectangle().fill(FoyerTheme.hairline).frame(height: 1)
+        }
+    }
+
+    // MARK: – Scheduled email panel
+
+    private func scheduledSection(_ row: LeadRow) -> some View {
+        Group {
+            if let sched = row.visitor.leadState?.scheduledEmail,
+               let date = sched.sendDate {
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader("Scheduled")
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.gold)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Sending \(absoluteDate(date))")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.cream)
+                            if let err = sched.error {
+                                Text("Last attempt failed: \(err)")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(FoyerTheme.terracotta)
+                            } else {
+                                Text(sched.subject ?? "")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(FoyerTheme.textDim)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Button { Task { await cancelSchedule(row) } } label: {
+                            Text("Cancel")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(FoyerTheme.terracotta)
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(FoyerTheme.goldSoft)
+                    )
+                }
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    // MARK: – Sent emails history
+
+    private func historySection(_ row: LeadRow) -> some View {
+        let sent = row.visitor.leadState?.sentEmails ?? []
+        return Group {
+            if !sent.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader("Email history", count: sent.count)
+                    VStack(spacing: 8) {
+                        ForEach(sent.reversed()) { e in
+                            sentEmailRow(e)
+                        }
+                    }
+                }
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    private func sentEmailRow(_ e: SentEmail) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.sage)
+                Text(e.subject)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(1)
+                Spacer()
+                if e.scheduled == true {
+                    Text("Scheduled")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(FoyerTheme.goldSoft))
+                }
+                Text(relativeTime(e.sentAt))
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Text("To \(e.to)")
+                .font(.system(size: 11))
+                .foregroundStyle(FoyerTheme.textDim)
+            Text(e.body)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(4)
+                .lineLimit(4)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(white: 0.05))
+        )
+    }
+
+    // MARK: – Notes
+
+    private func notesSection(_ row: LeadRow) -> some View {
+        let notes = row.visitor.leadState?.notes ?? []
+        let draft = Binding(
+            get: { newNoteText[row.id] ?? "" },
+            set: { newNoteText[row.id] = $0 }
+        )
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Notes", count: notes.count)
+            HStack(alignment: .top, spacing: 8) {
+                TextField("Add a note — anything you want to remember…", text: draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(white: 0.05))
+                    )
+                Button { Task { await addNote(row) } } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .frame(width: 36, height: 36)
+                        .background(FoyerTheme.gold, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled((newNoteText[row.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity((newNoteText[row.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+            }
+            ForEach(notes.reversed()) { n in
+                noteRow(row, note: n)
+            }
+        }
+    }
+
+    private func noteRow(_ row: LeadRow, note: LeadNote) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Rectangle().fill(FoyerTheme.gold).frame(width: 2)
+                .clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 4) {
+                Text(note.body)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(4)
+                Text(relativeTime(note.createdAt))
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Spacer()
+            Button { Task { await deleteNote(row, noteId: note.id) } } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 10).padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(white: 0.04))
+        )
+    }
+
+    // MARK: – Tasks
+
+    private func tasksSection(_ row: LeadRow) -> some View {
+        let tasks = row.visitor.leadState?.tasks ?? []
+        let draft = Binding(
+            get: { newTaskText[row.id] ?? "" },
+            set: { newTaskText[row.id] = $0 }
+        )
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Tasks", count: tasks.filter { !$0.done }.count)
+            HStack(spacing: 8) {
+                TextField("Add a task — e.g. 'Send comps Thursday'", text: draft)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(white: 0.05))
+                    )
+                    .onSubmit { Task { await addTask(row) } }
+                Button { Task { await addTask(row) } } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .frame(width: 36, height: 36)
+                        .background(FoyerTheme.gold, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled((newTaskText[row.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity((newTaskText[row.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+            }
+            ForEach(tasks) { t in
+                taskRow(row, task: t)
+            }
+        }
+    }
+
+    private func taskRow(_ row: LeadRow, task: LeadTask) -> some View {
+        HStack(spacing: 12) {
+            Button { Task { await toggleTask(row, task: task) } } label: {
+                Image(systemName: task.done ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(task.done ? FoyerTheme.sage : FoyerTheme.textDim)
+            }
+            .buttonStyle(.plain)
+            Text(task.title)
+                .font(.system(size: 14))
+                .foregroundStyle(task.done ? FoyerTheme.textDim : FoyerTheme.cream)
+                .strikethrough(task.done, color: FoyerTheme.textDim)
+            Spacer()
+            Button { Task { await deleteTask(row, taskId: task.id) } } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 10).padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(white: 0.04))
+        )
+    }
+
+    // MARK: – CRM API calls
+
+    @MainActor
+    private func addNote(_ row: LeadRow) async {
+        let body = (newNoteText[row.id] ?? "").trimmingCharacters(in: .whitespaces)
+        guard !body.isEmpty else { return }
+        do {
+            let state = try await APIClient.shared.addNote(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                body: body
+            )
+            apply(state, to: row)
+            newNoteText[row.id] = ""
+        } catch {
+            crmError = "Couldn't add note: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func deleteNote(_ row: LeadRow, noteId: String) async {
+        do {
+            let state = try await APIClient.shared.deleteNote(
+                sessionId: row.session.id,
+                noteId: noteId,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker
+            )
+            apply(state, to: row)
+        } catch {
+            crmError = "Couldn't delete note: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func addTask(_ row: LeadRow) async {
+        let title = (newTaskText[row.id] ?? "").trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return }
+        do {
+            let state = try await APIClient.shared.addTask(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                title: title
+            )
+            apply(state, to: row)
+            newTaskText[row.id] = ""
+        } catch {
+            crmError = "Couldn't add task: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func toggleTask(_ row: LeadRow, task: LeadTask) async {
+        do {
+            let state = try await APIClient.shared.updateTask(
+                sessionId: row.session.id,
+                taskId: task.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                done: !task.done
+            )
+            apply(state, to: row)
+        } catch {
+            crmError = "Couldn't update task: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func deleteTask(_ row: LeadRow, taskId: String) async {
+        do {
+            let state = try await APIClient.shared.deleteTask(
+                sessionId: row.session.id,
+                taskId: taskId,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker
+            )
+            apply(state, to: row)
+        } catch {
+            crmError = "Couldn't delete task: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func cancelSchedule(_ row: LeadRow) async {
+        do {
+            let state = try await APIClient.shared.cancelScheduledEmail(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker
+            )
+            apply(state, to: row)
+        } catch {
+            crmError = "Couldn't cancel: \(error.localizedDescription)"
+        }
+    }
+
+    private func relativeTime(_ iso: String?) -> String {
+        guard let iso else { return "" }
+        let fmt = ISO8601DateFormatter.fractionalSeconds
+        guard let date = fmt.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else {
+            return ""
+        }
+        let now = Date()
+        let delta = now.timeIntervalSince(date)
+        if delta < 60 { return "just now" }
+        if delta < 3600 { return "\(Int(delta / 60))m ago" }
+        if delta < 86_400 { return "\(Int(delta / 3600))h ago" }
+        let days = Int(delta / 86_400)
+        if days < 14 { return "\(days)d ago" }
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f.string(from: date)
+    }
+
+    private func absoluteDate(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d 'at' h:mma"
+        return f.string(from: date).replacingOccurrences(of: "AM", with: "am").replacingOccurrences(of: "PM", with: "pm")
+    }
+}
+
+// MARK: – Schedule send sheet
+
+private struct ScheduleSendSheet: View {
+    let row: IPadLeads.LeadRow
+    var onCancel: () -> Void
+    var onScheduled: (LeadState) -> Void
+
+    @State private var sendAt: Date = Date().addingTimeInterval(60 * 60 * 24)  // default: 24h
+    @State private var subject: String = ""
+    @State private var bodyText: String = ""
+    @State private var submitting: Bool = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SEND TO")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textDim)
+                        Text(row.visitor.visitor.email.isEmpty
+                             ? "No email on file"
+                             : row.visitor.visitor.email)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(row.visitor.visitor.email.isEmpty
+                                             ? FoyerTheme.terracotta : FoyerTheme.cream)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("WHEN")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textDim)
+                        DatePicker(
+                            "",
+                            selection: $sendAt,
+                            in: Date()...,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        .labelsHidden()
+                        .datePickerStyle(.graphical)
+                        .tint(FoyerTheme.gold)
+                    }
+
+                    HStack(spacing: 10) {
+                        quickPicker("In 1 hour", offset: 3600)
+                        quickPicker("Tomorrow 9am", absolute: tomorrowAt(hour: 9))
+                        quickPicker("Mon 9am", absolute: nextWeekdayAt(weekday: 2, hour: 9))
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SUBJECT")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textDim)
+                        TextField("Following up", text: $subject)
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color(white: 0.06))
+                            )
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("EMAIL BODY")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textDim)
+                        TextEditor(text: $bodyText)
+                            .font(.system(size: 14))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .scrollContentBackground(.hidden)
+                            .frame(minHeight: 140)
+                            .padding(8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color(white: 0.06))
+                            )
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color.black)
+            .navigationTitle("Schedule send")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(submitting ? "Scheduling…" : "Schedule") {
+                        Task { await schedule() }
+                    }
+                    .disabled(submitting || row.visitor.visitor.email.isEmpty)
+                    .bold()
+                }
+            }
+        }
+        .onAppear {
+            if subject.isEmpty {
+                subject = "Following up — \(row.session.address ?? "the open house")"
+            }
+            if bodyText.isEmpty {
+                bodyText = row.visitor.analysis.followUpDraft
+            }
+        }
+    }
+
+    private func quickPicker(_ label: String, offset: TimeInterval? = nil, absolute: Date? = nil) -> some View {
+        Button {
+            if let offset { sendAt = Date().addingTimeInterval(offset) }
+            if let absolute { sendAt = absolute }
+        } label: {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(FoyerTheme.gold)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(FoyerTheme.goldSoft, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tomorrowAt(hour: Int) -> Date {
+        let cal = Calendar.current
+        let base = cal.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: base) ?? base
+    }
+
+    private func nextWeekdayAt(weekday: Int, hour: Int) -> Date {
+        // weekday: 1=Sunday … 2=Monday
+        let cal = Calendar.current
+        var d = Date()
+        for _ in 0..<8 {
+            d = cal.date(byAdding: .day, value: 1, to: d) ?? d
+            if cal.component(.weekday, from: d) == weekday { break }
+        }
+        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: d) ?? d
+    }
+
+    @MainActor
+    private func schedule() async {
+        submitting = true
+        defer { submitting = false }
+        errorMessage = nil
+        do {
+            let state = try await APIClient.shared.scheduleEmail(
+                sessionId: row.session.id,
+                visitorName: row.visitor.visitor.name,
+                visitorSpeaker: row.visitor.visitor.speaker,
+                sendAt: sendAt,
+                subject: subject.isEmpty ? nil : subject,
+                bodyText: bodyText.isEmpty ? nil : bodyText
+            )
+            onScheduled(state)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

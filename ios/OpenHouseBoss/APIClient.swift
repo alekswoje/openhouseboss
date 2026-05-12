@@ -428,6 +428,138 @@ actor APIClient {
         return try JSONDecoder().decode(SendEmailResult.self, from: data)
     }
 
+    // MARK: – Lead CRM (notes, tasks, history, schedule)
+
+    struct LeadStateEnvelope: Codable {
+        let leadState: LeadState
+        enum CodingKeys: String, CodingKey { case leadState = "lead_state" }
+    }
+
+    private func crmRequest(_ path: String, method: String, body: [String: Any]? = nil) throws -> URLRequest {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+        if let body {
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        return req
+    }
+
+    func addNote(sessionId: String, visitorName: String, visitorSpeaker: String?, body: String) async throws -> LeadState {
+        let req = try crmRequest("sessions/\(sessionId)/visitors/notes", method: "POST", body: [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "body": body,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func updateNote(sessionId: String, noteId: String, visitorName: String, visitorSpeaker: String?, body: String) async throws -> LeadState {
+        let req = try crmRequest("sessions/\(sessionId)/visitors/notes/\(noteId)", method: "PATCH", body: [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "body": body,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func deleteNote(sessionId: String, noteId: String, visitorName: String, visitorSpeaker: String?) async throws -> LeadState {
+        var comps = URLComponents(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/notes/\(noteId)"
+        ), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "name", value: visitorName),
+            URLQueryItem(name: "speaker", value: visitorSpeaker ?? ""),
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func addTask(sessionId: String, visitorName: String, visitorSpeaker: String?, title: String, dueAt: String? = nil) async throws -> LeadState {
+        var body: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "title": title,
+        ]
+        if let dueAt { body["due_at"] = dueAt }
+        let req = try crmRequest("sessions/\(sessionId)/visitors/tasks", method: "POST", body: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func updateTask(sessionId: String, taskId: String, visitorName: String, visitorSpeaker: String?, done: Bool? = nil, title: String? = nil, dueAt: String?? = .none) async throws -> LeadState {
+        var body: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+        ]
+        if let done { body["done"] = done }
+        if let title { body["title"] = title }
+        if case .some(let val) = dueAt { body["due_at"] = val as Any? ?? NSNull() }
+        let req = try crmRequest("sessions/\(sessionId)/visitors/tasks/\(taskId)", method: "PATCH", body: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func deleteTask(sessionId: String, taskId: String, visitorName: String, visitorSpeaker: String?) async throws -> LeadState {
+        var comps = URLComponents(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/tasks/\(taskId)"
+        ), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "name", value: visitorName),
+            URLQueryItem(name: "speaker", value: visitorSpeaker ?? ""),
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func scheduleEmail(sessionId: String, visitorName: String, visitorSpeaker: String?, sendAt: Date, subject: String? = nil, bodyText: String? = nil, to: String? = nil) async throws -> LeadState {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var body: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+            "send_at": iso.string(from: sendAt),
+        ]
+        if let to { body["to"] = to }
+        if let subject { body["subject"] = subject }
+        if let bodyText { body["body"] = bodyText }
+        let req = try crmRequest("sessions/\(sessionId)/visitors/schedule_email", method: "POST", body: body)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
+    func cancelScheduledEmail(sessionId: String, visitorName: String, visitorSpeaker: String?) async throws -> LeadState {
+        var comps = URLComponents(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/schedule_email"
+        ), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "name", value: visitorName),
+            URLQueryItem(name: "speaker", value: visitorSpeaker ?? ""),
+        ]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LeadStateEnvelope.self, from: data).leadState
+    }
+
     // Re-run the analysis pipeline on a session's saved audio with a new
     // speakers_expected hint. Used by the Summary "Re-analyze" control.
     // Returns once the backend has *queued* the work; caller should poll.
