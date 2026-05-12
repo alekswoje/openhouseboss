@@ -731,84 +731,91 @@ function KioskField({ label, value, active }) {
   );
 }
 
-// Laptop — web Leads inbox where the AI drafts a follow-up, then the
-// agent clicks Send and watches it confirm. Cycles through leads so
-// visitors see the full draft → send → sent loop more than once.
+// Laptop — BULK FOLLOW-UP COCKPIT. The agent types a prompt into "Ask
+// your inbox" and the AI fans out across 14 leads: each tile cascades
+// from PENDING → DRAFTING → DRAFTED → SENDING → SENT in rapid
+// succession. Showcases scale (14 personalized emails) and speed
+// (whole queue clears in ~4s). No slow per-char typing — the
+// "personalization" is implied by each tile carrying the lead's
+// name + tag + a per-recipient draft preview that fades in when
+// drafted.
 const HDLaptop = () => {
-  // Pick a starting lead on first mount, then auto-advance.
-  const guests = [
-    { n: 'Sarah Chen',     k: 'buyer',   sub: 'Pre-approved $1.4M', score: 94,
-      sum: 'Actively searching the West Side. Sold her Queens place last year. Drawn by the kitchen. Pre-approved to $1.4M, ready to close in 60 days.' },
-    { n: 'Mike Rodriguez', k: 'seller',  sub: 'Wants comp analysis', score: 76,
-      sum: 'Lives two blocks away. 15 years in his home. Kids off to college, considering downsizing in six months. Requested a complimentary comp.' },
-    { n: 'Jennifer Park',  k: 'browser', sub: 'Curious renter', score: 38,
-      sum: 'Local renter, lease through 2027. Loves the neighborhood but undecided. Open to low-pressure listing updates.' },
+  // 14 warm-buyer leads queued for the bulk send. Mixed tags + scores
+  // so the grid looks like a real inbox slice.
+  const queue = [
+    { n: 'Sarah Chen',     k: 'buyer',   score: 94 },
+    { n: 'Mike Rodriguez', k: 'seller',  score: 76 },
+    { n: 'Jennifer Park',  k: 'browser', score: 38 },
+    { n: 'David Lee',      k: 'buyer',   score: 88 },
+    { n: 'Elena Morales',  k: 'buyer',   score: 82 },
+    { n: 'Tom Walker',     k: 'buyer',   score: 91 },
+    { n: 'Aisha Patel',    k: 'seller',  score: 71 },
+    { n: 'Marcus Reed',    k: 'buyer',   score: 86 },
+    { n: 'Lia Schmidt',    k: 'buyer',   score: 79 },
+    { n: 'Ben Park',       k: 'browser', score: 44 },
+    { n: 'Olivia Reyes',   k: 'buyer',   score: 92 },
+    { n: 'Noah Patel',     k: 'seller',  score: 68 },
+    { n: 'Priya Joshi',    k: 'buyer',   score: 84 },
+    { n: 'Carlos Diaz',    k: 'buyer',   score: 89 },
   ];
 
-  // 70ms tick drives the whole sequence. Phases per lead:
-  //   T_DRAFT_SPIN  — "Drafting personalized follow-up…" spinner
-  //   T_TYPE        — email body types in letter by letter
-  //   T_AI_BADGE    — "AI DRAFTED" badge has popped, Send button glows
-  //   T_CLICK       — Send button gets the "about to click" highlight
-  //   T_CLICK_FLASH — Send button visibly flashes (the "click")
-  //   T_SENT        — "✓ SENT" toast slides in, lead moves to "Sent"
-  //   T_HOLD        — hold the sent state long enough to read
-  const tickFast = useCount(0, 70, 0);
-  const T_DRAFT_SPIN  = 12;   // ~840ms
-  const T_TYPE        = 36;   // ~2520ms
-  const T_AI_BADGE    = 8;
-  const T_CLICK       = 6;
-  const T_CLICK_FLASH = 4;
-  const T_SENT        = 14;
-  const T_HOLD        = 18;
-  const T_LEAD =
-    T_DRAFT_SPIN + T_TYPE + T_AI_BADGE +
-    T_CLICK + T_CLICK_FLASH + T_SENT + T_HOLD;
+  // 50ms tick — fine-grained enough that the cascade reads as smooth
+  // motion rather than a stepped animation.
+  const tickFast = useCount(0, 50, 0);
 
-  const sel = Math.floor(tickFast / T_LEAD) % guests.length;
-  const t = tickFast % T_LEAD;
+  // Phase plan (one cycle = one bulk send, then hold):
+  //   T_PROMPT     prompt fades in
+  //   T_BUILD      "Building plan…" spinner
+  //   T_PLAN       plan panel + recipient grid appears
+  //   T_CASCADE    each tile staggers through drafting → sent
+  //   T_HOLD       all-sent state holds for the dwell remainder
+  const T_PROMPT  = 10;   // ~500ms
+  const T_BUILD   = 10;   // ~500ms
+  const T_STAGGER = 4;    // ~200ms between tile starts
+  const T_DRAFT   = 8;    // ~400ms drafting per tile
+  const T_SEND    = 4;    // ~200ms sending per tile
 
-  // Phase boundaries
-  const DRAFT_END     = T_DRAFT_SPIN;
-  const TYPE_END      = DRAFT_END + T_TYPE;
-  const AI_BADGE_END  = TYPE_END + T_AI_BADGE;
-  const CLICK_END     = AI_BADGE_END + T_CLICK;
-  const FLASH_END     = CLICK_END + T_CLICK_FLASH;
-  const SENT_END      = FLASH_END + T_SENT;
+  const PROMPT_START = 0;
+  const BUILD_START  = T_PROMPT;
+  const PLAN_START   = BUILD_START + T_BUILD;
+  // Last tile begins at PLAN_START + (N-1) * T_STAGGER, finishes
+  // T_DRAFT + T_SEND ticks later.
+  const ALL_SENT_AT  = PLAN_START + (queue.length - 1) * T_STAGGER + T_DRAFT + T_SEND;
 
-  const drafting    = t < DRAFT_END;
-  const aiBadge     = t >= TYPE_END;
-  const sendHover   = t >= AI_BADGE_END && t < CLICK_END;
-  const sendFlash   = t >= CLICK_END    && t < FLASH_END;
-  const sent        = t >= FLASH_END;
-  const sentToast   = t >= FLASH_END    && t < SENT_END + 12;
+  // Run once and freeze on the "all sent" state. The carousel slot
+  // for laptop is ~9.5s; the cascade completes around 5s in, then
+  // we hold the green stat until the carousel switches devices.
+  // No looping inside a mount — looping back to empty mid-view was
+  // confusing.
+  const t = Math.min(tickFast, ALL_SENT_AT + 6);
 
-  // Cumulative "sent this week" counter — bumps the moment the click
-  // flash fires (matches the user's mental model: I clicked, count up).
-  const cyclesDone = Math.floor(tickFast / T_LEAD);
-  const sentThisWeek = 8 + cyclesDone + (sent ? 1 : 0);
+  const showPrompt = t >= PROMPT_START;
+  const showBuild  = t >= BUILD_START && t < PLAN_START;
+  const showPlan   = t >= PLAN_START;
 
-  const g = guests[sel];
-  const shownGuests = useStaggered([400, 900, 1400]);
-
-  // Type the draft body manually from the tick — useTyped is mount-
-  // anchored and doesn't restart per lead. This way each lead gets
-  // its own fresh char-by-char typing in its TYPE window.
-  const fullBody =
-    g.k === 'buyer'
-      ? "Sarah — great meeting you today. I'd love to share three comps from the block plus a private-showing slot for Saturday morning. Want me to send them over?"
-      : g.k === 'seller'
-      ? "Mike — great meeting you today. I'd love to put together a complimentary CMA for your place — no obligations, just real numbers from this quarter."
-      : "Jennifer — great meeting you today. Totally understand you're early. I'll send a quiet listing update once a week — unsubscribe with one tap.";
-  let typedChars = 0;
-  if (t >= DRAFT_END && t < TYPE_END) {
-    const localT = t - DRAFT_END;
-    typedChars = Math.ceil(localT / T_TYPE * fullBody.length);
-  } else if (t >= TYPE_END) {
-    typedChars = fullBody.length;
+  // Per-tile status. Each tile starts T_STAGGER ticks after the
+  // previous one. States cycle drafting → drafted → sending → sent.
+  function tileState(i) {
+    if (t < PLAN_START) return 'pending';
+    const startedAt = PLAN_START + i * T_STAGGER;
+    if (t < startedAt) return 'pending';
+    const localT = t - startedAt;
+    if (localT < T_DRAFT) return 'drafting';
+    if (localT < T_DRAFT + T_SEND) return 'sending';
+    return 'sent';
   }
-  const draftText = fullBody.slice(0, typedChars);
-  const draftActive = t >= DRAFT_END && t < TYPE_END;
+
+  // Live counts for the progress bar + summary stat.
+  const sentCount = queue.filter((_, i) => tileState(i) === 'sent').length;
+  const inFlight  = queue.filter((_, i) => {
+    const s = tileState(i);
+    return s === 'drafting' || s === 'sending';
+  }).length;
+  const allSent = sentCount === queue.length;
+
+  // The completion time — frozen once everything sends so the
+  // "X sent in 4.2s" stat doesn't keep climbing.
+  const completedAt = ALL_SENT_AT * 0.05;  // seconds
 
   const navItems = [
     { i: 'home',  l: 'Home' },
@@ -851,9 +858,9 @@ const HDLaptop = () => {
             </span>
           </div>
 
-          {/* App: sidebar + main */}
+          {/* App: sidebar + bulk send panel */}
           <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '140px 1fr', minHeight: 0 }}>
-            {/* SIDEBAR — new web nav */}
+            {/* SIDEBAR */}
             <div style={{
               borderRight: '1px solid var(--hairline)',
               padding: '12px 8px',
@@ -866,15 +873,11 @@ const HDLaptop = () => {
               <div className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.16em', padding: '12px 10px 6px' }}>
                 OPEN HOUSE
               </div>
-              {navItems.slice(0, 2).map(it => (
-                <NavRow key={it.i} item={it} />
-              ))}
+              {navItems.slice(0, 2).map(it => <NavRow key={it.i} item={it} />)}
               <div className="mono" style={{ fontSize: 7, color: 'var(--text-muted)', letterSpacing: '0.16em', padding: '12px 10px 6px' }}>
                 LIBRARY
               </div>
-              {navItems.slice(2).map(it => (
-                <NavRow key={it.i} item={it} />
-              ))}
+              {navItems.slice(2).map(it => <NavRow key={it.i} item={it} />)}
               <div style={{ flex: 1 }} />
               <div style={{
                 margin: '8px 4px 0', padding: '8px 10px', borderRadius: 8,
@@ -891,236 +894,127 @@ const HDLaptop = () => {
               </div>
             </div>
 
-            {/* MAIN — Leads inbox: list + detail */}
-            <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', minHeight: 0 }}>
-              {/* Lead list */}
-              <div style={{
-                borderRight: '1px solid var(--hairline)',
-                padding: '14px 10px',
-                background: 'rgba(0,0,0,0.18)',
-                overflow: 'hidden',
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px 10px' }}>
-                  <div className="serif" style={{ fontSize: 18, color: 'var(--cream)' }}>Leads</div>
-                  <span className="mono" style={{
-                    padding: '3px 8px', borderRadius: 999,
-                    background: 'var(--gold-soft)', color: 'var(--gold)',
-                    fontSize: 8.5, letterSpacing: '0.1em', fontWeight: 600,
-                  }}>
-                    {sentThisWeek}/14 SENT
-                  </span>
+            {/* MAIN — bulk send cockpit */}
+            <div style={{
+              padding: '16px 22px 0',
+              display: 'flex', flexDirection: 'column', minHeight: 0,
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+                <div className="serif" style={{ fontSize: 22, color: 'var(--cream)', letterSpacing: '-0.02em' }}>
+                  Leads
                 </div>
-                <div style={{
-                  margin: '0 4px 10px', padding: '8px 10px', borderRadius: 8,
-                  background: 'rgba(196,162,82,0.08)',
-                  border: '1px solid rgba(196,162,82,0.22)',
-                  display: 'flex', alignItems: 'center', gap: 7,
+                <span className="mono" style={{
+                  padding: '3px 10px', borderRadius: 999,
+                  background: allSent ? 'rgba(134,166,128,0.18)' : 'var(--gold-soft)',
+                  color: allSent ? 'var(--sage)' : 'var(--gold)',
+                  fontSize: 8.5, letterSpacing: '0.1em', fontWeight: 600,
+                  border: '1px solid ' + (allSent ? 'rgba(134,166,128,0.45)' : 'transparent'),
+                  transition: 'background .35s, color .35s, border-color .35s',
                 }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
-                  <span style={{ fontSize: 9.5, color: 'var(--cream-dim)' }}>Ask your inbox anything…</span>
-                </div>
-                {guests.map((gg, i) => {
-                  const isActive = sel === i;
-                  // A previously-active lead this loop counts as sent.
-                  // The currently-active lead flips to "Sent" the moment
-                  // its send-flash phase ends.
-                  const isDone = i < sel || (isActive && sent);
-                  return (
-                    <div key={gg.n} style={{
-                      display: 'block',
-                      padding: '10px 10px', margin: '0 0 4px',
-                      background: isActive ? 'rgba(255,255,255,0.06)' : 'transparent',
-                      borderRadius: 8,
-                      width: '100%', boxSizing: 'border-box',
-                      opacity: i < shownGuests ? 1 : 0,
-                      transform: i < shownGuests ? 'translateX(0)' : 'translateX(-6px)',
-                      transition: 'opacity .45s ease, transform .45s ease, background .35s',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <div style={{
-                          width: 22, height: 22, borderRadius: '50%',
-                          background: 'var(--bg-elev)', color: 'var(--gold)',
-                          display: 'grid', placeItems: 'center',
-                          fontSize: 9, fontWeight: 600,
-                        }}>{gg.n.charAt(0)}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 11, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{gg.n}</div>
-                          <div style={{ fontSize: 8.5, color: isDone ? 'var(--sage)' : 'var(--text-dim)', marginTop: 1 }}>
-                            {isDone ? '✓ Sent' : gg.sub}
-                          </div>
-                        </div>
-                        <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.04em' }}>
-                          {gg.score}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                  {allSent
+                    ? `✓ ${queue.length} SENT IN ${completedAt.toFixed(1)}s`
+                    : `${sentCount}/${queue.length} SENT`}
+                </span>
               </div>
 
-              {/* Detail */}
+              {/* Ask-your-inbox prompt — the bulk send trigger */}
               <div style={{
-                padding: '18px 22px', minHeight: 0, overflow: 'hidden',
-                position: 'relative',
+                padding: '10px 12px', borderRadius: 10,
+                background: 'rgba(196,162,82,0.08)',
+                border: '1px solid rgba(196,162,82,0.30)',
+                display: 'flex', alignItems: 'center', gap: 8,
+                opacity: showPrompt ? 1 : 0,
+                transform: showPrompt ? 'translateY(0)' : 'translateY(-4px)',
+                transition: 'opacity .35s ease, transform .35s ease',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{
-                    width: 30, height: 30, borderRadius: '50%',
-                    background: 'var(--bg-elev)', color: 'var(--gold)',
-                    display: 'grid', placeItems: 'center',
-                    fontSize: 11, fontWeight: 600,
-                  }}>{g.n.charAt(0)}</div>
-                  <div className="serif" style={{ fontSize: 22, color: 'var(--cream)', letterSpacing: '-0.02em' }}>{g.n}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 5, marginTop: 8, flexWrap: 'wrap' }}>
-                  <span className={`tag tag-${g.k}`} style={{ fontSize: 9, padding: '2px 7px 3px' }}>
-                    <span className="tag-dot" style={{ width: 4, height: 4 }} />{g.k}
-                  </span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="var(--gold)" stroke="none">
+                  <path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/>
+                </svg>
+                <span style={{ fontSize: 11, color: 'var(--cream)' }}>
+                  Send the <span className="mono" style={{ color: 'var(--gold)', fontWeight: 600 }}>@SpringBuyerCredit</span> to all warm buyers from the Maple St open house
+                </span>
+                {showBuild && (
                   <span style={{
-                    padding: '2px 7px', borderRadius: 999, fontSize: 9, fontWeight: 500,
-                    color: 'var(--cream-dim)', background: 'rgba(255,255,255,0.05)',
-                  }}>Score {g.score}/100</span>
-                </div>
-                <p style={{ fontSize: 11, color: 'var(--cream-dim)', lineHeight: 1.55, marginTop: 10,
-                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                }}>
-                  {g.sum}
-                </p>
-                <div style={{ height: 1, background: 'var(--hairline)', margin: '10px 0 8px' }} />
-
-                {/* Drafted follow-up — drafted by AI, no human typing */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.1em' }}>
-                    DRAFTED FOLLOW-UP
-                  </span>
-                  {aiBadge && (
-                    <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 4,
-                      padding: '2px 7px', borderRadius: 999,
-                      background: 'var(--gold-soft)', color: 'var(--gold)',
-                      fontSize: 8, letterSpacing: '0.1em', fontWeight: 600,
-                      animation: 'hdSlideIn .35s ease both',
-                    }}>
-                      <svg width="7" height="7" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
-                      AI DRAFTED
-                    </span>
-                  )}
-                </div>
-                <div style={{
-                  marginTop: 5, padding: 10, background: 'rgba(0,0,0,0.3)',
-                  border: '1px solid var(--hairline)', borderRadius: 6,
-                  fontSize: 10.5, lineHeight: 1.55, color: 'var(--cream-dim)',
-                  minHeight: 56,
-                }}>
-                  {drafting ? (
-                    <div style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 7,
-                      color: 'var(--text-dim)',
-                    }}>
-                      <span style={{
-                        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-                        background: 'var(--gold)',
-                        animation: 'hdPulse 1s ease-in-out infinite',
-                      }} />
-                      Drafting personalized follow-up…
-                    </div>
-                  ) : (
-                    <>
-                      {draftText}
-                      {draftActive && (
-                        <span style={{
-                          display: 'inline-block', width: 5, height: 11, marginLeft: 1,
-                          background: 'var(--gold)', verticalAlign: '-1px',
-                          animation: 'hdBlink 0.9s steps(2) infinite',
-                        }} />
-                      )}
-                    </>
-                  )}
-                </div>
-
-                {/* Action row: Archive · Schedule · SEND. The Send
-                    button is the focal point — it glows when the
-                    draft is ready, flashes when the (animated) click
-                    fires, then everything flips to a green "Sent"
-                    state. Animates the agent clicking Send. */}
-                <div style={{
-                  marginTop: 10, display: 'flex', alignItems: 'center', gap: 6,
-                }}>
-                  <span style={{
-                    padding: '4px 8px', borderRadius: 999,
-                    background: 'rgba(255,255,255,0.05)',
-                    color: 'var(--cream-dim)', fontSize: 9, fontWeight: 500,
-                  }}>Archive</span>
-                  <span style={{ flex: 1 }} />
-                  <span style={{
-                    padding: '4px 8px', borderRadius: 999,
-                    background: 'rgba(255,255,255,0.05)',
-                    color: 'var(--cream-dim)', fontSize: 9, fontWeight: 500,
-                  }}>Schedule</span>
-                  {/* Send button — color flips green after send */}
-                  <div style={{
-                    position: 'relative',
-                    padding: sendFlash ? '5px 14px' : '5px 13px',
-                    borderRadius: 999,
-                    background: sent ? 'var(--sage)' : 'var(--gold)',
-                    color: sent ? '#0a1208' : 'var(--ink-on-gold)',
-                    fontSize: 10, fontWeight: 600,
+                    marginLeft: 'auto',
                     display: 'inline-flex', alignItems: 'center', gap: 5,
-                    boxShadow: sendHover ? '0 0 0 4px rgba(196,162,82,0.32), 0 4px 10px rgba(196,162,82,0.45)'
-                             : sendFlash ? '0 0 0 8px rgba(196,162,82,0.55), 0 6px 12px rgba(196,162,82,0.55)'
-                             : sent      ? '0 0 0 3px rgba(134,166,128,0.28)'
-                             : 'none',
-                    transition: 'all .25s ease',
-                    transform: sendFlash ? 'scale(0.96)' : 'scale(1)',
+                    fontSize: 9, color: 'var(--gold)', fontWeight: 600,
                   }}>
-                    {sent ? (
-                      <>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5"><polyline points="20 6 9 17 4 12"/></svg>
-                        Sent
-                      </>
-                    ) : (
-                      <>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>
-                        Send
-                      </>
-                    )}
-                    {/* Faux "cursor about to click" indicator */}
-                    {sendHover && (
-                      <span style={{
-                        position: 'absolute',
-                        bottom: -10, right: -2,
-                        width: 14, height: 14,
-                        color: 'var(--cream)',
-                        animation: 'hdPulse 0.7s ease-in-out infinite',
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M5 3l14 9-6 1-3 8z"/>
-                        </svg>
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* SENT toast — slides in over the right edge of the
-                    detail pane when the click fires. Self-dismisses
-                    when the cycle moves on. */}
-                {sentToast && (
-                  <div style={{
-                    position: 'absolute',
-                    top: 14, right: 14,
-                    padding: '7px 12px', borderRadius: 999,
-                    background: 'rgba(134,166,128,0.18)',
-                    border: '1px solid rgba(134,166,128,0.45)',
-                    color: 'var(--sage)',
-                    fontSize: 10, fontWeight: 600,
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    boxShadow: '0 4px 12px rgba(134,166,128,0.18)',
-                    animation: 'hdSlideIn .35s cubic-bezier(.22,1,.36,1) both',
-                  }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
-                    <span className="mono" style={{ letterSpacing: '0.1em' }}>SENT · GMAIL</span>
-                  </div>
+                    <span style={{
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: 'var(--gold)',
+                      animation: 'hdPulse 0.9s ease-in-out infinite',
+                    }} />
+                    <span className="mono" style={{ letterSpacing: '0.1em' }}>BUILDING PLAN…</span>
+                  </span>
                 )}
+                {showPlan && (
+                  <span className="mono" style={{
+                    marginLeft: 'auto',
+                    padding: '3px 8px', borderRadius: 999,
+                    background: 'rgba(196,162,82,0.18)', color: 'var(--gold)',
+                    fontSize: 8.5, letterSpacing: '0.12em', fontWeight: 600,
+                  }}>
+                    PLAN · {queue.length} RECIPIENTS
+                  </span>
+                )}
+              </div>
+
+              {/* Recipient grid — 4 columns × ~4 rows for 14 tiles */}
+              <div style={{
+                marginTop: 12, flex: 1, minHeight: 0,
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: 6,
+                alignContent: 'start',
+                opacity: showPlan ? 1 : 0,
+                transition: 'opacity .35s ease .1s',
+              }}>
+                {queue.map((q, i) => (
+                  <RecipientTile
+                    key={q.n}
+                    lead={q}
+                    state={tileState(i)}
+                  />
+                ))}
+              </div>
+
+              {/* Bottom: progress bar */}
+              <div style={{
+                padding: '10px 0 12px',
+                opacity: showPlan ? 1 : 0,
+                transition: 'opacity .35s ease',
+              }}>
+                <div style={{
+                  height: 4, borderRadius: 2,
+                  background: 'rgba(255,255,255,0.06)',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${(sentCount / queue.length) * 100}%`,
+                    background: allSent ? 'var(--sage)' : 'var(--gold)',
+                    transition: 'width .25s ease, background .35s ease',
+                    boxShadow: allSent
+                      ? '0 0 10px rgba(134,166,128,0.6)'
+                      : '0 0 10px rgba(196,162,82,0.5)',
+                  }} />
+                </div>
+                <div style={{
+                  marginTop: 6, display: 'flex', justifyContent: 'space-between',
+                  fontSize: 9, color: 'var(--text-muted)',
+                }}>
+                  <span className="mono" style={{ letterSpacing: '0.1em' }}>
+                    {sentCount} SENT · {inFlight} IN FLIGHT · {queue.length - sentCount - inFlight} QUEUED
+                  </span>
+                  <span className="mono" style={{
+                    letterSpacing: '0.1em',
+                    color: allSent ? 'var(--sage)' : 'var(--gold)',
+                    fontWeight: 600,
+                  }}>
+                    {allSent ? '✓ ALL SENT' : `${Math.round((sentCount / queue.length) * 100)}%`}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -1136,6 +1030,91 @@ const HDLaptop = () => {
     </div>
   );
 };
+
+// One recipient tile in the bulk-send grid. State drives an icon +
+// label + color: pending (dim), drafting (gold spinner), sending
+// (gold paper-plane), sent (green checkmark). Tile fades + shifts
+// slightly on each transition so the cascade reads as motion.
+function RecipientTile({ lead, state }) {
+  const isSent     = state === 'sent';
+  const isSending  = state === 'sending';
+  const isDrafting = state === 'drafting';
+  const isPending  = state === 'pending';
+
+  const accent = isSent ? 'var(--sage)'
+              : isSending ? 'var(--gold)'
+              : isDrafting ? 'var(--gold)'
+              : 'rgba(255,255,255,0.3)';
+
+  return (
+    <div style={{
+      padding: '7px 9px', borderRadius: 8,
+      background: isSent ? 'rgba(134,166,128,0.10)'
+                : isPending ? 'rgba(255,255,255,0.025)'
+                : 'rgba(196,162,82,0.08)',
+      border: '1px solid ' + (isSent ? 'rgba(134,166,128,0.32)'
+                : isPending ? 'var(--hairline)'
+                : 'rgba(196,162,82,0.28)'),
+      display: 'flex', alignItems: 'center', gap: 7,
+      transition: 'background .25s ease, border-color .25s ease',
+      opacity: isPending ? 0.55 : 1,
+    }}>
+      {/* Avatar with state-driven status pip */}
+      <div style={{
+        position: 'relative', flexShrink: 0,
+        width: 22, height: 22, borderRadius: '50%',
+        background: 'var(--bg-elev)', color: accent,
+        display: 'grid', placeItems: 'center',
+        fontFamily: 'var(--sans)', fontSize: 9, fontWeight: 600,
+      }}>
+        {lead.n.charAt(0)}
+        <span style={{
+          position: 'absolute', bottom: -1, right: -1,
+          width: 10, height: 10, borderRadius: '50%',
+          background: accent,
+          display: 'grid', placeItems: 'center',
+          border: '1.5px solid var(--bg-deep)',
+        }}>
+          {isSent && (
+            <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="#0a1208" strokeWidth="4">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          )}
+          {isSending && (
+            <svg width="5" height="5" viewBox="0 0 24 24" fill="#1a1610">
+              <path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/>
+            </svg>
+          )}
+          {isDrafting && (
+            <span style={{
+              width: 4, height: 4, borderRadius: '50%',
+              background: '#1a1610',
+              animation: 'hdPulse 0.7s ease-in-out infinite',
+            }} />
+          )}
+        </span>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 10, color: 'var(--cream)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          fontWeight: 500,
+        }}>
+          {lead.n}
+        </div>
+        <div className="mono" style={{
+          fontSize: 7.5, letterSpacing: '0.08em', marginTop: 1,
+          color: isSent ? 'var(--sage)'
+               : isSending ? 'var(--gold)'
+               : isDrafting ? 'var(--gold)'
+               : 'var(--text-muted)',
+        }}>
+          {isSent ? '✓ SENT' : isSending ? 'SENDING…' : isDrafting ? 'DRAFTING…' : 'QUEUED'}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Small helper for the laptop mock sidebar — one nav row matching the
 // real web AppShell visual.
