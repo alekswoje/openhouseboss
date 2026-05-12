@@ -57,11 +57,16 @@ struct IPadAgentApp: View {
         }
     }
 
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var tab: Tab = .home
     @State private var store = SessionStore.shared
     @State private var auth = AuthStore.shared
     @State private var activeListing: Listing?
     @State private var activeSessionId: String?
+    // True on iPhone (and iPad Slide Over). Drives the top-level shell choice
+    // — bottom tab bar + pushed detail vs side rail + split panes — and is
+    // forwarded down to panes that need to restack (Leads, Kiosk).
+    private var isCompact: Bool { hSize == .compact }
     // When set, the main pane shows the Session Detail view (playback +
     // metadata) instead of the tab content. Set by tapping a recent session
     // in the side rail or a row on Home; cleared by the detail view's back
@@ -104,6 +109,8 @@ struct IPadAgentApp: View {
                     onRequestExit: requestKioskExit
                 )
                 .transition(.opacity)
+            } else if isCompact {
+                compactShell
             } else {
                 HStack(spacing: 0) {
                     IPadSideRail(
@@ -299,6 +306,48 @@ struct IPadAgentApp: View {
         }
     }
 
+    // MARK: – Compact (iPhone) shell
+    //
+    // Bottom tab bar instead of side rail; same tabPane content rendered
+    // above it. The Kiosk locked surface (guest-facing fullscreen) is still
+    // handled by the parent ZStack so it covers the tab bar when active.
+    // LiveSessionBar floats just above the tab bar when there's an in-flight
+    // recording / upload / queued guest.
+    @ViewBuilder
+    private var compactShell: some View {
+        ZStack(alignment: .bottom) {
+            mainPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Reserve room at the bottom so the floating tab bar (and
+                // optional live bar) never covers pane content.
+                .safeAreaInset(edge: .bottom) {
+                    Color.clear.frame(height: hasLiveContext ? 132 : 72)
+                }
+            VStack(spacing: 8) {
+                if hasLiveContext {
+                    LiveSessionBar(
+                        store: store,
+                        recorder: AudioRecorder.shared,
+                        onOpen: {
+                            if AudioRecorder.shared.isRecording {
+                                selectTab(.record)
+                            } else {
+                                selectTab(.kiosk)
+                            }
+                        },
+                        onStopRecording: { stopRecording() }
+                    )
+                    .padding(.horizontal, 12)
+                }
+                CompactBottomTabBar(
+                    tab: $tab,
+                    viewingPastSession: $viewingPastSession,
+                    onSelectTab: { selectTab($0) }
+                )
+            }
+        }
+    }
+
     @ViewBuilder
     private var tabPane: some View {
         switch tab {
@@ -362,6 +411,150 @@ struct IPadAgentApp: View {
         case .profile:
             IPadProfile(store: store, auth: auth)
         }
+    }
+}
+
+// MARK: – Compact bottom tab bar (iPhone)
+
+// Floating capsule with five primary destinations and an overflow chevron
+// that reveals the remaining two. Mirrors the icon set in IPadSideRail so
+// the agent's mental map is identical across iPad and iPhone. Lives above
+// the home indicator with a soft material backdrop — feels native without
+// using UITabBar (which can't be styled to match the rest of the app).
+private struct CompactBottomTabBar: View {
+    @Binding var tab: IPadAgentApp.Tab
+    @Binding var viewingPastSession: String?
+    var onSelectTab: (IPadAgentApp.Tab) -> Void
+    @State private var showMore: Bool = false
+
+    // Five primary tabs in the bar; remaining live behind the "More" sheet.
+    // Order matches the cognitive flow: Home → Record → Kiosk for hosting,
+    // Leads for follow-up, and a More sheet for housekeeping (Offers /
+    // Listings / Profile).
+    private let primary: [IPadAgentApp.Tab] = [.home, .record, .kiosk, .leads]
+    private var moreTabs: [IPadAgentApp.Tab] {
+        IPadAgentApp.Tab.allCases.filter { !primary.contains($0) }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(primary) { t in
+                tabButton(t)
+            }
+            moreButton
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color(white: 0.08).opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(FoyerTheme.hairline, lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.4), radius: 16, y: 6)
+        )
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+        .sheet(isPresented: $showMore) {
+            CompactMoreSheet(
+                tabs: moreTabs,
+                active: tab,
+                onSelect: { t in
+                    showMore = false
+                    onSelectTab(t)
+                }
+            )
+            .presentationDetents([.height(280)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color(white: 0.05))
+        }
+    }
+
+    @ViewBuilder
+    private func tabButton(_ t: IPadAgentApp.Tab) -> some View {
+        let active = (tab == t) && (viewingPastSession == nil)
+        Button { onSelectTab(t) } label: {
+            VStack(spacing: 3) {
+                Image(systemName: active ? t.iconFilled : t.iconOutline)
+                    .font(.system(size: 19, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
+                Text(t.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.textMuted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var moreButton: some View {
+        let isMoreActive = !primary.contains(tab) && viewingPastSession == nil
+        return Button { showMore = true } label: {
+            VStack(spacing: 3) {
+                Image(systemName: isMoreActive
+                      ? activeMoreIcon(tab).filled
+                      : "ellipsis")
+                    .font(.system(size: 19, weight: isMoreActive ? .semibold : .regular))
+                    .foregroundStyle(isMoreActive ? FoyerTheme.gold : FoyerTheme.creamDim)
+                Text(isMoreActive ? tab.label : "More")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(isMoreActive ? FoyerTheme.cream : FoyerTheme.textMuted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // When the active tab is one of the overflow items (Offers, Listings,
+    // Profile), surface its icon in the More slot so the gold highlight has
+    // somewhere to live and the agent still sees what's selected.
+    private func activeMoreIcon(_ t: IPadAgentApp.Tab) -> (outline: String, filled: String) {
+        (t.iconOutline, t.iconFilled)
+    }
+}
+
+private struct CompactMoreSheet: View {
+    let tabs: [IPadAgentApp.Tab]
+    let active: IPadAgentApp.Tab
+    var onSelect: (IPadAgentApp.Tab) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("More")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .tracking(-0.3)
+                .padding(.horizontal, 22).padding(.top, 18).padding(.bottom, 6)
+            ForEach(tabs) { t in
+                Button { onSelect(t) } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: active == t ? t.iconFilled : t.iconOutline)
+                            .font(.system(size: 17, weight: active == t ? .semibold : .regular))
+                            .frame(width: 26)
+                            .foregroundStyle(active == t ? FoyerTheme.gold : FoyerTheme.creamDim)
+                        Text(t.label)
+                            .font(.system(size: 16, weight: active == t ? .semibold : .medium))
+                            .foregroundStyle(active == t ? FoyerTheme.cream : FoyerTheme.creamDim)
+                        Spacer()
+                        if active == t {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.gold)
+                        }
+                    }
+                    .padding(.horizontal, 22).padding(.vertical, 14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -800,6 +993,9 @@ private struct IPadHome: View {
     var onStartRecording: (Listing?) -> Void
     var onOpenSession: (String) -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     @State private var pendingDeleteId: String?
     @State private var deleting: Bool = false
     @State private var deleteError: String?
@@ -810,7 +1006,7 @@ private struct IPadHome: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 36) {
+            VStack(alignment: .leading, spacing: isCompact ? 24 : 36) {
                 greeting
                 if let listing = store.listings.first {
                     heroListing(listing)
@@ -827,9 +1023,13 @@ private struct IPadHome: View {
                     loadingFeed
                 }
             }
-            .padding(.horizontal, 44)
-            .padding(.top, 36)
-            .padding(.bottom, 120) // breathing room for the sticky bar
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            // iPad: breathing room for the floating LiveSessionBar at the
+            // bottom of the canvas. iPhone: the compactShell adds a
+            // safeAreaInset for the tab bar already, so we only need a small
+            // gap here.
+            .padding(.bottom, isCompact ? 32 : 120)
         }
         .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -853,7 +1053,7 @@ private struct IPadHome: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(FoyerTheme.textDim)
             Text("Good \(periodOfDayShort), \(firstName)")
-                .font(.system(size: 36, weight: .semibold))
+                .font(.system(size: isCompact ? 26 : 36, weight: .semibold))
                 .foregroundStyle(FoyerTheme.cream)
                 .tracking(-0.6)
         }
@@ -883,17 +1083,18 @@ private struct IPadHome: View {
     }
 
     private func heroListing(_ listing: Listing) -> some View {
-        ZStack(alignment: .bottomLeading) {
+        let heroHeight: CGFloat = isCompact ? 280 : 360
+        return ZStack(alignment: .bottomLeading) {
             listingImage(listing)
-                .frame(height: 360)
+                .frame(height: heroHeight)
                 .clipped()
             LinearGradient(
                 colors: [.clear, .black.opacity(0.2), .black.opacity(0.85)],
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: 360, alignment: .bottom)
+            .frame(height: heroHeight, alignment: .bottom)
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: isCompact ? 10 : 14) {
                 HStack(spacing: 7) {
                     Circle().fill(FoyerTheme.terracotta).frame(width: 7, height: 7)
                         .modifier(PulseAnimation())
@@ -902,49 +1103,95 @@ private struct IPadHome: View {
                         .foregroundStyle(.white)
                 }
                 Text(listing.address)
-                    .font(.system(size: 38, weight: .semibold))
+                    .font(.system(size: isCompact ? 22 : 38, weight: .semibold))
                     .foregroundStyle(.white)
-                    .tracking(-0.7)
+                    .tracking(isCompact ? -0.3 : -0.7)
                     .lineLimit(2)
-                HStack(spacing: 16) {
-                    if !listing.displayPrice.isEmpty {
-                        Text(listing.displayPrice)
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                    Text(listing.displaySpecs)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.85))
-                    Spacer()
-                    Button { onStartKiosk(listing) } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "person.badge.plus")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Sign-in")
-                                .font(.system(size: 14, weight: .semibold))
+                if isCompact {
+                    // Vertical stack on iPhone: price + specs above, the two
+                    // CTAs side-by-side at full width. Trying to fit both rows
+                    // on one line on iPhone makes the buttons too small to tap.
+                    HStack(spacing: 10) {
+                        if !listing.displayPrice.isEmpty {
+                            Text(listing.displayPrice)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.gold)
                         }
-                        .foregroundStyle(FoyerTheme.cream)
-                        .padding(.horizontal, 16).padding(.vertical, 12)
-                        .background(Color.white.opacity(0.12), in: Capsule())
+                        Text(listing.displaySpecs)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(1)
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    Button { onStartRecording(listing) } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Record")
-                                .font(.system(size: 14, weight: .semibold))
+                    HStack(spacing: 8) {
+                        Button { onStartKiosk(listing) } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "person.badge.plus")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("Sign-in")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundStyle(FoyerTheme.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(Color.white.opacity(0.14), in: Capsule())
                         }
-                        .foregroundStyle(FoyerTheme.inkOnGold)
-                        .padding(.horizontal, 18).padding(.vertical, 12)
-                        .background(FoyerTheme.gold, in: Capsule())
+                        .buttonStyle(.plain)
+                        Button { onStartRecording(listing) } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("Record")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(FoyerTheme.gold, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                } else {
+                    HStack(spacing: 16) {
+                        if !listing.displayPrice.isEmpty {
+                            Text(listing.displayPrice)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.gold)
+                        }
+                        Text(listing.displaySpecs)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Spacer()
+                        Button { onStartKiosk(listing) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.badge.plus")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Sign-in")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundStyle(FoyerTheme.cream)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .background(Color.white.opacity(0.12), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        Button { onStartRecording(listing) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Record")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                            .padding(.horizontal, 18).padding(.vertical, 12)
+                            .background(FoyerTheme.gold, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
-            .padding(28)
+            .padding(isCompact ? 18 : 28)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: isCompact ? 18 : 24, style: .continuous))
     }
 
     @ViewBuilder
@@ -1142,6 +1389,9 @@ private struct IPadKiosk: View {
     var onLaunch: () -> Void
     var onRequestExit: () -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     // Form state — split first/last per the agent's UX preference. The
     // pendingKioskGuests list is no longer read here (it caused a re-render
     // on every keystroke), so the form pane stays cheap.
@@ -1182,17 +1432,31 @@ private struct IPadKiosk: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if locked {
-                // Guest-facing: full listing photo on the left, sign-in
-                // form on the right. This is the only place the form
-                // actually renders — the agent's pre-launch view is a
-                // distinct config surface, so it doesn't look like the
-                // real kiosk and there's no chance of confusing the two.
-                HStack(spacing: 0) {
-                    listingPane
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    formPane
-                        .frame(maxWidth: 560, maxHeight: .infinity)
-                        .background(Color.black)
+                // Guest-facing. On iPad: full listing photo on the left,
+                // sign-in form on the right (side-by-side reads as a single
+                // welcoming surface). On iPhone: vertical stack — photo
+                // banner up top, form below — so a single-handed guest can
+                // tap through without thumbing across a wide canvas.
+                if isCompact {
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            listingPane
+                                .frame(height: 280)
+                                .clipped()
+                            formPane
+                                .frame(maxWidth: .infinity)
+                                .background(Color.black)
+                        }
+                    }
+                    .background(Color.black)
+                } else {
+                    HStack(spacing: 0) {
+                        listingPane
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        formPane
+                            .frame(maxWidth: 560, maxHeight: .infinity)
+                            .background(Color.black)
+                    }
                 }
                 exitButton
                     .padding(.top, 18)
@@ -1245,7 +1509,9 @@ private struct IPadKiosk: View {
             }
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 80)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, 80)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black)
@@ -1370,7 +1636,7 @@ private struct IPadKiosk: View {
                     startPoint: .top, endPoint: .bottom
                 )
 
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
                     HStack(spacing: 7) {
                         Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
                         Text("Open house")
@@ -1379,30 +1645,30 @@ private struct IPadKiosk: View {
                             .tracking(0.4)
                     }
                     Text(listing.address)
-                        .font(.system(size: 60, weight: .semibold))
+                        .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
                         .foregroundStyle(.white)
-                        .tracking(-1.2)
+                        .tracking(isCompact ? -0.5 : -1.2)
                         .lineLimit(2)
                     if !listing.neighborhood.isEmpty {
                         Text(listing.neighborhood)
-                            .font(.system(size: 22, weight: .medium))
+                            .font(.system(size: isCompact ? 15 : 22, weight: .medium))
                             .foregroundStyle(.white.opacity(0.85))
                     }
                     HStack(alignment: .firstTextBaseline) {
                         if !listing.displayPrice.isEmpty {
                             Text(listing.displayPrice)
-                                .font(.system(size: 34, weight: .semibold))
+                                .font(.system(size: isCompact ? 20 : 34, weight: .semibold))
                                 .foregroundStyle(FoyerTheme.gold)
                                 .tracking(-0.5)
                         }
                         Spacer()
                         Text(listing.displaySpecs)
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.system(size: isCompact ? 12 : 15, weight: .medium))
                             .foregroundStyle(.white.opacity(0.75))
                     }
                     .padding(.top, 6)
                 }
-                .padding(44)
+                .padding(isCompact ? 20 : 44)
             }
             .clipped()
         } else {
@@ -1417,7 +1683,7 @@ private struct IPadKiosk: View {
                     ],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
                     HStack(spacing: 7) {
                         Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
                         Text("Welcome")
@@ -1426,15 +1692,15 @@ private struct IPadKiosk: View {
                             .tracking(0.4)
                     }
                     Text("Come on in.")
-                        .font(.system(size: 60, weight: .semibold))
+                        .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
                         .foregroundStyle(.white)
-                        .tracking(-1.2)
-                    Text("Sign in over there so we can\nfollow up after the tour.")
-                        .font(.system(size: 18, weight: .medium))
+                        .tracking(isCompact ? -0.5 : -1.2)
+                    Text("Sign in below so we can\nfollow up after the tour.")
+                        .font(.system(size: isCompact ? 14 : 18, weight: .medium))
                         .foregroundStyle(.white.opacity(0.7))
                         .lineSpacing(4)
                 }
-                .padding(44)
+                .padding(isCompact ? 20 : 44)
             }
             .clipped()
         }
@@ -1571,7 +1837,8 @@ private struct IPadKiosk: View {
                 .disabled(!canSubmit || submitting)
                 .padding(.top, 24)
             }
-            .padding(.horizontal, 40).padding(.vertical, 40)
+            .padding(.horizontal, isCompact ? 20 : 40)
+            .padding(.vertical, isCompact ? 24 : 40)
         }
     }
 
@@ -2024,6 +2291,9 @@ private struct IPadLeads: View {
     // side rail, we land here with that session selected. nil = "All".
     var initialFilter: String? = nil
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     // A single row in the unified Leads inbox: one VisitorResult + the
     // session it came from. We hold full Session refs (not just summaries)
     // because the detail view needs the session id and address to send
@@ -2104,6 +2374,15 @@ private struct IPadLeads: View {
         return filteredLeads.first
     }
 
+    // iPhone-only: only returns a row when the agent has explicitly selected
+    // one. Used to drive the master-detail push: nil → show list, non-nil →
+    // show detail. Distinct from `current` which always falls back to the
+    // first lead so the iPad reading column has something to render.
+    private var explicitlySelected: LeadRow? {
+        guard let id = activeId else { return nil }
+        return allLeads.first(where: { $0.id == id })
+    }
+
     private var sessionsForFilter: [Session] {
         var seen = Set<String>()
         var out: [Session] = []
@@ -2115,24 +2394,30 @@ private struct IPadLeads: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: 340)
-                .background(Color(white: 0.03))
-                .overlay(alignment: .trailing) {
-                    Rectangle().fill(FoyerTheme.hairline).frame(width: 1)
+        Group {
+            if isCompact {
+                compactBody
+            } else {
+                HStack(spacing: 0) {
+                    sidebar
+                        .frame(width: 340)
+                        .background(Color(white: 0.03))
+                        .overlay(alignment: .trailing) {
+                            Rectangle().fill(FoyerTheme.hairline).frame(width: 1)
+                        }
+                    content
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black)
+                        .overlay(alignment: .top) {
+                            if let toast = sentToast {
+                                sentToastView(toast)
+                                    .padding(.top, 24)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            }
+                        }
+                        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: sentToast)
                 }
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-                .overlay(alignment: .top) {
-                    if let toast = sentToast {
-                        sentToastView(toast)
-                            .padding(.top, 24)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: sentToast)
+            }
         }
         .task { await load() }
         .onAppear {
@@ -2216,6 +2501,59 @@ private struct IPadLeads: View {
         }
     }
 
+    // iPhone (compact) variant: master-detail via activeId.
+    //   activeId == nil → sidebar (full width, list of leads)
+    //   activeId != nil → content (full width, detail) with a back chevron
+    //                     that clears the selection.
+    // The toast overlay and bottom safe-area inset for the floating tab bar
+    // are handled by the parent shell; here we just swap which child is
+    // visible based on selection.
+    @ViewBuilder
+    private var compactBody: some View {
+        ZStack(alignment: .top) {
+            if let _ = explicitlySelected {
+                compactDetail
+                    .background(Color.black)
+            } else {
+                sidebar
+                    .background(Color(white: 0.03))
+            }
+            if let toast = sentToast {
+                sentToastView(toast)
+                    .padding(.top, 12)
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: sentToast)
+        .animation(.easeInOut(duration: 0.22), value: activeId)
+    }
+
+    private var compactDetail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Button {
+                    activeId = nil
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Leads")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
@@ -2241,7 +2579,9 @@ private struct IPadLeads: View {
                     sessionFilterMenu
                 }
             }
-            .padding(.horizontal, 22).padding(.top, 36).padding(.bottom, 14)
+            .padding(.horizontal, isCompact ? 16 : 22)
+            .padding(.top, isCompact ? 20 : 36)
+            .padding(.bottom, 14)
 
             if loading && allLeads.isEmpty {
                 Spacer()
@@ -2538,7 +2878,7 @@ private struct IPadLeads: View {
     private var content: some View {
         if let row = current {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 36) {
+                VStack(alignment: .leading, spacing: isCompact ? 24 : 36) {
                     visitorHeader(row)
                     summary(row)
                     followup(row.visitor, session: row.session)
@@ -2559,7 +2899,8 @@ private struct IPadLeads: View {
                     Spacer().frame(height: 80)
                 }
                 .frame(maxWidth: 720, alignment: .leading)
-                .padding(.horizontal, 56).padding(.top, 56)
+                .padding(.horizontal, isCompact ? 16 : 56)
+                .padding(.top, isCompact ? 16 : 56)
             }
             .refreshable { await load() }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -5353,6 +5694,8 @@ private struct LeadsAgentSheet: View {
 // body that's the actual marketing copy.
 
 private struct IPadOffers: View {
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
     @State private var offers: [Offer] = []
     @State private var loading: Bool = true
     @State private var loadError: String?
@@ -5362,7 +5705,7 @@ private struct IPadOffers: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: isCompact ? 20 : 28) {
                 header
                 if loading && offers.isEmpty {
                     HStack {
@@ -5382,9 +5725,9 @@ private struct IPadOffers: View {
                         .foregroundStyle(FoyerTheme.terracotta)
                 }
             }
-            .padding(.horizontal, 44)
-            .padding(.top, 36)
-            .padding(.bottom, 120)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, isCompact ? 32 : 120)
         }
         .refreshable { await load() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -5741,17 +6084,20 @@ private struct IPadListings: View {
     var onPickListing: (Listing) -> Void
     var onAdd: () -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: isCompact ? 20 : 28) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Listings")
-                            .font(.system(size: 34, weight: .semibold))
+                            .font(.system(size: isCompact ? 26 : 34, weight: .semibold))
                             .foregroundStyle(FoyerTheme.cream)
                             .tracking(-0.5)
                         Text("Tap a property to open the sign-in form.")
-                            .font(.system(size: 14))
+                            .font(.system(size: isCompact ? 12 : 14))
                             .foregroundStyle(FoyerTheme.textDim)
                     }
                     Spacer()
@@ -5774,8 +6120,15 @@ private struct IPadListings: View {
                         .buttonStyle(.plain)
                 } else {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 280), spacing: 18)],
-                        spacing: 18
+                        // On iPhone, force a single column — the adaptive
+                        // minimum of 280 would technically fit one column on
+                        // most phones but the spacing math leaves cards
+                        // edge-to-edge with no breathing room. Single column
+                        // gives the photo room to breathe.
+                        columns: isCompact
+                            ? [GridItem(.flexible(), spacing: 14)]
+                            : [GridItem(.adaptive(minimum: 280), spacing: 18)],
+                        spacing: isCompact ? 14 : 18
                     ) {
                         ForEach(store.listings) { listing in
                             Button { onPickListing(listing) } label: {
@@ -5786,7 +6139,9 @@ private struct IPadListings: View {
                     }
                 }
             }
-            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, isCompact ? 32 : 120)
         }
         .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -5870,6 +6225,9 @@ private struct IPadProfile: View {
     let store: SessionStore
     let auth: AuthStore
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     @State private var gmail: APIClient.GmailStatus?
     @State private var gmailLoading: Bool = false
     @State private var gmailError: String?
@@ -5901,7 +6259,7 @@ private struct IPadProfile: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: isCompact ? 20 : 28) {
                 header
                 accountCard
                 gmailCard
@@ -5919,7 +6277,9 @@ private struct IPadProfile: View {
             }
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, isCompact ? 32 : 120)
         }
         .refreshable {
             await refreshGmail()
@@ -7137,6 +7497,9 @@ private struct IPadRecord: View {
     // was extra clicks for what's obviously the next step.
     var onOpenSession: (String) -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     // Shared recorder so the recording survives tab switches — the agent
     // can start recording, then jump to the Kiosk tab to take guest sign-ins
     // while the mic keeps capturing in the background.
@@ -7238,7 +7601,9 @@ private struct IPadRecord: View {
             }
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 44).padding(.top, 36).padding(.bottom, 120)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, isCompact ? 32 : 120)
         }
     }
 
@@ -7367,10 +7732,11 @@ private struct IPadRecord: View {
             recordingHeader
             Spacer(minLength: 0)
             voiceVisualizer
-                .padding(.horizontal, 56)
+                .padding(.horizontal, isCompact ? 20 : 56)
             Spacer(minLength: 0)
             recordingControls
-                .padding(.horizontal, 56).padding(.bottom, 36)
+                .padding(.horizontal, isCompact ? 20 : 56)
+                .padding(.bottom, isCompact ? 18 : 36)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -7405,7 +7771,9 @@ private struct IPadRecord: View {
                 .foregroundStyle(FoyerTheme.cream)
                 .tracking(2)
         }
-        .padding(.horizontal, 56).padding(.top, 36).padding(.bottom, 8)
+        .padding(.horizontal, isCompact ? 20 : 56)
+        .padding(.top, isCompact ? 18 : 36)
+        .padding(.bottom, 8)
     }
 
     // Status pill showing the last successful snapshot's age + current
@@ -7694,6 +8062,9 @@ private struct IPadSessionDetail: View {
     var onBack: () -> Void
     var onOpenLeads: (String) -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
     @State private var session: Session?
     @State private var loading = true
     @State private var loadError: String?
@@ -7745,7 +8116,9 @@ private struct IPadSessionDetail: View {
             }
             .frame(maxWidth: 880, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 44).padding(.top, 28).padding(.bottom, 120)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 14 : 28)
+            .padding(.bottom, isCompact ? 32 : 120)
         }
         .refreshable { await load() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

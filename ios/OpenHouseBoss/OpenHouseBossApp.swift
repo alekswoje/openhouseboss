@@ -115,20 +115,15 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         if auth.isSignedIn {
-            Group {
-                if UIDevice.current.userInterfaceIdiom == .pad && hSize == .regular {
-                    IPadAgentApp()
-                } else {
-                    NavigationStack(path: $router.path) {
-                        HomeShell()
-                            .navigationDestination(for: AppRoute.self) { route in
-                                destination(for: route)
-                            }
-                    }
-                    .environment(router)
-                }
-            }
-            .transition(.opacity)
+            // Single adaptive surface: same code path on iPad and iPhone.
+            // IPadAgentApp branches internally on horizontalSizeClass — wide
+            // canvas → side rail + split panes; compact → bottom tab bar +
+            // pushed detail. The legacy HomeShell / NavigationStack route is
+            // intentionally retired so iPhone gets the full Foyer feature set
+            // (offers, leads agent, kiosk, etc.) the agent already loves on
+            // iPad.
+            IPadAgentApp()
+                .transition(.opacity)
         } else if !auth.loading {
             LoginView()
                 .transition(.opacity)
