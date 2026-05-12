@@ -1,4 +1,4 @@
-/* global React, Crest, Eyebrow, Tag, Stat, Hairline, HeroDevices */
+/* global React, Crest, Eyebrow, Tag, Stat, Hairline, HeroDevices, HDIPhone, HDIPad, HDLaptop */
 
 const Landing = () => {
   return (
@@ -337,6 +337,77 @@ const Landing = () => {
 
       <Hairline />
 
+      {/* THREE JOBS — each device, one role, all automated */}
+      <section style={{ padding: '120px 56px 60px', background: 'var(--bg-deep)' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 80 }}>
+            <div>
+              <Eyebrow num="04">Three devices, three jobs</Eyebrow>
+              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+                You bring the people. <span className="serif-it" style={{ color: 'var(--gold)' }}>Foyer does the rest.</span>
+              </h2>
+            </div>
+            <div style={{ maxWidth: 420, color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.7 }}>
+              Each device has one job — and Foyer runs it without you
+              touching a thing. Pocket, podium, follow-up.
+            </div>
+          </div>
+
+          {/* iPhone — Records every word */}
+          <DeviceJob
+            eyebrow="THE iPhone · pocket microphone"
+            title={<>Records the open house. <span className="serif-it" style={{ color: 'var(--gold)' }}>Names every voice.</span></>}
+            bullets={[
+              { k: 'Drop your phone in your pocket and tap once.',
+                d: 'Foyer captures the entire walkthrough in the background, even with the screen off.' },
+              { k: 'Speakers identified automatically.',
+                d: 'AI diarization separates every voice and matches them to the guests who signed in.' },
+              { k: 'Saved continuously to the cloud.',
+                d: 'No "press save," no lost recordings. Each session lands in your library by Monday morning.' },
+            ]}
+            device="phone"
+            scale={0.78}
+            flip={false}
+          />
+
+          {/* iPad — Sign-in kiosk */}
+          <DeviceJob
+            eyebrow="THE iPad · sign-in podium"
+            title={<>Hand to a guest. <span className="serif-it" style={{ color: 'var(--gold)' }}>Sign-in does itself.</span></>}
+            bullets={[
+              { k: 'Locked guest mode — they can\'t escape it.',
+                d: 'Biometric exit. Even a curious kid can\'t navigate away from the form mid-tour.' },
+              { k: 'Validation as the field types.',
+                d: 'Email gets checked while they\'re still on the page. Bad addresses don\'t make it through.' },
+              { k: 'Queues guests for voice-matching.',
+                d: 'The moment Foyer hears them speak, the signed-in name attaches to their voiceprint.' },
+            ]}
+            device="ipad"
+            scale={0.45}
+            flip={true}
+          />
+
+          {/* Laptop — AI drafts + auto-schedules */}
+          <DeviceJob
+            eyebrow="THE Laptop · follow-up cockpit"
+            title={<>AI drafts each follow-up. <span className="serif-it" style={{ color: 'var(--gold)' }}>And schedules it.</span></>}
+            bullets={[
+              { k: 'Personalized email per guest, written for you.',
+                d: 'Foyer reads what each lead actually said and drafts in your voice — not a template.' },
+              { k: 'Auto-scheduled to 9:14 AM tomorrow.',
+                d: 'No "click send 30 times." Open houses turn into a queue of pre-flighted replies.' },
+              { k: 'One confirmation for a hundred sends.',
+                d: 'Tell the inbox "send the buyer credit blast to all warm buyers" — it builds the plan, you approve once.' },
+            ]}
+            device="laptop"
+            scale={0.55}
+            flip={false}
+          />
+        </div>
+      </section>
+
+      <Hairline />
+
       {/* PROOF — pull quotes */}
       <section style={{ padding: '140px 56px', background: 'var(--bg-deep)' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 48 }}>
@@ -407,6 +478,93 @@ const Landing = () => {
     </div>
   );
 };
+
+// Single row in the "Three jobs" section: animated device mock on one
+// side, copy + bullet list on the other. The mock auto-runs the same
+// automation animation that plays in the hero carousel, so a visitor
+// scrolling down can sit and watch the AI work.
+function DeviceJob({ eyebrow, title, bullets, device, scale = 0.6, flip = false }) {
+  const Mock = device === 'phone' ? HDIPhone
+            : device === 'ipad'   ? HDIPad
+            : HDLaptop;
+  // The mocks render at large native dimensions — wrap in a scaled box
+  // so the row stays balanced against the copy column.
+  const base = device === 'laptop' ? { w: 880, h: 580 }
+            : device === 'ipad'   ? { w: 920, h: 660 }
+            : { w: 300, h: 612 };
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: flip ? '1fr 1fr' : '1fr 1fr',
+      gap: 60, alignItems: 'center',
+      marginBottom: 80,
+      direction: flip ? 'rtl' : 'ltr',
+    }}>
+      {/* Copy column */}
+      <div style={{ direction: 'ltr' }}>
+        <div className="mono" style={{
+          fontSize: 11, color: 'var(--gold)', letterSpacing: '0.18em',
+          textTransform: 'uppercase',
+        }}>
+          {eyebrow}
+        </div>
+        <h3 className="serif" style={{
+          fontSize: 42, lineHeight: 1.05, margin: '18px 0 28px',
+          color: 'var(--cream)', letterSpacing: '-0.02em',
+        }}>
+          {title}
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          {bullets.map((b, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '24px 1fr', gap: 14 }}>
+              <div style={{
+                marginTop: 3,
+                width: 24, height: 24, borderRadius: '50%',
+                background: 'var(--gold-soft)', color: 'var(--gold)',
+                display: 'grid', placeItems: 'center',
+              }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </div>
+              <div>
+                <div style={{ fontSize: 15, color: 'var(--cream)', lineHeight: 1.4, fontWeight: 500 }}>
+                  {b.k}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.55, marginTop: 4 }}>
+                  {b.d}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Device column — scaled animation */}
+      <div style={{
+        direction: 'ltr',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: base.h * scale + 40,
+        position: 'relative',
+      }}>
+        <div style={{
+          position: 'absolute', inset: '-20px',
+          background: 'radial-gradient(ellipse 70% 60% at center, var(--gold-soft), transparent 70%)',
+          pointerEvents: 'none',
+          opacity: 0.7,
+        }} />
+        <div style={{
+          width: base.w * scale, height: base.h * scale,
+          position: 'relative',
+        }}>
+          <div style={{ width: base.w, height: base.h, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+            <Mock />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // One column in the "Inside the inbox" section: small eyebrow, headline,
 // short body, and a UI mock that previews the feature. Cards share a
