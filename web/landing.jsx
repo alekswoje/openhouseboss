@@ -192,6 +192,151 @@ const Landing = () => {
 
       <Hairline />
 
+      {/* NEW FEATURES — AI you can talk to */}
+      <section style={{ padding: '120px 56px', background: 'var(--bg-deep)' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 60 }}>
+            <div>
+              <Eyebrow num="03.5">Inside the inbox</Eyebrow>
+              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+                An AI you can <span className="serif-it" style={{ color: 'var(--gold)' }}>actually talk to.</span>
+              </h2>
+            </div>
+            <div style={{ maxWidth: 420, color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.7 }}>
+              Three new surfaces — built on the same Foyer pipeline — that
+              turn the inbox into a conversation, not a backlog.
+            </div>
+          </div>
+
+          {/* Three feature cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
+            {/* Ask your inbox */}
+            <FeatureCard
+              eyebrow="01 / LEADS AGENT"
+              title="Ask your inbox anything."
+              body={
+                <>Type a question or a request — <span className="serif-it" style={{ color: 'var(--gold)' }}>"send the $2,500
+                buyer credit blast to all warm buyers from Maple St"</span> — and
+                Foyer drafts every email, lines up the right recipients,
+                and asks you to confirm once. Not 30 times.</>
+              }
+              mock={
+                <div style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--gold-soft)',
+                  borderRadius: 10, padding: 14,
+                }}>
+                  <div style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 8,
+                    fontSize: 11, color: 'var(--gold)', fontFamily: 'var(--mono)',
+                    letterSpacing: '0.14em',
+                  }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 10px var(--gold)' }} />
+                    ASK YOUR INBOX
+                  </div>
+                  <div style={{ marginTop: 12, fontSize: 13, color: 'var(--cream)', lineHeight: 1.55 }}>
+                    Send the @SpringBuyerCredit to all warm buyers from Maple St
+                  </div>
+                  <div style={{ marginTop: 14, padding: 12, background: 'var(--bg-deep)', border: '1px solid var(--hairline)', borderRadius: 8 }}>
+                    <div className="mono" style={{ fontSize: 10, color: 'var(--gold)', letterSpacing: '0.12em' }}>PLAN · 6 RECIPIENTS</div>
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {['Sarah Chen', 'Mike Rodriguez', 'Jennifer Park', '+ 3 more'].map((n) => (
+                        <div key={n} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--cream-dim)' }}>
+                          <span>{n}</span>
+                          <span style={{ color: 'var(--gold)' }}>personalized ✓</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              }
+            />
+
+            {/* Offers library */}
+            <FeatureCard
+              eyebrow="02 / OFFERS LIBRARY"
+              title="Campaigns the AI can pull from."
+              body={
+                <>Drop in your $2,500 buyer credit, your spring rate
+                lock, your seller comp report — Foyer references them
+                with <span className="mono" style={{ color: 'var(--gold)' }}>@name</span> in any prompt, or quietly picks
+                the best fit for each lead all on its own.</>
+              }
+              mock={
+                <div style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--hairline)',
+                  borderRadius: 10, padding: 0, overflow: 'hidden',
+                }}>
+                  {[
+                    { name: 'Spring buyer credit', desc: '$2,500 toward closing for any buyer signing by April 30', on: true, ref: '@spring' },
+                    { name: 'Seller comp report', desc: 'Free comp + neighborhood pricing for any seller intro', on: true, ref: '@comp' },
+                    { name: 'Rate lock — 30 day', desc: 'Hold the current rate while we close. Partner lender.', on: false, ref: '@ratelock' },
+                  ].map((o, i) => (
+                    <div key={o.name} style={{
+                      padding: '12px 14px',
+                      borderTop: i ? '1px solid var(--hairline)' : 'none',
+                      opacity: o.on ? 1 : 0.5,
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontSize: 12.5, color: 'var(--cream)' }}>{o.name}</div>
+                        <span className="mono" style={{ fontSize: 9, color: o.on ? 'var(--gold)' : 'var(--text-muted)', letterSpacing: '0.12em' }}>
+                          {o.on ? 'ACTIVE' : 'OFF'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.4 }}>
+                        {o.desc}
+                      </div>
+                      <div className="mono" style={{ fontSize: 9, color: 'var(--gold)', marginTop: 6, letterSpacing: '0.08em' }}>
+                        {o.ref}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              }
+            />
+
+            {/* Refine with AI */}
+            <FeatureCard
+              eyebrow="03 / REFINE WITH AI"
+              title="Edit drafts by asking for it."
+              body={
+                <>"Make it shorter," <span className="serif-it" style={{ color: 'var(--gold)' }}>"add a CTA to schedule
+                a private showing,"</span> "swap in the spring buyer
+                credit." Foyer rewrites in seconds — your tone, your
+                edits, every time.</>
+              }
+              mock={
+                <div style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--hairline)',
+                  borderRadius: 10, padding: 14,
+                }}>
+                  <div className="mono" style={{ fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.14em' }}>
+                    DRAFTED FOLLOW-UP
+                  </div>
+                  <div style={{
+                    marginTop: 10, padding: 12,
+                    background: 'var(--bg-deep)', border: '1px solid var(--hairline)',
+                    borderRadius: 6, fontSize: 11.5, lineHeight: 1.55, color: 'var(--cream-dim)',
+                  }}>
+                    Hi Sarah — great meeting you today. I'd love to share a
+                    full set of comps for the West Side block. Want me to
+                    send those over with a private-showing slot for
+                    Saturday morning?
+                  </div>
+                  <div style={{ marginTop: 14, padding: '8px 10px', borderRadius: 8, background: 'var(--gold-soft)', border: '1px solid var(--gold)' }}>
+                    <div className="mono" style={{ fontSize: 9, color: 'var(--gold)', letterSpacing: '0.12em' }}>REFINE WITH AI</div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: 'var(--cream)' }}>
+                      add the @spring credit and ask for a Saturday tour
+                    </div>
+                  </div>
+                </div>
+              }
+            />
+          </div>
+        </div>
+      </section>
+
+      <Hairline />
+
       {/* PROOF — pull quotes */}
       <section style={{ padding: '140px 56px', background: 'var(--bg-deep)' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 48 }}>
@@ -262,5 +407,42 @@ const Landing = () => {
     </div>
   );
 };
+
+// One column in the "Inside the inbox" section: small eyebrow, headline,
+// short body, and a UI mock that previews the feature. Cards share a
+// border + hover glow with the rest of the page.
+function FeatureCard({ eyebrow, title, body, mock }) {
+  return (
+    <div className="stat-card" style={{
+      background: 'var(--bg-card)',
+      border: '1px solid var(--hairline)',
+      borderRadius: 14,
+      padding: 28,
+      display: 'flex', flexDirection: 'column', gap: 18,
+    }}>
+      <div className="mono" style={{
+        fontSize: 10, letterSpacing: '0.18em',
+        color: 'var(--gold)',
+      }}>
+        {eyebrow}
+      </div>
+      <h3 className="serif" style={{
+        fontSize: 26, margin: 0,
+        lineHeight: 1.15, color: 'var(--cream)',
+      }}>
+        {title}
+      </h3>
+      <p style={{
+        margin: 0, fontSize: 13.5, lineHeight: 1.7,
+        color: 'var(--text-dim)', minHeight: 70,
+      }}>
+        {body}
+      </p>
+      <div style={{ marginTop: 4 }}>
+        {mock}
+      </div>
+    </div>
+  );
+}
 
 Object.assign(window, { Landing });

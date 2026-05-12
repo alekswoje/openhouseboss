@@ -318,6 +318,10 @@ function Icon({ name, size = 18, active = false }) {
     case 'spark':        return <svg {...common} fill="currentColor" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5 5l4 4m6 6 4 4M5 19l4-4m6-6 4-4"/></svg>;
     case 'trash':        return <svg {...common}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>;
     case 'search':       return <svg {...common}><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+    case 'tag':          return <svg {...common}><path d="M20.59 13.41 13.41 20.59a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.6" fill={active ? 'currentColor' : 'none'}/></svg>;
+    case 'gear':         return <svg {...common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>;
+    case 'sparkles':     return <svg {...common}><path d="M12 3v5M12 16v5M3 12h5M16 12h5M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>;
+    case 'pencil':       return <svg {...common}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z"/></svg>;
     default:             return null;
   }
 }
@@ -351,12 +355,21 @@ function AppShell({ active, children, sessionStats }) {
     return () => document.removeEventListener('click', onClick);
   }, [menuOpen]);
 
+  // Sidebar sections — mirrors the iPad app's tab order so an agent
+  // bouncing between web + iPad keeps the same mental map.
+  //   Open house: Home (Today), Kiosk
+  //   Library:    Sessions, Leads, Offers, Listings
+  //   Account:    Profile
+  // Record lives on iPad/iPhone only (the web canvas can't capture audio
+  // through the browser the way the native app can), so it's not in the
+  // nav here — the agent who lands on web first sees a CTA to install
+  // the iOS app from the dashboard.
   const sections = [
     {
       label: 'Open house',
       items: [
-        { id: 'today',   label: 'Today',    icon: 'home',   sub: 'Live overview',   hash: '#/app' },
-        { id: 'kiosk',   label: 'Kiosk',    icon: 'kiosk',  sub: 'Hand to a guest', hash: '#/kiosk' },
+        { id: 'today',   label: 'Home',     icon: 'home',     sub: 'Live overview',   hash: '#/app' },
+        { id: 'kiosk',   label: 'Kiosk',    icon: 'kiosk',    sub: 'Hand to a guest', hash: '#/kiosk' },
       ],
     },
     {
@@ -364,6 +377,14 @@ function AppShell({ active, children, sessionStats }) {
       items: [
         { id: 'sessions', label: 'Sessions', icon: 'sessions', sub: `${recordedCount} recorded`, hash: '#/sessions' },
         { id: 'leads',    label: 'Leads',    icon: 'leads',    sub: `${visitors.length} captured · ${needs} need action`, hash: '#/leads' },
+        { id: 'offers',   label: 'Offers',   icon: 'tag',      sub: 'Campaign library', hash: '#/offers' },
+        { id: 'listings', label: 'Listings', icon: 'listings', sub: 'Open-house properties', hash: '#/listings' },
+      ],
+    },
+    {
+      label: 'Account',
+      items: [
+        { id: 'profile', label: 'Profile', icon: 'gear', sub: 'Account · Gmail · scripts', hash: '#/profile' },
       ],
     },
   ];

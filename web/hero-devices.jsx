@@ -175,10 +175,11 @@ const HDIPad = () => {
           <div className="crest-mark" style={{ width: 32, height: 32, fontSize: 15 }}>F</div>
           {[
             { i: 'home', active: true, label: 'Home' },
-            { i: 'listings', label: 'Listings' },
+            { i: 'kiosk', label: 'Kiosk' },
             { i: 'sessions', label: 'Sessions' },
             { i: 'leads', label: 'Leads' },
-            { i: 'templates', label: 'Templates' },
+            { i: 'offers', label: 'Offers' },
+            { i: 'listings', label: 'Listings' },
           ].map(it => (
             <div key={it.i} style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
@@ -192,9 +193,11 @@ const HDIPad = () => {
               }}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
                   {it.i === 'home' && <path d="M2 7l6-5 6 5v7H2z"/>}
+                  {it.i === 'kiosk' && <><rect x="2" y="3" width="12" height="9" rx="1"/><path d="M6 14h4M8 12v2"/><circle cx="8" cy="7.5" r="1.5"/></>}
                   {it.i === 'listings' && <><rect x="2" y="3" width="12" height="10"/><path d="M2 7h12M6 3v10"/></>}
                   {it.i === 'sessions' && <><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2"/></>}
                   {it.i === 'leads' && <><circle cx="8" cy="6" r="3"/><path d="M2 14c0-3 3-5 6-5s6 2 6 5"/></>}
+                  {it.i === 'offers' && <path d="M13 8.5L8.5 13a1 1 0 01-1.4 0L2 7.9V2h5.9l5.1 5.1a1 1 0 010 1.4zM5 5h0"/>}
                   {it.i === 'templates' && <><rect x="3" y="2" width="10" height="12"/><path d="M5 5h6M5 8h6M5 11h4"/></>}
                 </svg>
               </div>

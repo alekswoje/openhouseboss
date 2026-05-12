@@ -339,6 +339,8 @@
   <script type="text/babel" src="kiosk.jsx"></script>
   <script type="text/babel" src="session-detail.jsx"></script>
   <script type="text/babel" src="leads.jsx"></script>
+  <script type="text/babel" src="offers.jsx"></script>
+  <script type="text/babel" src="listings.jsx"></script>
   <script type="text/babel" src="profile.jsx"></script>
 
   <script type="text/babel" data-presets="react">
@@ -352,7 +354,7 @@
     const ROUTES = [
       { hash: '#/',           label: 'Home',     El: () => <Landing />,     marketing: true },
       { hash: '#/login',      label: 'Sign in',  El: () => <Login />,       marketing: true },
-      { hash: '#/app',        label: 'Today',    El: () => <Dashboard /> },
+      { hash: '#/app',        label: 'Home',     El: () => <Dashboard /> },
       { hash: '#/sessions',   label: 'Sessions', El: () => <SessionsList /> },
       { hash: '#/session',    label: 'Detail',   El: () => <SessionDetail /> },
       { hash: '#/kiosk',      label: 'Kiosk',    El: () => <KioskForm /> },
@@ -360,6 +362,12 @@
       // Dedicated CRM surface: per-lead detail with notes, tasks,
       // sent-email history, and scheduled-send queue.
       { hash: '#/leads',      label: 'Leads',    El: () => <LeadsInbox /> },
+      // Marketing offers / campaigns the AI references in follow-ups.
+      // Mirrors the iPad Offers tab.
+      { hash: '#/offers',     label: 'Offers',   El: () => <OffersPage /> },
+      // Open-house listings. Mirrors the iPad Listings tab — tapping a
+      // card lands on the kiosk with that listing pre-loaded.
+      { hash: '#/listings',   label: 'Listings', El: () => <ListingsPage /> },
       // Settings — Gmail connect + account info. Cross-device: the same
       // refresh token works from the iPad once the agent signs in there.
       { hash: '#/profile',    label: 'Profile',  El: () => <ProfilePage /> },
