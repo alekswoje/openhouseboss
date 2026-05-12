@@ -1,6 +1,16 @@
 /* global React, Crest, Eyebrow, Tag, Stat, Hairline, HeroDevices, HDIPhone, HDIPad, HDLaptop */
 
 const Landing = () => {
+  // Waitlist modal — opens from any CTA on the page. Foyer is invite-
+  // only for now, so neither the header nor the bottom-of-page CTAs
+  // expose a Sign-in / Sign-up path. Visitors drop their email and we
+  // ping them when their cohort opens.
+  const [waitlistOpen, setWaitlistOpen] = React.useState(false);
+  const openWaitlist = (source) => () => {
+    window._foyerWaitlistSource = source || 'landing';
+    setWaitlistOpen(true);
+  };
+
   return (
     <div className="foyer" data-screen-label="Landing" style={{ background: 'var(--bg-deep)', minHeight: '100%', width: '100%' }}>
 
@@ -18,8 +28,11 @@ const Landing = () => {
           <a onClick={() => window.foyerToast({ message: 'Journal · field notes coming soon', kind: 'info' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Journal</a>
         </nav>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-          <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => window.foyerSignIn()}>Sign in</button>
-          <button className="btn btn-primary" onClick={() => window.foyerSignIn()}>Request access</button>
+          {/* Sign-in is intentionally hidden on the marketing site —
+              Foyer is invite-only and invited agents get a direct
+              #/login link in their welcome email. The only CTA here
+              is "Join the waitlist", wired to the newsletter API. */}
+          <button className="btn btn-primary" onClick={openWaitlist('header')}>Join the waitlist</button>
         </div>
       </header>
 
@@ -52,9 +65,9 @@ const Landing = () => {
               <button
                 className="btn btn-primary"
                 style={{ padding: '16px 28px', fontSize: 14 }}
-                onClick={() => window.foyerToast('Opening the App Store · Foyer for iPhone')}
+                onClick={openWaitlist('hero')}
               >
-                Download for iPhone
+                Join the waitlist
                 <span style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', marginLeft: 4 }}>→</span>
               </button>
             </div>
@@ -437,24 +450,29 @@ const Landing = () => {
       <section style={{ padding: '140px 56px', textAlign: 'center' }}>
         <Eyebrow num="04">An invitation</Eyebrow>
         <h2 className="serif" style={{ fontSize: 88, lineHeight: 1, margin: '32px 0 0', color: 'var(--cream)' }}>
-          The next showing is <span className="serif-it" style={{ color: 'var(--gold)' }}>Saturday.</span>
+          The next cohort opens <span className="serif-it" style={{ color: 'var(--gold)' }}>soon.</span>
         </h2>
         <p style={{ maxWidth: 520, margin: '32px auto 0', color: 'var(--text-dim)', fontSize: 16, lineHeight: 1.7 }}>
-          Be ready. Free for your first three open houses — no card, no contract,
-          no calls from anyone in a quarter-zip.
+          Foyer is invite-only while we onboard our first hundred brokers.
+          Drop your email and we'll write when your seat opens — no spam, no
+          calls from anyone in a quarter-zip.
         </p>
         <div style={{ marginTop: 44, display: 'flex', justifyContent: 'center', gap: 14 }}>
           <button
             className="btn btn-primary"
             style={{ padding: '16px 32px', fontSize: 14 }}
-            onClick={() => window.foyerToast('Opening the App Store · Foyer for iPhone')}
-          >Download for iPhone</button>
-          <button
-            className="btn"
-            onClick={() => window.foyerToast({ message: 'Calendly link sent · check your inbox', kind: 'info' })}
-          >Talk to founder</button>
+            onClick={openWaitlist('cta')}
+          >Join the waitlist</button>
         </div>
       </section>
+
+      {/* WAITLIST MODAL — single shared dialog for every CTA on the page */}
+      {waitlistOpen && (
+        <WaitlistModal
+          source={window._foyerWaitlistSource || 'landing'}
+          onClose={() => setWaitlistOpen(false)}
+        />
+      )}
 
       {/* FOOTER */}
       <footer style={{ padding: '60px 56px 40px', borderTop: '1px solid var(--hairline)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -557,6 +575,235 @@ function DeviceJob({ eyebrow, title, bullets, device, scale = 0.6, flip = false 
       </div>
     </div>
   );
+}
+
+// Waitlist signup modal. POSTs { email, note, source } to
+// /newsletter/subscribe and shows a short success state on the same
+// surface. Self-contained — no external state library needed. The
+// "submit on Enter" + "close on Escape" wiring keeps it feeling
+// native for keyboard users.
+function WaitlistModal({ source, onClose }) {
+  const [email, setEmail] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+  const [success, setSuccess] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    // Autofocus the email field once the modal mounts. setTimeout so
+    // the modal's enter animation doesn't fight with the focus call.
+    const t = setTimeout(() => inputRef.current?.focus(), 80);
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => { clearTimeout(t); document.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+
+  const trimmedEmail = email.trim();
+  const looksValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmedEmail);
+  const canSubmit = looksValid && !submitting && !success;
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await fetch('/newsletter/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: trimmedEmail,
+          note: note.trim() || null,
+          source: source || 'landing',
+        }),
+      });
+      if (!r.ok) {
+        let detail = '';
+        try {
+          const j = await r.json();
+          detail = j.detail || '';
+        } catch { /* ignore */ }
+        throw new Error(detail || `${r.status} ${r.statusText}`);
+      }
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message || 'Something went wrong. Try again?');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Render to document.body — the page's .route-frame has a transform
+  // for route-change animations, which would otherwise make our
+  // `position: fixed` resolve relative to the route frame instead of
+  // the viewport. Portal-to-body sidesteps the whole containing-block
+  // problem.
+  const modal = (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 10000,
+        background: 'rgba(0, 0, 0, 0.62)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 24,
+        animation: 'foyerFadeIn 200ms ease',
+      }}>
+      <div style={{
+        width: '100%', maxWidth: 460,
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 16,
+        boxShadow: '0 40px 100px -20px rgba(0,0,0,0.85), 0 0 0 1px rgba(196,162,82,0.12)',
+        padding: 32,
+        position: 'relative',
+      }}>
+        {/* Close (×) */}
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            position: 'absolute', top: 14, right: 14,
+            background: 'transparent', border: 0,
+            color: 'var(--text-dim)', cursor: 'pointer',
+            width: 30, height: 30, borderRadius: '50%',
+            display: 'grid', placeItems: 'center',
+            fontSize: 18,
+          }}>×</button>
+
+        {success ? (
+          <div style={{ textAlign: 'center', padding: '8px 0 4px' }}>
+            <div style={{
+              margin: '0 auto', width: 56, height: 56, borderRadius: '50%',
+              background: 'var(--gold-soft)', color: 'var(--gold)',
+              display: 'grid', placeItems: 'center',
+              boxShadow: '0 0 0 6px rgba(196,162,82,0.12)',
+            }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <h3 className="serif" style={{ fontSize: 28, margin: '20px 0 8px', color: 'var(--cream)', letterSpacing: '-0.02em' }}>
+              You're on the list.
+            </h3>
+            <p style={{ fontSize: 14, color: 'var(--text-dim)', lineHeight: 1.6, margin: 0 }}>
+              We'll write when your seat opens. No spam — promise.
+            </p>
+            <button
+              onClick={onClose}
+              className="btn btn-primary"
+              style={{ marginTop: 22, padding: '12px 22px', fontSize: 13 }}>
+              Close
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit}>
+            <div className="mono" style={{
+              fontSize: 11, letterSpacing: '0.16em',
+              color: 'var(--gold)', marginBottom: 12,
+            }}>
+              WAITLIST · INVITE-ONLY
+            </div>
+            <h3 className="serif" style={{ fontSize: 30, margin: '0 0 10px', color: 'var(--cream)', letterSpacing: '-0.02em', lineHeight: 1.15 }}>
+              Join the next cohort.
+            </h3>
+            <p style={{ fontSize: 14, color: 'var(--text-dim)', lineHeight: 1.6, margin: '0 0 22px' }}>
+              Foyer is invite-only while we onboard our first hundred
+              brokers. Drop your email — we'll write when a seat opens.
+            </p>
+
+            <label style={{ display: 'block' }}>
+              <div className="mono" style={{
+                fontSize: 10, letterSpacing: '0.12em',
+                color: 'var(--text-muted)', marginBottom: 6,
+              }}>
+                EMAIL
+              </div>
+              <input
+                ref={inputRef}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@brokerage.com"
+                autoComplete="email"
+                required
+                style={{
+                  width: '100%', padding: '12px 14px',
+                  background: 'var(--bg-deep)',
+                  border: '1px solid var(--hairline)',
+                  borderRadius: 10, color: 'var(--cream)',
+                  fontSize: 14, fontFamily: 'var(--sans)',
+                  outline: 'none', boxSizing: 'border-box',
+                }}
+              />
+            </label>
+
+            <label style={{ display: 'block', marginTop: 14 }}>
+              <div className="mono" style={{
+                fontSize: 10, letterSpacing: '0.12em',
+                color: 'var(--text-muted)', marginBottom: 6,
+              }}>
+                OPTIONAL · A LINE ABOUT YOU
+              </div>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Brokerage, market, how many open houses you host…"
+                rows={3}
+                maxLength={500}
+                style={{
+                  width: '100%', padding: '12px 14px',
+                  background: 'var(--bg-deep)',
+                  border: '1px solid var(--hairline)',
+                  borderRadius: 10, color: 'var(--cream)',
+                  fontSize: 13, fontFamily: 'var(--sans)',
+                  outline: 'none', boxSizing: 'border-box',
+                  resize: 'vertical', minHeight: 64, lineHeight: 1.5,
+                }}
+              />
+            </label>
+
+            {error && (
+              <div style={{
+                marginTop: 14, padding: '10px 12px', borderRadius: 8,
+                background: 'rgba(202,80,71,0.08)',
+                border: '1px solid rgba(202,80,71,0.3)',
+                fontSize: 12, color: 'var(--terracotta)',
+              }}>
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="btn btn-primary"
+              style={{
+                marginTop: 22, width: '100%',
+                padding: '14px 22px', fontSize: 14,
+                opacity: canSubmit ? 1 : 0.55,
+                cursor: canSubmit ? 'pointer' : 'not-allowed',
+              }}>
+              {submitting ? 'Adding you…' : 'Join the waitlist'}
+            </button>
+
+            <div style={{
+              marginTop: 14, fontSize: 11, color: 'var(--text-muted)',
+              textAlign: 'center', lineHeight: 1.5,
+            }}>
+              We only email you when your invite is ready.
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+
+  // Portal to body so the route-frame's transform doesn't trap our
+  // `position: fixed` modal inside a transformed ancestor.
+  return ReactDOM.createPortal(modal, document.body);
 }
 
 // One column in the "Inside the inbox" section: small eyebrow, headline,
