@@ -2901,6 +2901,13 @@ private struct IPadLeads: View {
                 .frame(maxWidth: 720, alignment: .leading)
                 .padding(.horizontal, isCompact ? 16 : 56)
                 .padding(.top, isCompact ? 16 : 56)
+                // Explicit bottom padding on iPhone — the parent shell's
+                // safeAreaInset reserves space for the floating tab bar but
+                // doesn't always propagate through the nested compactDetail
+                // VStack into this ScrollView. Adding ~120pt here guarantees
+                // the bottom action row (Archive / Schedule / Send) clears
+                // the tab bar even on leads with no notes/tasks.
+                .padding(.bottom, isCompact ? 120 : 0)
             }
             .refreshable { await load() }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2926,48 +2933,24 @@ private struct IPadLeads: View {
 
     private func visitorHeader(_ row: LeadRow) -> some View {
         let v = row.visitor
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 16) {
+        return VStack(alignment: .leading, spacing: isCompact ? 12 : 16) {
+            // Row 1: avatar + name (truncating) + Delete pill. On iPhone the
+            // pills move to their OWN row below to avoid the death-spiral
+            // where a "Browser · Score 10/100 · Replied · Delete" line wraps
+            // into a vertical column of single characters.
+            HStack(alignment: .center, spacing: isCompact ? 12 : 16) {
                 Text(v.displayInitials)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: isCompact ? 18 : 22, weight: .semibold))
                     .foregroundStyle(FoyerTheme.gold)
-                    .frame(width: 64, height: 64)
+                    .frame(width: isCompact ? 48 : 64, height: isCompact ? 48 : 64)
                     .background(FoyerTheme.bgElev, in: Circle())
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(v.displayName)
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(FoyerTheme.cream)
-                        .tracking(-0.5)
-                    HStack(spacing: 8) {
-                        Text(v.analysis.tag)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(tagColor(v.analysis.tagToken))
-                            .padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(
-                                Capsule().fill(tagColor(v.analysis.tagToken).opacity(0.12))
-                            )
-                        Button { showScoreInfo.toggle() } label: {
-                            HStack(spacing: 4) {
-                                Text("Score \(v.analysis.score) / 100")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(FoyerTheme.creamDim)
-                                Image(systemName: "info.circle")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(FoyerTheme.textMuted)
-                            }
-                            .padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white.opacity(0.05)))
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showScoreInfo, arrowEdge: .top) {
-                            scoreInfoPopover(v.analysis.score)
-                        }
-                        if let state = v.leadState, state.status != .drafted {
-                            statusPill(state.status)
-                        }
-                    }
-                }
-                Spacer()
+                Text(v.displayName)
+                    .font(.system(size: isCompact ? 22 : 30, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.5)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 8)
                 Button { pendingDeleteLead = row } label: {
                     HStack(spacing: 6) {
                         if deletingLead {
@@ -2976,17 +2959,53 @@ private struct IPadLeads: View {
                             Image(systemName: "trash")
                                 .font(.system(size: 12, weight: .semibold))
                         }
-                        Text("Delete")
-                            .font(.system(size: 13, weight: .semibold))
+                        if !isCompact {
+                            Text("Delete")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
                     }
                     .foregroundStyle(FoyerTheme.terracotta)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .padding(.horizontal, isCompact ? 10 : 12)
+                    .padding(.vertical, isCompact ? 8 : 8)
                     .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(deletingLead)
             }
-            HStack(spacing: 18) {
+            // Row 2: tag / score / status pills. FlowLayout so they wrap if
+            // the canvas is too narrow (rather than crushing each text into
+            // a single-column character stack like before).
+            FlowLayout(spacing: 8) {
+                Text(v.analysis.tag)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(tagColor(v.analysis.tagToken))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(
+                        Capsule().fill(tagColor(v.analysis.tagToken).opacity(0.12))
+                    )
+                Button { showScoreInfo.toggle() } label: {
+                    HStack(spacing: 4) {
+                        Text("Score \(v.analysis.score) / 100")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .fixedSize(horizontal: true, vertical: false)
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.05)))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showScoreInfo, arrowEdge: .top) {
+                    scoreInfoPopover(v.analysis.score)
+                }
+                if let state = v.leadState, state.status != .drafted {
+                    statusPill(state.status)
+                }
+            }
+            // Row 3: contact lines + Edit button. Also wraps on narrow widths.
+            FlowLayout(spacing: isCompact ? 10 : 18) {
                 if !v.visitor.email.isEmpty {
                     contactLine(icon: "envelope", text: v.visitor.email)
                 }
