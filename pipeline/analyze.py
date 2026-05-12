@@ -4,7 +4,7 @@ import assemblyai as aai
 from anthropic import Anthropic
 from pydantic import BaseModel
 
-from .identify import Visitor, _strip_code_fence
+from .identify import Visitor, _extract_json
 from .tags import Tag
 
 MODEL = "claude-sonnet-4-6"
@@ -127,7 +127,7 @@ def analyze_visitor(
         ),
         messages=[{"role": "user", "content": utterances_text}],
     )
-    text = _strip_code_fence(response.content[0].text)
+    text = _extract_json(response.content[0].text)
     parsed = json.loads(text)
     parsed["words_spoken"] = words_spoken
     return VisitorAnalysis(**parsed)

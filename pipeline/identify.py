@@ -70,6 +70,46 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+def _extract_json(text: str) -> str:
+    """Pull just the first balanced JSON object or array out of an LLM
+    response. Models occasionally return JSON followed by trailing prose
+    ("{...}\n\nNote: ...") which trips json.loads with the confusing
+    "Extra data: line 3 column 1 (char 18)" error. We scan for the first
+    '{' or '[' and walk forward tracking depth + string state until we
+    find the matching close, then return just that slice."""
+    text = _strip_code_fence(text)
+    # Find the first top-level opener.
+    start = -1
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            start = i
+            break
+    if start == -1:
+        return text  # fall through; json.loads will raise on its own
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return text[start:]  # unbalanced; let the caller raise
+
+
 def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dict[str, str]:
     utterances_text = "\n".join(
         f"[{u.speaker}] {u.text}" for u in (transcript.utterances or [])
@@ -89,7 +129,7 @@ def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dic
         ),
         messages=[{"role": "user", "content": utterances_text}],
     )
-    text = _strip_code_fence(response.content[0].text)
+    text = _extract_json(response.content[0].text)
     return json.loads(text)
 
 

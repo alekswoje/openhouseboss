@@ -15,7 +15,7 @@ import assemblyai as aai
 from anthropic import Anthropic
 from pydantic import BaseModel
 
-from .identify import _strip_code_fence
+from .identify import _extract_json
 from .scripts import Script
 
 MODEL = "claude-sonnet-4-6"
@@ -92,7 +92,7 @@ def grade_against_script(
         ),
         messages=[{"role": "user", "content": f"Agent utterances:\n{agent_text}"}],
     )
-    text = _strip_code_fence(response.content[0].text)
+    text = _extract_json(response.content[0].text)
     parsed = json.loads(text)
     return ScriptCoverage(
         script_id=script.id,
