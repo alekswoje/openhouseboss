@@ -2818,8 +2818,13 @@ private struct IPadLeads: View {
 
             // Always-editable: the editor owns its own text state so each
             // keystroke only re-renders the editor (not the whole Leads
-            // screen). `.id(row.id)` remounts on lead switch so a fresh row
-            // starts from its server-side body instead of stale state.
+            // screen). The .id includes a body fingerprint so the editor
+            // remounts WHENEVER the upstream draft changes — switching
+            // leads OR clicking "Reset to AI" (which clears the override
+            // server-side; without the fingerprint the editor would keep
+            // showing the agent's pre-reset edits). The fingerprint is
+            // body-derived (not random) so typing inside the editor
+            // doesn't cause a remount.
             DraftEditorPane(
                 initialText: currentBody,
                 sessionId: row.session.id,
@@ -2829,7 +2834,7 @@ private struct IPadLeads: View {
                     await autosaveDraft(for: row, body: text)
                 }
             )
-            .id(row.id)
+            .id("\(row.id):\(currentBody.hashValue)")
 
             HStack(spacing: 10) {
                 let state = v.leadState?.status ?? .drafted
@@ -2977,17 +2982,25 @@ private struct IPadLeads: View {
     private func load() async {
         await MainActor.run { loading = true }
         defer { Task { @MainActor in loading = false } }
+        let hadLeads = await MainActor.run { !allLeads.isEmpty }
         await store.refreshSessions()
         // Include BOTH "recorded" sessions and "manual" leads — they're
         // all leads from the agent's perspective. The original filter
         // hid manually-added leads (and kiosk sign-ins, since those are
         // also stored as manual leads), making them appear to vanish.
         let summaries = store.pastSessions
+        // Track how many per-session fetches succeeded so we can tell
+        // "user has zero leads" from "all per-session fetches failed".
+        actor Counter { var n = 0; func inc() { n += 1 } }
+        let successCount = Counter()
         let collected: [LeadRow] = await withTaskGroup(of: [LeadRow]?.self) { group in
             for summary in summaries {
                 group.addTask {
-                    guard let session = try? await APIClient.shared.getSession(id: summary.id),
-                          let visitors = session.result?.visitors else { return nil }
+                    guard let session = try? await APIClient.shared.getSession(id: summary.id) else {
+                        return nil
+                    }
+                    await successCount.inc()
+                    guard let visitors = session.result?.visitors else { return [] }
                     return visitors.map { LeadRow(visitor: $0, session: session) }
                 }
             }
@@ -2997,7 +3010,20 @@ private struct IPadLeads: View {
             }
             return rows
         }
+        let succeeded = await successCount.n
+        // Don't clobber the existing list if the refresh got nothing
+        // back AND we had data before. This is the "pull-to-refresh
+        // briefly shows No leads yet" bug: a transient blip on
+        // listSessions or getSession would return zero rows, we'd
+        // overwrite allLeads with [], and the user saw an empty inbox
+        // until they switched tabs (which fired .task → reload). With
+        // this guard, a failed refresh leaves the previous list alone.
+        let realResult = !summaries.isEmpty && succeeded > 0
         await MainActor.run {
+            if !realResult && hadLeads {
+                // Refresh failed — keep the previous list visible.
+                return
+            }
             self.allLeads = collected.sorted { lhs, rhs in
                 (lhs.session.createdAt ?? "") > (rhs.session.createdAt ?? "")
             }
