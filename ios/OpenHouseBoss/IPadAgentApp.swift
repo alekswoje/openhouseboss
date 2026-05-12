@@ -1752,6 +1752,30 @@ private struct IPadKiosk: View {
         guest.recordingConsent = termsAccepted
         store.pendingKioskGuests.append(guest)
 
+        // Persist the lead to the backend immediately so the agent has the
+        // contact info even if no audio session ever gets recorded (the
+        // original bug — pendingKioskGuests only became leads during the
+        // post-recording match step, which never fires without a recording).
+        // We still keep them in pendingKioskGuests so the matcher can link
+        // them to speakers IF a recording does happen.
+        let manualAddress = listing?.address
+        Task.detached(priority: .background) {
+            do {
+                _ = try await APIClient.shared.createManualLead(
+                    name: fullName,
+                    email: guest.email,
+                    phone: guest.phone,
+                    tag: "buyer",
+                    address: manualAddress
+                )
+            } catch {
+                // Silent — the guest already saw "thanks for signing in".
+                // If the backend is down, pendingKioskGuests still holds
+                // the data; the agent can also re-enter via ManualLeadSheet.
+                Log.warn("Manual lead from kiosk failed: \(error.localizedDescription)")
+            }
+        }
+
         // Show the success overlay, clear the form WHILE it's still up so
         // the next guest sees an empty form when the overlay dismisses.
         // Previously we cleared after dismiss, so the guest would briefly

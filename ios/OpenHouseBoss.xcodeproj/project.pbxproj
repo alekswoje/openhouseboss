@@ -25,6 +25,7 @@
 		9F99468A8A85EE024AFE3903 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C2623D371CC35BE5C79E0F /* SessionStore.swift */; };
 		9FAA8326243F5997E8634DA9 /* OpenHouseBossWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3988A31ECC5ABDE712E61764 /* OpenHouseBossWidgetsBundle.swift */; };
 		A046864C4B521610B3DB16F8 /* RecordingLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8247ED02EC4FF7ECE5498E73 /* RecordingLiveActivity.swift */; };
+		A4D57073C40D6CD9E5878FEE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A15107E5607D6C8A1CB330C5 /* Assets.xcassets */; };
 		A9FD41F941A91A0BB7101205 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = B550150CDEF72AE1714252D7 /* Log.swift */; };
 		C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88172970AE449A66CFAE784B /* RecordView.swift */; };
 		CCE85596A80EAFE5C598CD60 /* StopRecordingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */; };
@@ -77,6 +78,7 @@
 		8247ED02EC4FF7ECE5498E73 /* RecordingLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingLiveActivity.swift; sourceTree = "<group>"; };
 		88172970AE449A66CFAE784B /* RecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordView.swift; sourceTree = "<group>"; };
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		A15107E5607D6C8A1CB330C5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
@@ -109,6 +111,7 @@
 			isa = PBXGroup;
 			children = (
 				45A14FF6B9071E2F1778CD44 /* APIClient.swift */,
+				A15107E5607D6C8A1CB330C5 /* Assets.xcassets */,
 				3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */,
 				BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */,
 				49A00317B74209CC35C75028 /* Config.swift */,
@@ -147,6 +150,7 @@
 			buildConfigurationList = D9882E3F32517080D5CD9AED /* Build configuration list for PBXNativeTarget "OpenHouseBoss" */;
 			buildPhases = (
 				A7F721049E8CB69BA16F33E7 /* Sources */,
+				AC6F00E17CA7F9CFE2FC4CA1 /* Resources */,
 				00810DAF0D77AE78E76D2F63 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -214,6 +218,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AC6F00E17CA7F9CFE2FC4CA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A4D57073C40D6CD9E5878FEE /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A7F721049E8CB69BA16F33E7 /* Sources */ = {
