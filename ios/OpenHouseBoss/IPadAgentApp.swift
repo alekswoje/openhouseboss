@@ -3512,7 +3512,7 @@ private struct IPadLeads: View {
     @MainActor
     private func resetDraft(for row: LeadRow) async {
         do {
-            let state = try await APIClient.shared.updateDraft(
+            _ = try await APIClient.shared.updateDraft(
                 sessionId: row.session.id,
                 visitorName: row.visitor.visitor.name,
                 visitorSpeaker: row.visitor.visitor.speaker,
@@ -3520,10 +3520,27 @@ private struct IPadLeads: View {
                 subject: nil,
                 clear: true
             )
-            apply(state, to: row)
+            // Pull a fresh copy of the session so the visitor's full
+            // analysis + lead_state pair lands in our local cache. The
+            // PATCH return only carries lead_state, which used to leave
+            // the displayed draft stuck on whatever cached analysis we
+            // already had — reset would clear the override but the AI
+            // draft displayed wouldn't update. Refetching the session
+            // guarantees the UI matches the server.
+            let fresh = try await APIClient.shared.getSession(id: row.session.id)
+            apply(session: fresh, to: row)
         } catch {
             crmError = "Couldn't reset draft: \(error.localizedDescription)"
         }
+    }
+
+    @MainActor
+    private func apply(session fresh: Session, to row: LeadRow) {
+        guard let result = fresh.result,
+              let visitor = result.visitors.first(where: { $0.id == row.visitor.id })
+        else { return }
+        guard let idx = allLeads.firstIndex(where: { $0.id == row.id }) else { return }
+        allLeads[idx] = LeadRow(visitor: visitor, session: fresh)
     }
 
     @MainActor
@@ -5353,6 +5370,7 @@ private struct IPadOffers: View {
                 onCancel: { showCreate = false },
                 onSaved: { offer in
                     offers.append(offer)
+                    MentionLibrary.shared.upsert(offer: offer)
                     showCreate = false
                 }
             )
@@ -5365,6 +5383,7 @@ private struct IPadOffers: View {
                     if let idx = offers.firstIndex(where: { $0.id == updated.id }) {
                         offers[idx] = updated
                     }
+                    MentionLibrary.shared.upsert(offer: updated)
                     editingOffer = nil
                 }
             )
@@ -5519,6 +5538,7 @@ private struct IPadOffers: View {
             if let idx = offers.firstIndex(where: { $0.id == offer.id }) {
                 offers[idx] = updated
             }
+            MentionLibrary.shared.upsert(offer: updated)
         } catch {
             loadError = "Couldn't update: \(error.localizedDescription)"
         }
@@ -5531,6 +5551,10 @@ private struct IPadOffers: View {
         defer { loading = false }
         do {
             offers = try await APIClient.shared.listOffers()
+            // Keep the @mention picker in sync — the shared library is
+            // what powers autocomplete in every input field, so it needs
+            // to see the current list, not whatever it cached earlier.
+            MentionLibrary.shared.offers = offers
         } catch {
             loadError = "Couldn't load offers: \(error.localizedDescription)"
         }
@@ -5541,6 +5565,7 @@ private struct IPadOffers: View {
         do {
             try await APIClient.shared.deleteOffer(id: offer.id)
             offers.removeAll { $0.id == offer.id }
+            MentionLibrary.shared.remove(offerId: offer.id)
             pendingDelete = nil
         } catch {
             loadError = "Couldn't delete: \(error.localizedDescription)"
@@ -6230,6 +6255,10 @@ private struct IPadProfile: View {
             templates = env.templates
             forceTemplates = env.forceTemplates
             templatesError = nil
+            // Keep the @mention picker in sync — it pulls from the same
+            // library and otherwise wouldn't see template changes until
+            // the next app launch.
+            MentionLibrary.shared.templates = env.templates
         } catch {
             templatesError = error.localizedDescription
         }
@@ -8466,7 +8495,8 @@ struct MentionItem: Identifiable, Hashable {
 }
 
 // Shared, app-lifetime cache of the agent's mention library. Refreshed
-// lazily so individual input fields don't each fire their own load.
+// lazily AND on demand (when the agent edits offers/templates and we
+// want the picker to immediately see the change).
 @MainActor
 @Observable
 final class MentionLibrary {
@@ -8475,41 +8505,62 @@ final class MentionLibrary {
 
     var offers: [Offer] = []
     var templates: [FollowupTemplate] = []
-    private var loaded: Bool = false
-    private var loading: Task<Void, Never>?
+    var loaded: Bool = false      // true once the first load completed
+    var loadError: String?        // surfaced in the empty picker state
 
     var items: [MentionItem] {
         offers.filter(\.enabled).map(MentionItem.from)
             + templates.filter(\.enabled).map(MentionItem.from)
     }
 
-    func ensureLoaded() async {
-        if loaded { return }
-        if loading != nil {
-            await loading?.value
+    /// Trigger a fresh fetch and return when it's done. Idempotent —
+    /// callers can hit this on every appearance of an input field
+    /// without burning round trips because we coalesce in-flight loads.
+    private var inFlight: Task<Void, Never>?
+
+    func refresh() async {
+        if let inFlight {
+            await inFlight.value
             return
         }
-        loading = Task { @MainActor in
+        let task = Task { @MainActor in
             do {
-                async let o = APIClient.shared.listOffers()
-                async let t = APIClient.shared.listTemplates()
-                let envelope = try await t
-                self.offers = try await o
+                async let oReq = APIClient.shared.listOffers()
+                async let tReq = APIClient.shared.listTemplates()
+                let newOffers = try await oReq
+                let envelope = try await tReq
+                self.offers = newOffers
                 self.templates = envelope.templates
-                self.loaded = true
+                self.loadError = nil
             } catch {
-                // Best-effort — picker just stays empty if we can't load.
+                self.loadError = error.localizedDescription
             }
+            self.loaded = true
         }
-        await loading?.value
-        loading = nil
+        inFlight = task
+        await task.value
+        inFlight = nil
     }
 
-    func reload() async {
-        loaded = false
-        loading = nil
-        await ensureLoaded()
+    /// Optimistic local-update hooks the edit screens can call so the
+    /// picker doesn't lag a round trip behind the latest change.
+    func upsert(offer: Offer) {
+        if let idx = offers.firstIndex(where: { $0.id == offer.id }) {
+            offers[idx] = offer
+        } else {
+            offers.append(offer)
+        }
     }
+    func remove(offerId: String) { offers.removeAll { $0.id == offerId } }
+
+    func upsert(template: FollowupTemplate) {
+        if let idx = templates.firstIndex(where: { $0.id == template.id }) {
+            templates[idx] = template
+        } else {
+            templates.append(template)
+        }
+    }
+    func remove(templateId: String) { templates.removeAll { $0.id == templateId } }
 }
 
 // Parses the "active @-token" from a buffer of text. Returns (start,
@@ -8544,7 +8595,10 @@ func activeMention(in text: String) -> ActiveMention? {
 
 // View shown directly below an input field; given the current text and
 // a write-back binding, it filters MentionLibrary against the active
-// @-token and renders tap-to-insert rows.
+// @-token and renders tap-to-insert rows. Visible whenever the user is
+// in the middle of typing an @-token — even if no items match yet, we
+// show an explanation row so the agent isn't left wondering why nothing
+// appeared.
 struct MentionSuggestionsView: View {
     @Binding var text: String
     var onInsert: (() -> Void)? = nil
@@ -8552,17 +8606,22 @@ struct MentionSuggestionsView: View {
 
     var body: some View {
         Group {
-            if let mention = activeMention(in: text), !filtered(mention.query).isEmpty {
+            if let mention = activeMention(in: text) {
+                let matches = filtered(mention.query)
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(filtered(mention.query).prefix(6)) { item in
-                        Button {
-                            insert(item, replacing: mention)
-                        } label: {
-                            row(item)
-                        }
-                        .buttonStyle(.plain)
-                        if item.id != filtered(mention.query).prefix(6).last?.id {
-                            Rectangle().fill(FoyerTheme.hairline).frame(height: 1)
+                    if matches.isEmpty {
+                        emptyRow
+                    } else {
+                        ForEach(matches.prefix(6)) { item in
+                            Button {
+                                insert(item, replacing: mention)
+                            } label: {
+                                row(item)
+                            }
+                            .buttonStyle(.plain)
+                            if item.id != matches.prefix(6).last?.id {
+                                Rectangle().fill(FoyerTheme.hairline).frame(height: 1)
+                            }
                         }
                     }
                 }
@@ -8578,7 +8637,57 @@ struct MentionSuggestionsView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .task { await library.ensureLoaded() }
+        // Refresh on every appearance — cheap (~2 quick GETs) and means
+        // an offer added in the Offers tab is visible in the picker
+        // immediately when the user comes back to Refine.
+        .task { await library.refresh() }
+    }
+
+    @ViewBuilder
+    private var emptyRow: some View {
+        let q = activeMention(in: text)?.query
+                  .trimmingCharacters(in: .whitespaces) ?? ""
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: !library.loaded ? "hourglass" : "tag")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .frame(width: 18)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                if !library.loaded {
+                    Text("Loading offers + templates…")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                } else if let err = library.loadError {
+                    Text("Couldn't load")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                    Text(err)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(2)
+                } else if library.items.isEmpty {
+                    Text("No offers or templates yet")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text("Create one in the Offers tab or in Profile → Templates, then @reference it here.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(2)
+                } else {
+                    Text("No matches for \"@\(q)\"")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text("Type fewer characters or pick a different name.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textDim)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func filtered(_ q: String) -> [MentionItem] {
