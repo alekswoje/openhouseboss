@@ -253,6 +253,11 @@ struct IPadAgentApp: View {
 
     private func selectTab(_ t: Tab) {
         viewingPastSession = nil
+        // Clear any session pre-filter when the user explicitly taps a tab in
+        // the side rail. The pre-filter only sticks on EXPLICIT routes —
+        // tapping a recent session, or "Open in Leads" from Session Detail —
+        // so visiting the Leads tab from the rail always lands on All leads.
+        if t == .leads { activeSessionId = nil }
         tab = t
     }
 
@@ -2185,7 +2190,7 @@ private struct IPadLeads: View {
                 activeId = nil
             } label: {
                 HStack {
-                    Text("All sessions")
+                    Text("All open houses")
                     if filterSessionId == nil {
                         Image(systemName: "checkmark")
                     }
@@ -2224,9 +2229,9 @@ private struct IPadLeads: View {
     private var filterLabel: String {
         guard let id = filterSessionId,
               let s = sessionsForFilter.first(where: { $0.id == id }) else {
-            return "All sessions (\(allLeads.count))"
+            return "All leads (\(allLeads.count))"
         }
-        return s.address ?? "Selected session"
+        return s.address ?? "Selected open house"
     }
 
     private var emptyList: some View {
@@ -2251,18 +2256,42 @@ private struct IPadLeads: View {
     private func leadRow(_ row: LeadRow) -> some View {
         let v = row.visitor
         let active = (activeId ?? filteredLeads.first?.id) == row.id
-        return HStack(spacing: 12) {
+        let lastContactedAt = lastContactedDate(v.leadState)
+        return HStack(alignment: .top, spacing: 12) {
             Text(v.displayInitials)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(FoyerTheme.gold)
                 .frame(width: 36, height: 36)
                 .background(FoyerTheme.bgElev, in: Circle())
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(v.displayName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 5) {
+                // Name + score on the same baseline so the column reads as
+                // a quick triage list.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(v.displayName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(v.analysis.score)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
+                }
+                // Address line — which open house this lead came from. Once
+                // we wire up the MLS API we'll turn this into a chevron-able
+                // link to the listing detail.
+                if let addr = row.session.address, !addr.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "house")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.gold.opacity(0.7))
+                        Text(addr)
+                            .font(.system(size: 11))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineLimit(1)
+                    }
+                }
+                // Tag + state pill row.
                 HStack(spacing: 6) {
                     Circle()
                         .fill(tagColor(v.analysis.tagToken))
@@ -2270,15 +2299,6 @@ private struct IPadLeads: View {
                     Text(v.analysis.tag)
                         .font(.system(size: 11))
                         .foregroundStyle(FoyerTheme.textDim)
-                    if filterSessionId == nil, let addr = row.session.address, !addr.isEmpty {
-                        Text("·")
-                            .font(.system(size: 11))
-                            .foregroundStyle(FoyerTheme.textMuted)
-                        Text(addr)
-                            .font(.system(size: 11))
-                            .foregroundStyle(FoyerTheme.textMuted)
-                            .lineLimit(1)
-                    }
                     if let state = v.leadState, state.status != .drafted {
                         Text("·")
                             .font(.system(size: 11))
@@ -2288,11 +2308,29 @@ private struct IPadLeads: View {
                             .foregroundStyle(FoyerTheme.textDim)
                     }
                 }
+                // Created / last-contacted footer. Two facts the agent needs
+                // at a glance: how fresh is this lead, and have I followed up?
+                HStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Text("Added \(relativeTime(row.session.createdAt))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Text("·")
+                        .font(.system(size: 10))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    if let when = lastContactedAt {
+                        Text("Contacted \(relativeTime(when))")
+                            .font(.system(size: 10))
+                            .foregroundStyle(FoyerTheme.sage)
+                    } else {
+                        Text("Never contacted")
+                            .font(.system(size: 10))
+                            .foregroundStyle(FoyerTheme.terracotta.opacity(0.85))
+                    }
+                }
             }
-            Spacer()
-            Text("\(v.analysis.score)")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(v.analysis.score >= 80 ? FoyerTheme.gold : FoyerTheme.creamDim)
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .background(
@@ -2300,6 +2338,44 @@ private struct IPadLeads: View {
                 .fill(active ? Color.white.opacity(0.06) : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+
+    // Pick the most recent send timestamp for this lead. Lead state stores
+    // every successful send in `sent_emails`, and we ALSO bump `sent_at`
+    // when a manual mark-as-sent fires from the visitor-state endpoint, so
+    // we check both and take whichever is newer.
+    private func lastContactedDate(_ state: LeadState?) -> Date? {
+        guard let state else { return nil }
+        var candidates: [Date] = []
+        if let sentAt = state.sentAt, let d = parseISO(sentAt) {
+            candidates.append(d)
+        }
+        for email in state.sentEmails ?? [] {
+            if let sentAt = email.sentAt, let d = parseISO(sentAt) {
+                candidates.append(d)
+            }
+        }
+        return candidates.max()
+    }
+
+    private func parseISO(_ s: String) -> Date? {
+        ISO8601DateFormatter.fractionalSeconds.date(from: s)
+            ?? ISO8601DateFormatter().date(from: s)
+    }
+
+    // Overload for the relativeTime helper that lives further down the file —
+    // accepts a pre-parsed Date so the row footer doesn't have to convert
+    // back to an ISO string just to feed the existing String-based path.
+    private func relativeTime(_ d: Date) -> String {
+        let delta = max(0, Date().timeIntervalSince(d))
+        if delta < 60 { return "just now" }
+        if delta < 3600 { return "\(Int(delta / 60))m ago" }
+        if delta < 86_400 { return "\(Int(delta / 3600))h ago" }
+        let days = Int(delta / 86_400)
+        if days < 14 { return "\(days)d ago" }
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f.string(from: d)
     }
 
     private func tagColor(_ token: String) -> Color {
