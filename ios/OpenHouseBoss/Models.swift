@@ -34,11 +34,19 @@ struct Session: Codable, Hashable, Identifiable {
     var completedAt: String?
     var error: String?
     var result: SessionResult?
+    // Live-snapshot bookkeeping. `isLive=true` means the agent is still
+    // recording and more updates are on the way; `lastSnapshotAt` is the
+    // ISO timestamp of the most recent pipeline pass. Both default-nil so
+    // older sessions cached on disk decode cleanly.
+    var isLive: Bool?
+    var lastSnapshotAt: String?
 
     enum CodingKeys: String, CodingKey {
         case id, status, address, error, result
         case createdAt = "created_at"
         case completedAt = "completed_at"
+        case isLive = "is_live"
+        case lastSnapshotAt = "last_snapshot_at"
     }
 }
 

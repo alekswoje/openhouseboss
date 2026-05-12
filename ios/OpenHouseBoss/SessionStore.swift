@@ -84,6 +84,21 @@ final class SessionStore {
 
     private var pollTask: Task<Void, Never>?
 
+    // Live-recording snapshot state. While the agent is recording, we kick
+    // off periodic uploads so the lead list + script coverage stay roughly
+    // current without the agent having to stop and restart between guests.
+    // `liveSnapshotTask` runs the cadence loop until End Session; the
+    // schedule below is the per-tick delay (seconds from start). After we
+    // run out of schedule entries, fall back to every 30 minutes.
+    private var liveSnapshotTask: Task<Void, Never>?
+    var liveSnapshotInFlight: Bool = false
+    var liveLastSnapshotAt: Date?
+    var liveSnapshotError: String?
+    private static let liveSnapshotSchedule: [TimeInterval] = [
+        5 * 60, 10 * 60, 20 * 60, 30 * 60,
+        50 * 60, 70 * 60, 90 * 60, 120 * 60,
+    ]
+
     // Called from LiveView on End session. Uploads the m4a, then polls until
     // the backend either finishes processing or errors out.
     func uploadAndProcess(audioURL: URL) {
@@ -138,6 +153,186 @@ final class SessionStore {
                 await MainActor.run {
                     self?.phase = .failed(error.localizedDescription)
                 }
+            }
+        }
+    }
+
+    // ============================================================
+    // Live-recording snapshot flow
+    // ============================================================
+    //
+    // While the agent is recording on the iPad we periodically:
+    //   1. Tell AudioRecorder to rotate to a fresh chunk (finalizes the
+    //      previous chunk's m4a so it's safe to read)
+    //   2. Concatenate every finalized chunk into a single m4a
+    //   3. POST it to either /sessions (first tick — creates the session)
+    //      or /sessions/{id}/snapshot (subsequent ticks — replaces the
+    //      session's audio + re-runs pipeline)
+    //   4. Poll the session and update `self.session` so the iPad's live
+    //      pane can show "Updated 5m ago" + the current coverage score
+    //
+    // First tick runs on a `light` pass — backend skips per-visitor Claude
+    // analysis to keep cost down; agent still sees the lead list growing
+    // and the coverage score updating. End Session does one final `full`
+    // pass to fill in summaries / drafts.
+
+    func startLiveSnapshotLoop() {
+        liveSnapshotTask?.cancel()
+        liveSnapshotError = nil
+        liveLastSnapshotAt = nil
+        let address = pendingAddress
+        let expected = pendingSpeakersExpected
+        let scriptId = pendingScriptId ?? defaultScriptId
+        let guests = pendingKioskGuests
+        pendingAddress = nil
+        pendingSpeakersExpected = nil
+        pendingScriptId = nil
+        pendingKioskGuests = []
+        let schedule = SessionStore.liveSnapshotSchedule
+        liveSnapshotTask = Task { [weak self] in
+            guard let self else { return }
+            let started = Date()
+            var index = 0
+            while !Task.isCancelled {
+                // Compute the next tick's wall-clock target. After the
+                // schedule is exhausted, fall back to 30-minute intervals
+                // anchored to the last scheduled tick.
+                let target: TimeInterval
+                if index < schedule.count {
+                    target = schedule[index]
+                } else {
+                    let overflow = TimeInterval(index - schedule.count + 1) * (30 * 60)
+                    target = schedule.last! + overflow
+                }
+                let now = Date().timeIntervalSince(started)
+                let delay = max(target - now, 0)
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                if Task.isCancelled { return }
+                await self.snapshotTick(
+                    address: address,
+                    expected: expected,
+                    scriptId: scriptId,
+                    guests: guests,
+                    depth: .light
+                )
+                index += 1
+            }
+        }
+    }
+
+    // Called when the agent taps End Session. Stops the chunked recorder,
+    // pushes one final snapshot at depth=.full so per-visitor analysis +
+    // drafts get filled in, then transitions the store into the same
+    // .ready phase the iPhone summary expects.
+    func endLiveSnapshotLoop() {
+        liveSnapshotTask?.cancel()
+        liveSnapshotTask = nil
+        let address = pendingAddress
+        let expected = pendingSpeakersExpected
+        let scriptId = pendingScriptId ?? defaultScriptId
+        let guests = pendingKioskGuests
+        pendingAddress = nil
+        pendingSpeakersExpected = nil
+        pendingScriptId = nil
+        pendingKioskGuests = []
+        // Show the processing pane immediately so the agent knows the final
+        // pass is in flight; the snapshot tick replaces `phase` with .ready
+        // (or .failed) when it returns.
+        phase = .processing
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            await self?.snapshotTick(
+                address: address,
+                expected: expected,
+                scriptId: scriptId,
+                guests: guests,
+                depth: .full,
+                isFinal: true
+            )
+        }
+    }
+
+    // One snapshot pass — rotate to a fresh chunk, concat everything so
+    // far, upload. Idempotent against being called from the cadence loop
+    // (light) or the End-Session hook (full).
+    private func snapshotTick(
+        address: String?,
+        expected: Int?,
+        scriptId: String?,
+        guests: [VisitorInput],
+        depth: APIClient.AnalysisDepth,
+        isFinal: Bool = false
+    ) async {
+        await MainActor.run { self.liveSnapshotInFlight = true }
+        defer { Task { @MainActor in self.liveSnapshotInFlight = false } }
+        // Rotate to a new chunk so the previous one becomes a fully-formed
+        // m4a (moov atom written). On End Session, also stop the recorder
+        // entirely after the rotation.
+        _ = await MainActor.run { AudioRecorder.shared.rotateChunk() }
+        if isFinal {
+            _ = await MainActor.run { AudioRecorder.shared.stopRecording() }
+        }
+        guard let concatURL = await AudioRecorder.shared.concatenatedURL() else {
+            await MainActor.run {
+                self.liveSnapshotError = "Couldn't assemble audio for snapshot."
+                if isFinal { self.phase = .failed(self.liveSnapshotError!) }
+            }
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: concatURL) }
+        do {
+            if let id = self.session?.id {
+                // Subsequent tick — replace the in-flight audio + re-run
+                // pipeline at the requested depth.
+                try await APIClient.shared.uploadSnapshot(
+                    sessionId: id, audioURL: concatURL, depth: depth, speakersExpected: expected
+                )
+                let final = try await APIClient.shared.pollUntilDone(id: id)
+                await MainActor.run {
+                    self.session = final
+                    self.liveLastSnapshotAt = Date()
+                    if isFinal {
+                        self.phase = (final.status == "error")
+                            ? .failed(final.error ?? "Unknown error")
+                            : .ready
+                    }
+                }
+            } else {
+                // First tick — creates the session via the existing
+                // /sessions endpoint (which always does full analysis on
+                // the first pass). Subsequent ticks then run as light.
+                let initial: Session
+                if guests.isEmpty {
+                    initial = try await APIClient.shared.createSession(
+                        audioURL: concatURL, address: address,
+                        speakersExpected: expected, scriptId: scriptId
+                    )
+                } else {
+                    initial = try await APIClient.shared.createSession(
+                        audioURL: concatURL, address: address, visitors: guests,
+                        speakersExpected: expected, scriptId: scriptId
+                    )
+                }
+                await MainActor.run { self.session = initial }
+                let final = try await APIClient.shared.pollUntilDone(id: initial.id)
+                await MainActor.run {
+                    self.session = final
+                    self.liveLastSnapshotAt = Date()
+                    if isFinal {
+                        self.phase = (final.status == "error")
+                            ? .failed(final.error ?? "Unknown error")
+                            : .ready
+                    }
+                }
+            }
+            await self.refreshSessions()
+        } catch {
+            Log.warn("snapshotTick failed: \(error.localizedDescription)")
+            await MainActor.run {
+                self.liveSnapshotError = error.localizedDescription
+                if isFinal { self.phase = .failed(error.localizedDescription) }
             }
         }
     }

@@ -25,6 +25,17 @@ final class AudioRecorder {
     // itself is started in startRecording and ended in stopRecording.
     private var liveActivity: Activity<RecordingActivityAttributes>?
 
+    // Chunked-recording bookkeeping. Each chunk is its own AVAudioRecorder
+    // file inside a session-specific subdirectory; we rotate to a new chunk
+    // every snapshot tick so the iPad can ship the finalized prefix audio
+    // mid-session without waiting for the agent to End Session. On final
+    // stop we keep every chunk on disk so the master recording is the
+    // concat of them all.
+    private(set) var chunkURLs: [URL] = []
+    private var chunksDirectory: URL?
+    private var chunkIndex: Int = 0
+    private var settings: [String: Any] = [:]
+
     var isRecording = false
     var isPaused = false
     var recordingURL: URL?
@@ -58,21 +69,31 @@ final class AudioRecorder {
         try session.setCategory(.record, mode: .default)
         try session.setActive(true)
 
-        let filename = filenameForNow()
-        let url = AudioRecorder.recordingsDirectory.appendingPathComponent(filename)
+        // Each recording gets its own chunks directory so rotations don't
+        // collide across sessions. The session-display URL points at the
+        // first chunk to start with; concatenatedURL() builds the full file
+        // on demand for upload.
+        let sessionId = filenameForNow()  // doubles as a unique session prefix
+        let dir = AudioRecorder.recordingsDirectory
+            .appendingPathComponent(sessionId, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        chunksDirectory = dir
+        chunkIndex = 0
+        chunkURLs = []
 
-        let settings: [String: Any] = [
+        settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 44_100,
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
 
-        let r = try AVAudioRecorder(url: url, settings: settings)
+        let firstURL = dir.appendingPathComponent("chunk_000.m4a")
+        let r = try AVAudioRecorder(url: firstURL, settings: settings)
         r.isMeteringEnabled = true
         r.record()
         recorder = r
-        recordingURL = url
+        recordingURL = firstURL
         isRecording = true
         startTime = Date()
         elapsed = 0
@@ -194,6 +215,11 @@ final class AudioRecorder {
 
     func stopRecording() -> URL? {
         recorder?.stop()
+        // Add the just-finalized chunk to the list so concatenatedURL()
+        // builds the full archive.
+        if let url = recorder?.url, !chunkURLs.contains(url) {
+            chunkURLs.append(url)
+        }
         timer?.invalidate()
         timer = nil
         isRecording = false
@@ -205,6 +231,103 @@ final class AudioRecorder {
         endLiveActivity()
         LiveActivityBridge.clearStopSignal()
         return recordingURL
+    }
+
+    // Rotate to a fresh chunk file without breaking the recording. Stops
+    // the current AVAudioRecorder (which finalizes the m4a — the moov atom
+    // is written, so it becomes playable / transcribable), then immediately
+    // starts a new one writing into the next chunk file. Returns the
+    // finalized chunk URL so callers can upload + concat it.
+    //
+    // There IS a brief gap (~50-100ms) between stop and the new start where
+    // audio isn't captured. Acceptable for the snapshot use case — open
+    // houses don't pivot on a hundred-millisecond gap every 5-10 minutes.
+    func rotateChunk() -> URL? {
+        guard isRecording, let dir = chunksDirectory else { return nil }
+        recorder?.stop()
+        if let url = recorder?.url, !chunkURLs.contains(url) {
+            chunkURLs.append(url)
+        }
+        let finalized = recorder?.url
+        chunkIndex += 1
+        let nextURL = dir.appendingPathComponent(String(format: "chunk_%03d.m4a", chunkIndex))
+        do {
+            let r = try AVAudioRecorder(url: nextURL, settings: settings)
+            r.isMeteringEnabled = true
+            r.record()
+            recorder = r
+            recordingURL = nextURL
+        } catch {
+            Log.warn("rotateChunk failed to start next chunk: \(error.localizedDescription)")
+        }
+        return finalized
+    }
+
+    // Concatenate every chunk recorded so far (plus the live one if we can
+    // safely re-read it — we copy then move on) into a single m4a suitable
+    // for upload. Uses AVMutableComposition / AVAssetExportSession so we
+    // don't need to ship ffmpeg. The caller is responsible for deleting the
+    // returned temp file.
+    func concatenatedURL() async -> URL? {
+        let chunks = chunkURLs
+        guard !chunks.isEmpty else { return nil }
+        // Single chunk shortcut — just copy the file. Spinning up an export
+        // session for one input is wasted work.
+        if chunks.count == 1 {
+            let out = FileManager.default.temporaryDirectory
+                .appendingPathComponent("snapshot_\(UUID().uuidString).m4a")
+            do {
+                try? FileManager.default.removeItem(at: out)
+                try FileManager.default.copyItem(at: chunks[0], to: out)
+                return out
+            } catch {
+                Log.warn("concatenatedURL copy failed: \(error.localizedDescription)")
+                return nil
+            }
+        }
+
+        let composition = AVMutableComposition()
+        guard let track = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { return nil }
+        var cursor = CMTime.zero
+        for url in chunks {
+            let asset = AVURLAsset(url: url)
+            guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first
+            else { continue }
+            let duration = (try? await asset.load(.duration)) ?? .zero
+            let range = CMTimeRange(start: .zero, duration: duration)
+            do {
+                try track.insertTimeRange(range, of: assetTrack, at: cursor)
+                cursor = CMTimeAdd(cursor, duration)
+            } catch {
+                Log.warn("concatenatedURL insert failed: \(error.localizedDescription)")
+            }
+        }
+
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot_\(UUID().uuidString).m4a")
+        try? FileManager.default.removeItem(at: out)
+        guard let export = AVAssetExportSession(
+            asset: composition,
+            presetName: AVAssetExportPresetAppleM4A
+        ) else { return nil }
+        export.outputURL = out
+        export.outputFileType = .m4a
+        // AVFoundation 18 (iOS 18+) added an async export API. We're targeting
+        // iOS 17 minimums, so fall back to the deprecated completion handler
+        // wrapped in a CheckedContinuation.
+        return await withCheckedContinuation { cont in
+            export.exportAsynchronously {
+                if export.status == .completed {
+                    cont.resume(returning: out)
+                } else {
+                    Log.warn("concatenatedURL export failed: \(export.error?.localizedDescription ?? "unknown")")
+                    cont.resume(returning: nil)
+                }
+            }
+        }
     }
 
     private func filenameForNow() -> String {

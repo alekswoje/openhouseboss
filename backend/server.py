@@ -411,7 +411,15 @@ def _update(session_id: str, **updates) -> None:
         _persist(session_id)
 
 
-def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None, user_id: Optional[str] = None) -> None:
+def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None, user_id: Optional[str] = None, analysis_depth: str = "full") -> None:
+    """analysis_depth:
+      - "full":  re-transcribe + diarize + run per-visitor Claude analysis +
+                 script coverage. Used on session creation and final end.
+      - "light": same transcription + diarization + coverage, but skip
+                 per-visitor Claude analysis. Visitors that existed in the
+                 prior result keep their cached analysis; new visitors get
+                 a placeholder analysis filled in on the next full pass.
+                 Used by mid-session snapshot ticks to keep cost down."""
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
@@ -424,15 +432,21 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         # Lead state from a prior run (if this is a reanalyze) — keyed by
         # (name, speaker) so the agent doesn't lose their "sent / snoozed /
         # archived" markers just because we re-ran diarization.
+        # We also stash the prior `analysis` dicts so light snapshots can
+        # reuse them instead of paying for another Claude pass.
         prior_states: dict[tuple[str, str], dict] = {}
+        prior_analyses: dict[tuple[str, str], dict] = {}
         with _sessions_lock:
             prior_visitors = ((_sessions.get(session_id) or {}).get("result") or {}).get("visitors") or []
         for entry in prior_visitors:
             v = entry.get("visitor") or {}
+            key = (v.get("name") or "", v.get("speaker") or "")
             state = entry.get("lead_state")
             if state:
-                key = (v.get("name") or "", v.get("speaker") or "")
                 prior_states[key] = state
+            an = entry.get("analysis")
+            if an:
+                prior_analyses[key] = an
 
         # Pull this agent's follow-up templates + their forced-mode preference
         # so analyze_visitor can bake them into the initial AI draft.
@@ -442,13 +456,35 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         now_iso = datetime.now(timezone.utc).isoformat()
         visitors_out = []
         for visitor in identification.matched_visitors:
-            analysis = analyze_visitor(
-                transcript, visitor, DEFAULT_TAGS,
-                templates=templates,
-                force_templates=force_templates,
-            )
             v_dict = visitor.model_dump(mode="json")
             key = (v_dict.get("name") or "", v_dict.get("speaker") or "")
+
+            if analysis_depth == "light":
+                # Reuse a prior analysis if we have one for this (name, speaker).
+                # New visitors get a stub analysis — agent still sees them in
+                # the lead list, but their summary/draft fill in on the final
+                # full pass at end of session.
+                analysis_dict = prior_analyses.get(key) or {
+                    "summary": "",
+                    "tag": "Browser",
+                    "tag_reason": "Pending full analysis at session end.",
+                    "score": 0,
+                    "signals": [],
+                    "follow_up_draft": "",
+                    "words_spoken": sum(
+                        len(u.text.split())
+                        for u in (transcript.utterances or [])
+                        if u.speaker == visitor.speaker
+                    ),
+                }
+            else:
+                analysis = analyze_visitor(
+                    transcript, visitor, DEFAULT_TAGS,
+                    templates=templates,
+                    force_templates=force_templates,
+                )
+                analysis_dict = analysis.model_dump()
+
             lead_state = prior_states.get(key) or {
                 "status": "drafted",
                 "sent_at": None,
@@ -457,7 +493,7 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
             }
             visitors_out.append({
                 "visitor": v_dict,
-                "analysis": analysis.model_dump(),
+                "analysis": analysis_dict,
                 "lead_state": lead_state,
             })
 
@@ -493,10 +529,17 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
             for u in (transcript.utterances or [])
         ]
 
+        now_finish = datetime.now(timezone.utc).isoformat()
         _update(
             session_id,
             status="ready",
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=now_finish,
+            # `last_snapshot_at` ticks every pass so the iPad can render
+            # "Updated 5m ago"; `is_live` tells the client whether more
+            # snapshots are still on the way (light) or the agent has
+            # ended the session (full).
+            last_snapshot_at=now_finish,
+            is_live=(analysis_depth == "light"),
             result={
                 "agent_speaker": identification.agent_speaker,
                 "unmatched_speakers": identification.unmatched_speakers,
@@ -594,6 +637,64 @@ async def create_session(
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
+
+
+@app.post("/sessions/{session_id}/snapshot")
+async def snapshot_session(
+    session_id: str,
+    audio: UploadFile = File(...),
+    speakers_expected: Optional[int] = Form(None),
+    analysis_depth: str = Form("light"),
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Mid-session audio snapshot. Pass `analysis_depth=light` (default) to
+    re-transcribe + re-grade script coverage without paying for a per-visitor
+    Claude pass; `full` runs the whole pipeline (used by the final upload
+    when the agent ends the session). Replaces the session's audio file on
+    disk so the next snapshot's diarization sees the full audio history.
+    """
+    if analysis_depth not in ("light", "full"):
+        raise HTTPException(400, "analysis_depth must be 'light' or 'full'")
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, f"Session {session_id} not found")
+    with _sessions_lock:
+        if session_id not in _sessions:
+            path = session_dir / "session.json"
+            if path.exists():
+                _sessions[session_id] = json.loads(path.read_text())
+        session = _sessions.get(session_id)
+        _require_owner(session, current_user, session_id)
+        existing_script_id = session.get("script_id")
+
+    # Replace the in-flight audio with whatever the client just uploaded.
+    # We accept the entire concatenated audio so far (diarization needs the
+    # full history to keep speaker labels consistent across snapshots).
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Empty audio upload")
+    audio_path: Optional[Path] = None
+    for candidate in session_dir.iterdir():
+        if candidate.suffix.lower() in {".m4a", ".mp4", ".wav", ".mp3", ".aac"}:
+            audio_path = candidate
+            break
+    if audio_path is None:
+        audio_path = session_dir / (audio.filename or "audio.m4a")
+    audio_path.write_bytes(audio_bytes)
+
+    with _sessions_lock:
+        _sessions[session_id].update({
+            "status": "processing",
+            "speakers_expected": speakers_expected,
+        })
+        _persist(session_id)
+
+    threading.Thread(
+        target=_process,
+        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id, current_user["id"], analysis_depth),
+        daemon=True,
+    ).start()
+    return {"id": session_id, "status": "processing", "analysis_depth": analysis_depth}
 
 
 @app.get("/scripts")

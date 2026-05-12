@@ -161,6 +161,45 @@ actor APIClient {
         return try JSONDecoder().decode(Session.self, from: data)
     }
 
+    // Mid-session snapshot upload. Sends the entire concatenated audio so
+    // far so the backend's diarization stays globally consistent across
+    // snapshots. `analysisDepth = .light` skips per-visitor Claude calls
+    // (the expensive part) and only re-transcribes + re-grades coverage;
+    // `.full` re-runs the whole pipeline (used by the final end-of-session
+    // upload). Returns the queued session ({id, status}) — caller should
+    // poll /sessions/{id} for the updated `is_live` + `last_snapshot_at`
+    // and the refreshed result.
+    enum AnalysisDepth: String {
+        case light, full
+    }
+    func uploadSnapshot(
+        sessionId: String,
+        audioURL: URL,
+        depth: AnalysisDepth = .light,
+        speakersExpected: Int? = nil
+    ) async throws {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/snapshot"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+
+        var body = Data()
+        body.appendField(boundary: boundary, name: "analysis_depth", value: depth.rawValue)
+        if let n = speakersExpected, n > 0 {
+            body.appendField(boundary: boundary, name: "speakers_expected", value: String(n))
+        }
+        let audioData = try Data(contentsOf: audioURL)
+        body.appendForm(boundary: boundary, name: "audio", filename: "snapshot.m4a",
+                        contentType: "audio/m4a", data: audioData)
+        body.append("--\(boundary)--\r\n")
+
+        let (data, response) = try await self.session.upload(for: req, from: body)
+        try validate(response: response, data: data)
+    }
+
     // GET /scripts — presets + user-created.
     func listScripts() async throws -> [ScriptSummary] {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts"))

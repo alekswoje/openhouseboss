@@ -243,11 +243,11 @@ struct IPadAgentApp: View {
 
     // Stops the in-progress recording from anywhere in the app (called by
     // the LiveSessionBar's stop button). Mirrors IPadRecord.endSession —
-    // hands the audio off to SessionStore.uploadAndProcess and bounces the
-    // user to the Record tab so they can watch the job finish.
+    // ends the live-snapshot loop (which does the final full-depth pass)
+    // and bounces the user to the Record tab so they can watch the job
+    // finish.
     private func stopRecording() {
-        guard let url = AudioRecorder.shared.stopRecording() else { return }
-        store.uploadAndProcess(audioURL: url)
+        store.endLiveSnapshotLoop()
         selectTab(.record)
     }
 
@@ -5854,6 +5854,7 @@ private struct IPadRecord: View {
                     .tracking(2.0)
                     .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
             }
+            snapshotPill
             Spacer()
             Text(timeString)
                 .font(.system(size: 22, weight: .medium, design: .monospaced))
@@ -5861,6 +5862,55 @@ private struct IPadRecord: View {
                 .tracking(2)
         }
         .padding(.horizontal, 56).padding(.top, 36).padding(.bottom, 8)
+    }
+
+    // Status pill showing the last successful snapshot's age + current
+    // coverage score. Hidden until the first snapshot lands at ~5 min in;
+    // also dims while a tick is in flight so the agent gets a feedback
+    // beat instead of a silently-stale label.
+    @ViewBuilder
+    private var snapshotPill: some View {
+        if let when = store.liveLastSnapshotAt {
+            HStack(spacing: 6) {
+                if store.liveSnapshotInFlight {
+                    ProgressView().scaleEffect(0.55).tint(FoyerTheme.gold)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+                Text("Updated \(snapshotAgeLabel(when))")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                if let cov = store.session?.result?.scriptCoverage,
+                   let score = cov.score {
+                    Text("·")
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Text("Coverage \(score)/100")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Color.white.opacity(0.06), in: Capsule())
+        } else if store.liveSnapshotInFlight {
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.55).tint(FoyerTheme.gold)
+                Text("Analyzing first 5 min…")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Color.white.opacity(0.06), in: Capsule())
+        }
+    }
+
+    private func snapshotAgeLabel(_ when: Date) -> String {
+        let delta = max(0, Date().timeIntervalSince(when))
+        if delta < 60 { return "just now" }
+        let m = Int(delta / 60)
+        if m < 60 { return "\(m)m ago" }
+        return "\(m / 60)h ago"
     }
 
     private var voiceVisualizer: some View {
@@ -6064,14 +6114,23 @@ private struct IPadRecord: View {
         // crowd sizes well on its own, and asking the agent to count guests
         // up front was friction (the user nuked the picker for that reason).
         store.pendingSpeakersExpected = nil
-        do { try recorder.startRecording(address: store.pendingAddress ?? "") }
+        do {
+            try recorder.startRecording(address: store.pendingAddress ?? "")
+            // Kick off the periodic snapshot loop — first tick fires at
+            // 5 min, then 10 / 20 / 30 / 50 / 70 / 90 / 120, then every 30
+            // min after that. Each tick uploads the audio so far so the
+            // agent can peek at lead progress + script coverage without
+            // ending the session.
+            store.startLiveSnapshotLoop()
+        }
         catch { permissionDenied = true }
         paused = false
     }
 
     private func endSession() {
-        guard let url = recorder.stopRecording() else { return }
-        store.uploadAndProcess(audioURL: url)
+        // Fires one final full-depth snapshot, stops recording, and lets
+        // the snapshotTick flip phase → .ready when the pipeline returns.
+        store.endLiveSnapshotLoop()
         paused = false
     }
 }
