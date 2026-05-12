@@ -115,15 +115,20 @@ actor APIClient {
     // DO NOT use this for non-idempotent ops like send_email — they
     // would silently double-send. Use the single-shot path for those
     // and surface failures to the user.
+    // Two-phase timeout: the first attempt eats the cold start (45s is
+    // enough for Render's typical wake-up + a Haiku call), then later
+    // attempts run on a hot dyno and only need a short timeout. Total
+    // worst case: 45 + 15 + 15 ≈ 75s of waiting, not 6 minutes.
     private func coldStartPOST(
         request original: URLRequest,
-        timeout: TimeInterval = 120,
+        firstTimeout: TimeInterval = 45,
+        retryTimeout: TimeInterval = 15,
         maxAttempts: Int = 3
     ) async throws -> (Data, URLResponse) {
         var lastError: Error?
         for attempt in 0..<maxAttempts {
             var req = original
-            req.timeoutInterval = timeout
+            req.timeoutInterval = attempt == 0 ? firstTimeout : retryTimeout
             do {
                 let (data, response) = try await self.session.data(for: req)
                 if let http = response as? HTTPURLResponse,
@@ -133,8 +138,8 @@ actor APIClient {
                     lastError = APIError.http(http.statusCode,
                                               String(data: data, encoding: .utf8) ?? "")
                     if attempt < maxAttempts - 1 {
-                        let delay = UInt64((attempt + 1) * 1_500_000_000)
-                        try? await Task.sleep(nanoseconds: delay)
+                        // Short backoff — the worker should be hot now.
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
                         continue
                     }
                     return (data, response)
@@ -149,8 +154,7 @@ actor APIClient {
                      .notConnectedToInternet:
                     lastError = urlErr
                     if attempt < maxAttempts - 1 {
-                        let delay = UInt64((attempt + 1) * 1_500_000_000)
-                        try? await Task.sleep(nanoseconds: delay)
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
                         continue
                     }
                     throw urlErr
