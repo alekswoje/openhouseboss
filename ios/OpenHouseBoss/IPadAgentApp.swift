@@ -1471,7 +1471,7 @@ private struct IPadKiosk: View {
                     KioskField(
                         label: "Phone",
                         text: $phone,
-                        keyboard: .numberPad,
+                        keyboard: .asciiCapableNumberPad,
                         content: .telephoneNumber,
                         isFocused: focused == .phone,
                         indicator: phoneCheck
@@ -2554,7 +2554,11 @@ private struct IPadLeads: View {
         await MainActor.run { loading = true }
         defer { Task { @MainActor in loading = false } }
         await store.refreshSessions()
-        let summaries = store.pastSessions.filter { $0.kind == "recorded" }
+        // Include BOTH "recorded" sessions and "manual" leads — they're
+        // all leads from the agent's perspective. The original filter
+        // hid manually-added leads (and kiosk sign-ins, since those are
+        // also stored as manual leads), making them appear to vanish.
+        let summaries = store.pastSessions
         let collected: [LeadRow] = await withTaskGroup(of: [LeadRow]?.self) { group in
             for summary in summaries {
                 group.addTask {
@@ -2642,7 +2646,8 @@ private struct ManualLeadSheet: View {
     var onCancel: () -> Void
     var onCreated: (Session) -> Void
 
-    @State private var name: String = ""
+    @State private var first: String = ""
+    @State private var last: String = ""
     @State private var email: String = ""
     @State private var phone: String = ""
     @State private var tag: String = "buyer"
@@ -2654,9 +2659,19 @@ private struct ManualLeadSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    field("Full name", value: $name, keyboard: .default)
+                    HStack(spacing: 10) {
+                        field("First name", value: $first, keyboard: .default)
+                        field("Last name", value: $last, keyboard: .default)
+                    }
                     field("Email", value: $email, keyboard: .emailAddress)
-                    field("Phone", value: $phone, keyboard: .phonePad)
+                    // asciiCapableNumberPad locks the keyboard to digits
+                    // (no symbols, no letters) — what the agent expects
+                    // when typing a phone number. We format display-side.
+                    field("Phone", value: $phone, keyboard: .asciiCapableNumberPad)
+                        .onChange(of: phone) { _, new in
+                            let formatted = formatPhone(new)
+                            if formatted != new { phone = formatted }
+                        }
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Lead type").font(.system(size: 11, weight: .medium))
@@ -2715,9 +2730,11 @@ private struct ManualLeadSheet: View {
     }
 
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
-        (!email.trimmingCharacters(in: .whitespaces).isEmpty ||
-         !phone.trimmingCharacters(in: .whitespaces).isEmpty)
+        let hasName = !first.trimmingCharacters(in: .whitespaces).isEmpty &&
+                      !last.trimmingCharacters(in: .whitespaces).isEmpty
+        return hasName &&
+            (!email.trimmingCharacters(in: .whitespaces).isEmpty ||
+             !phone.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     @MainActor
@@ -2725,9 +2742,12 @@ private struct ManualLeadSheet: View {
         submitting = true
         errorMessage = nil
         defer { submitting = false }
+        let fullName = (first.trimmingCharacters(in: .whitespaces) + " " +
+                        last.trimmingCharacters(in: .whitespaces))
+                       .trimmingCharacters(in: .whitespaces)
         do {
             let session = try await APIClient.shared.createManualLead(
-                name: name.trimmingCharacters(in: .whitespaces),
+                name: fullName,
                 email: email.trimmingCharacters(in: .whitespaces),
                 phone: phone.trimmingCharacters(in: .whitespaces),
                 tag: tag,
@@ -2736,6 +2756,22 @@ private struct ManualLeadSheet: View {
             onCreated(session)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func formatPhone(_ input: String) -> String {
+        let digits = input.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }
+        let s = String(String.UnicodeScalarView(digits.prefix(10)))
+        let n = s.count
+        switch n {
+        case 0:     return ""
+        case 1...3: return "(\(s)"
+        case 4...6:
+            let area = s.prefix(3); let mid = s.dropFirst(3)
+            return "(\(area)) \(mid)"
+        default:
+            let area = s.prefix(3); let mid = s.dropFirst(3).prefix(3); let end = s.dropFirst(6)
+            return "(\(area)) \(mid)-\(end)"
         }
     }
 }

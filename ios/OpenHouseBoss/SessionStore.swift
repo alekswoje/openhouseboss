@@ -96,14 +96,27 @@ final class SessionStore {
         // Use the session-specific override if set, otherwise fall back to
         // the agent's persisted default. nil = no coverage analysis.
         let scriptId = pendingScriptId ?? defaultScriptId
+        // Snapshot the kiosk sign-ins so the backend can match each
+        // diarized speaker to the right person (name + email + phone).
+        // Without this, diarization produces anonymous "Speaker A/B/C"
+        // visitors and we lose the connection between the recorded voice
+        // and the contact info the guest just typed in.
+        let guests = pendingKioskGuests
         pendingAddress = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
-        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>"), speakers=\(expected.map(String.init) ?? "<auto>"), script=\(scriptId ?? "<none>")")
+        pendingKioskGuests = []
+        Log.net("uploadAndProcess → \(audioURL.lastPathComponent), address=\(address ?? "<none>"), speakers=\(expected.map(String.init) ?? "<auto>"), script=\(scriptId ?? "<none>"), guests=\(guests.count)")
         pollTask = Task { [weak self] in
             do {
-                let initial = try await APIClient.shared.createSession(
-                    audioURL: audioURL, address: address, speakersExpected: expected, scriptId: scriptId)
+                let initial: Session
+                if guests.isEmpty {
+                    initial = try await APIClient.shared.createSession(
+                        audioURL: audioURL, address: address, speakersExpected: expected, scriptId: scriptId)
+                } else {
+                    initial = try await APIClient.shared.createSession(
+                        audioURL: audioURL, address: address, visitors: guests, speakersExpected: expected, scriptId: scriptId)
+                }
                 Log.net("createSession ← id=\(initial.id) status=\(initial.status)")
                 await MainActor.run {
                     self?.session = initial

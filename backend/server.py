@@ -616,12 +616,8 @@ def create_manual_lead(payload: dict, current_user: dict = Depends(auth_lib.get_
     first_name = name.split()[0] if name else "there"
     at_clause = f" at {address}" if address else ""
     template_draft = (
-        f"Hi {first_name},\n\n"
-        f"Great meeting you{at_clause} — thanks for stopping by. "
-        f"I'd love to stay in touch about your home search. "
-        f"Let me know if you'd like to see anything else or have "
-        f"questions about the area.\n\n"
-        f"Talk soon,"
+        f"Hi {first_name} — great meeting you{at_clause}. "
+        f"Want me to send a few similar listings to compare?\n\n"
     )
 
     session = {
