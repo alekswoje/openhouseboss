@@ -431,59 +431,86 @@ private struct IPadSideRail: View {
         }
     }
 
+    @ViewBuilder
     private var brand: some View {
-        HStack(spacing: 10) {
-            Text("F")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(FoyerTheme.gold)
-                .frame(width: 32, height: 32)
-                .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
-            if !collapsed {
+        if collapsed {
+            // Collapsed: just the F mark, tappable to expand. Single
+            // centered element fits cleanly in the 68pt rail; no crowded
+            // chevron-next-to-mark situation.
+            Button(action: onToggleCollapse) {
+                Text("F")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .frame(width: 32, height: 32)
+                    .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+        } else {
+            HStack(spacing: 10) {
+                Text("F")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .frame(width: 32, height: 32)
+                    .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 8))
                 Text("Foyer")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .tracking(-0.3)
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 Spacer()
+                Button(action: onToggleCollapse) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .frame(width: 24, height: 24)
+                        .background(Color.white.opacity(0.05), in: Circle())
+                }
+                .buttonStyle(.plain)
             }
-            Button(action: onToggleCollapse) {
-                Image(systemName: collapsed ? "chevron.right" : "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .frame(width: 24, height: 24)
-                    .background(Color.white.opacity(0.05), in: Circle())
-            }
-            .buttonStyle(.plain)
         }
     }
 
+    @ViewBuilder
     private func navRow(_ t: IPadAgentApp.Tab) -> some View {
         let active = (tab == t) && (viewingPastSession == nil)
-        return Button { onSelectTab(t) } label: {
-            HStack(spacing: 12) {
+        if collapsed {
+            // Compact icon-only row — the active fill is a square instead
+            // of a wide pill so it reads cleanly in the narrow rail.
+            Button { onSelectTab(t) } label: {
                 Image(systemName: active ? t.iconFilled : t.iconOutline)
-                    .font(.system(size: 16, weight: active ? .semibold : .regular))
-                    .frame(width: 22)
+                    .font(.system(size: 17, weight: active ? .semibold : .regular))
                     .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
-                if !collapsed {
+                    .frame(width: 40, height: 40)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(active ? FoyerTheme.goldSoft : Color.clear)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(t.label)
+        } else {
+            Button { onSelectTab(t) } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: active ? t.iconFilled : t.iconOutline)
+                        .font(.system(size: 16, weight: active ? .semibold : .regular))
+                        .frame(width: 22)
+                        .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
                     Text(t.label)
                         .font(.system(size: 14, weight: active ? .semibold : .medium))
                         .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.creamDim)
-                        .transition(.opacity)
                     Spacer()
                 }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(active ? Color.white.opacity(0.06) : Color.clear)
+                )
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, collapsed ? 10 : 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: collapsed ? .center : .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(active ? Color.white.opacity(0.06) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .help(collapsed ? t.label : "")
     }
 
     private func recentRow(_ s: SessionSummary) -> some View {
@@ -518,11 +545,20 @@ private struct IPadSideRail: View {
         }
     }
 
+    @ViewBuilder
     private var avatar: some View {
-        Button { onSelectTab(.profile) } label: {
-            HStack(spacing: 10) {
+        if collapsed {
+            // Centered avatar bubble fills the 68pt rail nicely without
+            // the left-aligned bubble + empty space look from before.
+            Button { onSelectTab(.profile) } label: {
                 avatarBubble
-                if !collapsed {
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button { onSelectTab(.profile) } label: {
+                HStack(spacing: 10) {
+                    avatarBubble
                     VStack(alignment: .leading, spacing: 1) {
                         Text(displayName)
                             .font(.system(size: 13, weight: .medium))
@@ -533,16 +569,15 @@ private struct IPadSideRail: View {
                             .foregroundStyle(FoyerTheme.textMuted)
                             .lineLimit(1)
                     }
-                    .transition(.opacity)
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(FoyerTheme.textMuted)
                 }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder
