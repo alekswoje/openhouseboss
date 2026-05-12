@@ -201,15 +201,68 @@ async function foyerSignOut() {
 // is one place to change.
 // ============================================================
 
+// SF-Symbols-inspired stroke icons. One source so the rail + lead detail
+// + buttons all share the same line weight. Each takes a `size` prop.
+function Icon({ name, size = 18, active = false }) {
+  const stroke = 'currentColor';
+  const sw = 1.6;
+  const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke, strokeWidth: sw, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  switch (name) {
+    case 'home':
+      return active
+        ? <svg {...common} fill="currentColor" stroke="none"><path d="M3 11 12 3l9 8v9a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2v-9Z"/></svg>
+        : <svg {...common}><path d="M3 11 12 3l9 8"/><path d="M5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10"/><path d="M9 22v-7h6v7"/></svg>;
+    case 'record':
+      return <svg {...common}><circle cx="12" cy="12" r="3.5" fill={active ? 'currentColor' : 'none'} stroke="currentColor"/><circle cx="12" cy="12" r="8.5"/></svg>;
+    case 'kiosk':
+      return <svg {...common}><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M8 22h8"/><path d="M12 18v4"/><circle cx="12" cy="11" r="2.5"/></svg>;
+    case 'leads':
+      return <svg {...common}><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/><circle cx="19" cy="17" r="2.5" fill={active ? 'currentColor' : 'none'}/></svg>;
+    case 'listings':
+      return <svg {...common}><path d="M3 12 12 4l9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>;
+    case 'sessions':
+      return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M9 14h6"/></svg>;
+    case 'chevronLeft':  return <svg {...common}><polyline points="15 6 9 12 15 18"/></svg>;
+    case 'chevronRight': return <svg {...common}><polyline points="9 6 15 12 9 18"/></svg>;
+    case 'logout':       return <svg {...common}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
+    case 'plus':         return <svg {...common}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+    case 'send':         return <svg {...common}><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>;
+    case 'clock':        return <svg {...common}><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>;
+    case 'check':        return <svg {...common}><polyline points="20 6 9 17 4 12"/></svg>;
+    case 'checkCircle':  return <svg {...common} fill={active ? 'currentColor' : 'none'}><circle cx="12" cy="12" r="9"/><polyline points="9 12 11.5 14.5 16 9.5" stroke={active ? 'var(--bg-deep)' : 'currentColor'}/></svg>;
+    case 'circle':       return <svg {...common}><circle cx="12" cy="12" r="9"/></svg>;
+    case 'x':            return <svg {...common}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    case 'archive':      return <svg {...common}><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 13h4"/></svg>;
+    case 'inbox':        return <svg {...common}><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg>;
+    case 'envelope':     return <svg {...common}><rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3 7 12 13 21 7"/></svg>;
+    case 'phone':        return <svg {...common}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.8a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.28-1.28a2 2 0 0 1 2.11-.45c.9.34 1.84.57 2.8.7A2 2 0 0 1 22 16.92Z"/></svg>;
+    case 'spark':        return <svg {...common} fill="currentColor" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5 5l4 4m6 6 4 4M5 19l4-4m6-6 4-4"/></svg>;
+    case 'trash':        return <svg {...common}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>;
+    case 'search':       return <svg {...common}><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+    default:             return null;
+  }
+}
+
 function AppShell({ active, children, sessionStats }) {
   const { user, summaries, sessionsById } = useFoyerData();
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // Sidebar collapse — persisted across page loads, matches the iPad
+  // app's `sidebarCollapsed` UserDefault.
+  const [collapsed, setCollapsed] = React.useState(() => {
+    return localStorage.getItem('foyer.sidebarCollapsed') === '1';
+  });
+  const toggleCollapsed = React.useCallback(() => {
+    setCollapsed(c => {
+      const next = !c;
+      localStorage.setItem('foyer.sidebarCollapsed', next ? '1' : '0');
+      return next;
+    });
+  }, []);
 
   const recordedCount = summaries.filter(s => (s.kind || 'recorded') !== 'manual').length;
   const visitors = allLoadedVisitors(sessionsById);
   const needs = visitors.filter(v => leadBucket(v.lead_state) === 'needs').length;
 
-  // Hover-to-close for the menu.
   React.useEffect(() => {
     if (!menuOpen) return;
     const onClick = (e) => {
@@ -223,59 +276,124 @@ function AppShell({ active, children, sessionStats }) {
     {
       label: 'Open house',
       items: [
-        { id: 'today',   label: 'Today',          sub: 'Live overview',         hash: '#/app' },
-        { id: 'kiosk',   label: 'Kiosk sign-in',  sub: 'Hand to a guest',       hash: '#/kiosk' },
+        { id: 'today',   label: 'Today',    icon: 'home',   sub: 'Live overview',   hash: '#/app' },
+        { id: 'kiosk',   label: 'Kiosk',    icon: 'kiosk',  sub: 'Hand to a guest', hash: '#/kiosk' },
       ],
     },
     {
       label: 'Library',
       items: [
-        { id: 'sessions', label: 'Sessions',  sub: `${recordedCount} recorded`, hash: '#/sessions' },
-        { id: 'leads',    label: 'Leads',     sub: `${visitors.length} captured · ${needs} need action`, hash: '#/leads' },
+        { id: 'sessions', label: 'Sessions', icon: 'sessions', sub: `${recordedCount} recorded`, hash: '#/sessions' },
+        { id: 'leads',    label: 'Leads',    icon: 'leads',    sub: `${visitors.length} captured · ${needs} need action`, hash: '#/leads' },
       ],
     },
   ];
 
+  const railWidth = collapsed ? 68 : 232;
+  // Click-empty-space-to-expand. Matches iPad behavior — any tap on a
+  // collapsed rail opens it; on an expanded rail this becomes a no-op.
+  const onRailClick = (e) => {
+    if (!collapsed) return;
+    if (e.target.closest('a, button, .user-card-wrap')) return;
+    toggleCollapsed();
+  };
+
   return (
-    <div className="foyer" style={{ background: 'var(--bg)', minHeight: '100%', display: 'grid', gridTemplateColumns: '260px 1fr' }}>
-      <aside style={{
+    <div className="foyer" style={{ background: 'var(--bg-deep)', minHeight: '100%', display: 'grid', gridTemplateColumns: `${railWidth}px 1fr`, transition: 'grid-template-columns 280ms cubic-bezier(0.4, 0, 0.2, 1)' }}>
+      <aside onClick={onRailClick} style={{
         borderRight: '1px solid var(--hairline)',
-        background: 'var(--bg-deep)',
+        background: 'rgba(255,255,255,0.02)',
         display: 'flex', flexDirection: 'column',
-        padding: '24px 0 20px',
+        padding: '20px 0 16px',
         position: 'sticky', top: 0, height: '100vh',
+        width: railWidth,
+        cursor: collapsed ? 'pointer' : 'default',
+        transition: 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)',
+        overflow: 'hidden',
       }}>
-        <div style={{ padding: '0 22px 22px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <a href="#/app" style={{ textDecoration: 'none', color: 'inherit' }}>
-            <Crest size={18} />
-          </a>
-          {sessionStats?.live && (
-            <span className="mono" style={{ fontSize: 9, color: 'var(--gold)', letterSpacing: '0.18em', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 8px var(--gold)' }} />
-              LIVE
-            </span>
+        {/* Brand row */}
+        <div style={{
+          padding: collapsed ? '0 14px 18px' : '0 18px 18px',
+          borderBottom: '1px solid var(--hairline)',
+          display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'space-between',
+          gap: 10,
+        }}>
+          {collapsed ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleCollapsed(); }}
+              aria-label="Expand sidebar"
+              style={{
+                width: 40, height: 40, borderRadius: 8,
+                background: 'transparent', border: '1px solid var(--gold)', color: 'var(--gold)',
+                display: 'grid', placeItems: 'center',
+                fontFamily: 'var(--sans)', fontWeight: 600, fontSize: 16,
+                cursor: 'pointer',
+              }}>F</button>
+          ) : (
+            <>
+              <a href="#/app" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                <span style={{
+                  width: 32, height: 32, borderRadius: 7,
+                  display: 'grid', placeItems: 'center',
+                  background: 'transparent', border: '1px solid var(--gold)', color: 'var(--gold)',
+                  fontFamily: 'var(--sans)', fontWeight: 600, fontSize: 13,
+                }}>F</span>
+                <span style={{ fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 16, color: 'var(--cream)', letterSpacing: '-0.02em' }}>Foyer</span>
+              </a>
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleCollapsed(); }}
+                aria-label="Collapse sidebar"
+                style={{ background: 'transparent', border: 0, color: 'var(--text-dim)', cursor: 'pointer', padding: 4, display: 'inline-flex' }}>
+                <Icon name="chevronLeft" size={16} />
+              </button>
+            </>
           )}
         </div>
 
-        <nav style={{ padding: '12px 0', flex: 1, overflowY: 'auto' }}>
+        <nav style={{ padding: '10px 0', flex: 1, overflowY: 'auto' }}>
           {sections.map(section => (
-            <div key={section.label} style={{ padding: '14px 0' }}>
-              <div className="eyebrow" style={{ padding: '0 22px 8px' }}>{section.label}</div>
+            <div key={section.label} style={{ padding: '10px 0' }}>
+              {!collapsed && (
+                <div className="eyebrow" style={{ padding: '0 22px 8px', color: 'var(--text-muted)' }}>{section.label}</div>
+              )}
               {section.items.map(item => {
                 const isActive = item.id === active;
-                return (
+                return collapsed ? (
+                  <a key={item.id}
+                     href={item.hash}
+                     onClick={(e) => { e.stopPropagation(); }}
+                     title={item.label}
+                     className="nav-item"
+                     style={{
+                       display: 'flex', alignItems: 'center', justifyContent: 'center',
+                       width: 40, height: 40, margin: '4px auto',
+                       borderRadius: 8,
+                       background: isActive ? 'var(--gold-soft)' : 'transparent',
+                       color: isActive ? 'var(--gold)' : 'var(--text-dim)',
+                       textDecoration: 'none',
+                     }}>
+                    <Icon name={item.icon} size={18} />
+                  </a>
+                ) : (
                   <a key={item.id}
                      href={item.hash}
                      className={'nav-item' + (isActive ? ' is-active' : '')}
                      style={{
-                       display: 'block',
+                       display: 'flex', alignItems: 'center', gap: 12,
                        textDecoration: 'none',
-                       padding: '11px 22px',
-                       borderLeft: isActive ? '2px solid var(--gold)' : '2px solid transparent',
+                       margin: '2px 12px',
+                       padding: '10px 12px',
+                       borderRadius: 8,
                        background: isActive ? 'var(--gold-soft)' : 'transparent',
+                       color: isActive ? 'var(--gold)' : 'var(--cream)',
                      }}>
-                    <div className="nav-item-label" style={{ fontSize: 14, color: isActive ? 'var(--gold)' : 'var(--cream)', fontWeight: isActive ? 500 : 400 }}>{item.label}</div>
-                    <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 3, letterSpacing: '0.1em' }}>{item.sub}</div>
+                    <span style={{ display: 'inline-flex', color: isActive ? 'var(--gold)' : 'var(--text-dim)' }}>
+                      <Icon name={item.icon} size={17} />
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <div className="nav-item-label" style={{ fontSize: 14, fontWeight: isActive ? 500 : 400 }}>{item.label}</div>
+                      <div className="mono" style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.08em' }}>{item.sub}</div>
+                    </div>
                   </a>
                 );
               })}
@@ -283,26 +401,43 @@ function AppShell({ active, children, sessionStats }) {
           ))}
         </nav>
 
-        <div className="user-card-wrap" style={{ padding: '14px 18px', borderTop: '1px solid var(--hairline)', position: 'relative' }}>
-          <div className="user-card" onClick={() => setMenuOpen(o => !o)} style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            padding: 10, borderRadius: 12,
-            background: 'var(--bg-card)', border: '1px solid var(--hairline)', cursor: 'pointer',
-          }}>
-            <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--gold-soft)', display: 'grid', placeItems: 'center', color: 'var(--gold)', fontFamily: 'var(--serif)', fontStyle: 'italic' }}>
+        <div className="user-card-wrap" style={{ padding: collapsed ? '12px 14px 0' : '12px 14px 0', borderTop: '1px solid var(--hairline)', position: 'relative' }}>
+          {collapsed ? (
+            <div className="user-card" onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o); }}
+              title={user?.name || 'Signed in'}
+              style={{
+                width: 40, height: 40, margin: '0 auto', borderRadius: '50%',
+                background: 'var(--gold-soft)', color: 'var(--gold)',
+                display: 'grid', placeItems: 'center',
+                fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 14,
+                cursor: 'pointer',
+              }}>
               {(user?.name || '?').slice(0, 1).toUpperCase()}
             </div>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ fontSize: 13, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Signed in'}</div>
-              <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(user?.email || '').toUpperCase()}</div>
+          ) : (
+            <div className="user-card" onClick={() => setMenuOpen(o => !o)} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: 10, borderRadius: 10,
+              background: 'rgba(255,255,255,0.03)', border: '1px solid var(--hairline)', cursor: 'pointer',
+            }}>
+              <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--gold-soft)', display: 'grid', placeItems: 'center', color: 'var(--gold)', fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 12 }}>
+                {(user?.name || '?').slice(0, 1).toUpperCase()}
+              </div>
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <div style={{ fontSize: 13, color: 'var(--cream)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Signed in'}</div>
+                <div className="mono" style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', letterSpacing: '0.06em' }}>{(user?.email || '').toLowerCase()}</div>
+              </div>
             </div>
-            <span className="mono" style={{ fontSize: 14, color: 'var(--text-muted)' }}>{menuOpen ? '⌃' : '⌄'}</span>
-          </div>
+          )}
           {menuOpen && (
             <div style={{
-              position: 'absolute', left: 18, right: 18, bottom: 78,
-              background: 'var(--bg-card)', border: '1px solid var(--border-strong)', borderRadius: 12,
-              boxShadow: '0 30px 80px -20px rgba(0,0,0,0.6)', padding: '8px 0',
+              position: 'absolute',
+              left: collapsed ? 60 : 18, right: collapsed ? 'auto' : 18,
+              bottom: collapsed ? 12 : 64,
+              minWidth: 200,
+              background: 'var(--bg-card)', border: '1px solid var(--border-strong)', borderRadius: 10,
+              boxShadow: '0 30px 80px -20px rgba(0,0,0,0.7)', padding: '6px 0',
+              zIndex: 10,
             }}>
               <a href="#/" onClick={(e) => { e.preventDefault(); setMenuOpen(false); window.foyerGo('#/'); }}
                  style={{ display: 'block', padding: '10px 16px', fontSize: 13, color: 'var(--cream-dim)', textDecoration: 'none' }}>
@@ -310,15 +445,15 @@ function AppShell({ active, children, sessionStats }) {
               </a>
               <div style={{ borderTop: '1px solid var(--hairline)', margin: '6px 0' }}></div>
               <div onClick={() => { setMenuOpen(false); foyerSignOut(); }}
-                   style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', fontSize: 13, color: 'var(--terracotta)', cursor: 'pointer' }}>
-                <span style={{ width: 16, textAlign: 'center' }}>⇥</span>Log out
+                   style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', fontSize: 13, color: 'var(--terracotta)', cursor: 'pointer' }}>
+                <Icon name="logout" size={14} />Log out
               </div>
             </div>
           )}
         </div>
       </aside>
 
-      <main style={{ overflowY: 'auto' }}>
+      <main style={{ overflowY: 'auto', background: 'var(--bg-deep)' }}>
         {children}
       </main>
     </div>
@@ -326,7 +461,7 @@ function AppShell({ active, children, sessionStats }) {
 }
 
 Object.assign(window, {
-  Crest, Eyebrow, Tag, Stat, Hairline,
+  Crest, Eyebrow, Tag, Stat, Hairline, Icon,
   foyerApi, foyerLoad, useFoyerData, foyerSignOut,
   visitorKey, allLoadedVisitors, leadBucket, fmtRelative, fmtClock, greetingHour,
   AppShell,

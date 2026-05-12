@@ -238,6 +238,22 @@
       transition: background 200ms ease;
     }
 
+    /* Send-button inline spinner (matches iPad ProgressView). */
+    .spinner {
+      width: 12px; height: 12px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Toast-confirmation slide-down at top of main area (iPad parity). */
+    .toast {
+      animation: toastIn .28s ease both;
+    }
+
     /* Floating demo-route switcher — bottom-right, low-key, doesn't fight editorial content. */
     .route-nav {
       position: fixed; bottom: 18px; right: 18px; z-index: 1000;
@@ -320,6 +336,7 @@
   <script type="text/babel" src="sessions-list.jsx"></script>
   <script type="text/babel" src="kiosk.jsx"></script>
   <script type="text/babel" src="session-detail.jsx"></script>
+  <script type="text/babel" src="leads.jsx"></script>
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect } = React;
@@ -337,9 +354,9 @@
       { hash: '#/session',    label: 'Detail',   El: () => <SessionDetail /> },
       { hash: '#/kiosk',      label: 'Kiosk',    El: () => <KioskForm /> },
       { hash: '#/kiosk-live', label: 'Live',     El: () => <KioskLive />,   kiosk: true },
-      // Aliases so the sidebar's "Leads" entry has a destination that
-      // re-uses the existing inbox surface in SessionsList for now.
-      { hash: '#/leads',      label: 'Leads',    El: () => <SessionsList /> },
+      // Dedicated CRM surface: per-lead detail with notes, tasks,
+      // sent-email history, and scheduled-send queue.
+      { hash: '#/leads',      label: 'Leads',    El: () => <LeadsInbox /> },
     ];
 
     function useHashRoute() {
