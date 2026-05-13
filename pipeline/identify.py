@@ -25,6 +25,11 @@ class IdentificationResult(BaseModel):
     agent_speaker: str
     matched_visitors: list[Visitor]
     unmatched_speakers: list[str]
+    # Claude's estimate of true speaker count (including the agent). When
+    # this exceeds the diarizer's count, the caller should re-transcribe
+    # with `speakers_expected=suspected_total` to recover collapsed voices.
+    suspected_total: int = 0
+    detected_total: int = 0
 
 
 def load_visitors(csv_path: Path) -> list[Visitor]:
@@ -110,10 +115,21 @@ def _extract_json(text: str) -> str:
     return text[start:]  # unbalanced; let the caller raise
 
 
-def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dict[str, str]:
+class SpeakerAnalysis(BaseModel):
+    names: dict[str, str]
+    # Claude's best guess at how many distinct humans were really in the
+    # room (including the agent). When the diarizer undercounts — two
+    # close-mic'd voices collapsed into one cluster — this comes back
+    # higher than `len(transcript.utterances.speakers)` and the caller
+    # should re-transcribe with `speakers_expected=suspected_total`.
+    suspected_total: int
+
+
+def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerAnalysis:
     utterances_text = "\n".join(
         f"[{u.speaker}] {u.text}" for u in (transcript.utterances or [])
     )
+    detected = sorted({u.speaker for u in (transcript.utterances or [])})
 
     client = Anthropic()
     response = client.messages.create(
@@ -121,23 +137,45 @@ def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dic
         max_tokens=1024,
         system=(
             f"You analyze diarized open-house transcripts. Speaker {agent_speaker} is "
-            "the real-estate agent. Every other speaker is a visitor. Extract each "
-            "visitor's first name from the conversation — visitors typically introduce "
-            "themselves when the agent asks their name. Return JSON only, no prose, "
-            'format: {"B": "sarah", "C": "mike"}. Use lowercase first names. Omit any '
-            "speaker whose name is not mentioned in the transcript."
+            "the real-estate agent. Every other speaker is a visitor. Two tasks:\n\n"
+            "1. Extract each visitor's first name. Visitors typically introduce "
+            "themselves when the agent asks. Use lowercase. Omit speakers whose "
+            "name is not mentioned.\n\n"
+            "2. Estimate how many distinct humans were really in the conversation, "
+            "including the agent. Diarization sometimes collapses two close-mic'd "
+            "voices into one cluster — watch for these tells inside a single speaker "
+            "label: two different first names being introduced (\"hi I'm sarah\" "
+            "then later \"and I'm mike\"), back-and-forth that reads like two people "
+            "talking to each other, contradictory self-references (one line says "
+            "\"my wife and I\", another says \"I'm single\"), or wildly different "
+            "conversational styles. If you see clear evidence of a merge, return a "
+            "higher count. If the transcript is consistent with the detected count, "
+            f"return the detected count. Detected speakers: {detected}.\n\n"
+            "Return JSON only, no prose, format: "
+            '{"names": {"B": "sarah", "C": "mike"}, "suspected_total": 3}'
         ),
         messages=[{"role": "user", "content": utterances_text}],
     )
     text = _extract_json(response.content[0].text)
-    return json.loads(text)
+    data = json.loads(text)
+    suspected = int(data.get("suspected_total") or len(detected))
+    # Floor the suspected count at what we already detected — Claude should
+    # never tell us there are *fewer* people than AAI already found.
+    suspected = max(suspected, len(detected))
+    return SpeakerAnalysis(names=data.get("names") or {}, suspected_total=suspected)
+
+
+def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dict[str, str]:
+    return analyze_speakers(transcript, agent_speaker).names
 
 
 def identify_agent_and_visitors(
     transcript: aai.Transcript, visitors_csv: Optional[Path] = None
 ) -> IdentificationResult:
     agent = detect_agent_speaker(transcript)
-    speaker_names = extract_speaker_names(transcript, agent)
+    analysis = analyze_speakers(transcript, agent)
+    speaker_names = analysis.names
+    detected_total = len({u.speaker for u in (transcript.utterances or [])})
 
     # iOS path: no kiosk CSV. Each non-agent speaker becomes a visitor —
     # we use their extracted first name when we got one, "Visitor B/C/D" otherwise.
@@ -160,6 +198,8 @@ def identify_agent_and_visitors(
             agent_speaker=agent,
             matched_visitors=synthetic,
             unmatched_speakers=[],
+            suspected_total=analysis.suspected_total,
+            detected_total=detected_total,
         )
 
     visitors = load_visitors(visitors_csv)
@@ -181,4 +221,6 @@ def identify_agent_and_visitors(
         agent_speaker=agent,
         matched_visitors=matched,
         unmatched_speakers=unmatched,
+        suspected_total=analysis.suspected_total,
+        detected_total=detected_total,
     )

@@ -747,11 +747,35 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
+            identification = identify_agent_and_visitors(transcript, visitors_path)
         else:
             assert audio_path is not None
             transcript = transcribe_with_speakers(audio_path, speakers_expected=speakers_expected)
+            identification = identify_agent_and_visitors(transcript, visitors_path)
 
-        identification = identify_agent_and_visitors(transcript, visitors_path)
+            # Auto-correct diarization undercount. AssemblyAI without a
+            # `speakers_expected` hint tends to collapse close-mic'd voices —
+            # e.g. an agent + two friends all sitting near the phone get
+            # clustered as just two speakers. When Claude's read of the
+            # transcript suggests there were actually more distinct people,
+            # re-transcribe with that count as a hint. Only kicks in when the
+            # caller didn't already pass a hint (so manual Re-analyze still
+            # wins) and only allows one auto-retry to keep cost bounded.
+            if (
+                speakers_expected is None
+                and identification.suspected_total > identification.detected_total
+            ):
+                # Cap the hint at 10 to avoid hallucinated 16-way splits eating
+                # a chunk of AAI quota on a recording with two people.
+                hint = min(identification.suspected_total, 10)
+                print(
+                    f"[{session_id}] diarization undercount: detected="
+                    f"{identification.detected_total}, suspected={hint} — "
+                    f"re-transcribing with speakers_expected={hint}",
+                    flush=True,
+                )
+                transcript = transcribe_with_speakers(audio_path, speakers_expected=hint)
+                identification = identify_agent_and_visitors(transcript, visitors_path)
 
         # Lead state from a prior run (if this is a reanalyze) — keyed by
         # (name, speaker) so the agent doesn't lose their "sent / snoozed /
