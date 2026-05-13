@@ -258,6 +258,10 @@ actor APIClient {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // Uploads ride a long-lived connection — bump the per-request idle
+        // timeout from the default 8s. Whole upload still bounded by the
+        // session's resource timeout (120s).
+        req.timeoutInterval = 60
         authorize(&req)
 
         var body = Data()
@@ -279,9 +283,51 @@ actor APIClient {
                         contentType: "audio/m4a", data: audioData)
         body.append("--\(boundary)--\r\n")
 
-        let (data, response) = try await self.session.upload(for: req, from: body)
+        let (data, response) = try await uploadWithRetry(req, body: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
+    }
+
+    // Wraps URLSession.upload with the same transient-error retry policy as
+    // coldStartPOST. iPhones routinely drop URLError.networkConnectionLost
+    // (-1005) when the radio handsoff between towers / WiFi-to-cell, even on
+    // a "fine" connection. One retry recovers transparently; without it the
+    // agent has to redo the whole recording.
+    //
+    // Duplicate-session risk: if the first attempt completed server-side but
+    // the response was lost, we'll create a second session. The orphan stays
+    // in "processing" until it errors out, but the user only ever sees the
+    // one we got a response for. That's a much better failure mode than
+    // forcing them to start over.
+    private func uploadWithRetry(
+        _ original: URLRequest,
+        body: Data,
+        maxAttempts: Int = 3
+    ) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            do {
+                return try await self.session.upload(for: original, from: body)
+            } catch let urlErr as URLError {
+                switch urlErr.code {
+                case .networkConnectionLost,
+                     .timedOut,
+                     .cannotConnectToHost,
+                     .dnsLookupFailed,
+                     .notConnectedToInternet:
+                    lastError = urlErr
+                    if attempt < maxAttempts - 1 {
+                        let delay = UInt64((attempt + 1) * 1_000_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
+                        continue
+                    }
+                    throw urlErr
+                default:
+                    throw urlErr
+                }
+            }
+        }
+        throw lastError ?? URLError(.unknown)
     }
 
     // Mid-session snapshot upload. Sends the entire concatenated audio so
@@ -307,6 +353,7 @@ actor APIClient {
         ))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 60
         authorize(&req)
 
         var body = Data()
@@ -319,7 +366,7 @@ actor APIClient {
                         contentType: "audio/m4a", data: audioData)
         body.append("--\(boundary)--\r\n")
 
-        let (data, response) = try await self.session.upload(for: req, from: body)
+        let (data, response) = try await uploadWithRetry(req, body: body)
         try validate(response: response, data: data)
     }
 
