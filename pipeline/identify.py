@@ -157,12 +157,31 @@ def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerA
         messages=[{"role": "user", "content": utterances_text}],
     )
     text = _extract_json(response.content[0].text)
-    data = json.loads(text)
-    suspected = int(data.get("suspected_total") or len(detected))
+    # Defensive: Claude can occasionally return a bare names-only dict
+    # (`{"B": "sarah"}`) or wrap the response in a list. Tolerate both —
+    # we'd rather lose the undercount signal than fail the whole session.
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    names_field = data.get("names")
+    if isinstance(names_field, dict):
+        names = {k: v for k, v in names_field.items() if isinstance(v, str)}
+    elif all(isinstance(v, str) for v in data.values()) and "suspected_total" not in data:
+        # Old shape fallback: the whole object IS the names dict.
+        names = {k: v for k, v in data.items() if isinstance(v, str)}
+    else:
+        names = {}
+    try:
+        suspected = int(data.get("suspected_total") or len(detected))
+    except (TypeError, ValueError):
+        suspected = len(detected)
     # Floor the suspected count at what we already detected — Claude should
     # never tell us there are *fewer* people than AAI already found.
     suspected = max(suspected, len(detected))
-    return SpeakerAnalysis(names=data.get("names") or {}, suspected_total=suspected)
+    return SpeakerAnalysis(names=names, suspected_total=suspected)
 
 
 def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dict[str, str]:
