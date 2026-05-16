@@ -1,8 +1,10 @@
 import csv
 import json
+import os
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import assemblyai as aai
@@ -10,6 +12,15 @@ from anthropic import Anthropic
 from pydantic import BaseModel
 
 MODEL = "claude-sonnet-4-6"
+
+
+def _diarization_refinement_enabled() -> bool:
+    # Default ON. Flip to "false" via Render env var if Claude refinement
+    # ever starts producing worse output than the raw provider — we keep
+    # the kill switch so we can roll back without a redeploy.
+    return os.environ.get("DIARIZATION_REFINE_ENABLED", "true").strip().lower() not in (
+        "false", "0", "no", "off",
+    )
 
 
 class Visitor(BaseModel):
@@ -113,6 +124,137 @@ def _extract_json(text: str) -> str:
             if depth == 0:
                 return text[start:i + 1]
     return text[start:]  # unbalanced; let the caller raise
+
+
+def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
+    """Run Claude over the diarized transcript to fix common single-mic
+    diarization errors: speaker swaps on rapid back-and-forth and multiple
+    speakers' words merged into one utterance.
+
+    Mutates the transcript's utterances list in place so downstream code
+    sees a cleaner diarization with no other changes. Failures are
+    non-fatal — if Claude returns malformed JSON or invents speaker
+    labels, we keep the original utterances and log.
+
+    Disable via DIARIZATION_REFINE_ENABLED=false on Render."""
+    if not _diarization_refinement_enabled():
+        return transcript
+    utterances = list(transcript.utterances or [])
+    if len(utterances) < 2:
+        # Nothing to re-segment if there's only one (or zero) utterances —
+        # save the round-trip + cost.
+        return transcript
+
+    valid_speakers = sorted({u.speaker for u in utterances})
+    input_payload = [
+        {
+            "speaker": u.speaker,
+            "start_ms": int(getattr(u, "start", 0) or 0),
+            "end_ms": int(getattr(u, "end", 0) or 0),
+            "text": u.text,
+        }
+        for u in utterances
+    ]
+
+    client = Anthropic()
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        system=(
+            "You correct speaker diarization on an open-house transcript. "
+            "The ASR clustering can flip speaker labels on rapid back-and-"
+            "forth or merge multiple speakers' words into one utterance "
+            "(common failure: 'what's your name? I'm Alex. Hi Alex.' all "
+            "in one turn). Use linguistic context to fix it.\n\n"
+            "WHO IS WHO:\n"
+            "- The AGENT asks questions ('what's your name?', 'what's "
+            "your price range?', 'how soon are you looking to move?'), "
+            "introduces themselves as 'the listing agent' / 'the "
+            "realtor', describes the property, welcomes visitors, says "
+            "'let me know if you have questions'. They're showing the "
+            "visitor around.\n"
+            "- The VISITOR describes their own needs ('I need a 4th "
+            "bedroom', 'we have 2 kids', 'we're pre-approved for $X'), "
+            "gets asked their name, asks about the property.\n"
+            "- 'Hi Alex' / 'Nice to meet you, Sarah' — the SPEAKER is "
+            "talking TO that named person, not the named person.\n"
+            "- 'I'm X' — the speaker is stating their own name.\n\n"
+            "TWO CORRECTIONS YOU CAN MAKE:\n"
+            "1. SPLIT a single utterance into multiple when its text "
+            "clearly contains multiple speakers' words.\n"
+            "2. RE-LABEL an utterance's speaker when the linguistic "
+            "content doesn't match the provider's cluster.\n\n"
+            f"Speaker labels you may use: {valid_speakers}. Do NOT "
+            "invent new labels — the ASR already detected the speaker "
+            "set. If you think there's a third speaker, just keep the "
+            "label the provider gave you for that utterance.\n\n"
+            "Don't change the WORDS. Don't add new words. Don't drop "
+            "words. Only re-segment and re-label.\n\n"
+            "Return JSON only, no prose. Format: a list of objects with "
+            "the SAME shape as the input: "
+            '[{"speaker": "A", "start_ms": 0, "end_ms": 21000, "text": "..."}, ...]'
+        ),
+        messages=[{
+            "role": "user",
+            "content": json.dumps(input_payload, indent=2),
+        }],
+    )
+
+    text = _extract_json(response.content[0].text)
+    try:
+        refined = json.loads(text)
+    except json.JSONDecodeError:
+        return transcript
+    if not isinstance(refined, list) or not refined:
+        return transcript
+
+    new_utts: list = []
+    for item in refined:
+        if not isinstance(item, dict):
+            continue
+        speaker = item.get("speaker")
+        utt_text = item.get("text")
+        if not isinstance(speaker, str) or not isinstance(utt_text, str):
+            continue
+        # Reject hallucinated speaker labels — Claude occasionally
+        # invents "C" when the ASR only found A and B. Drop those rather
+        # than silently mislabeling a turn.
+        if speaker not in valid_speakers:
+            continue
+        try:
+            start = int(item.get("start_ms") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(item.get("end_ms") or 0)
+        except (TypeError, ValueError):
+            end = 0
+        new_utts.append(SimpleNamespace(
+            speaker=speaker,
+            text=utt_text,
+            start=start,
+            end=end,
+        ))
+
+    if not new_utts:
+        return transcript
+
+    # Try to mutate the AAI transcript's utterances list. AAI's Pydantic
+    # model is mutable by default; if a future SDK version freezes it,
+    # this assignment will raise and we keep the original utterances.
+    try:
+        transcript.utterances = new_utts
+    except Exception:
+        return transcript
+    # Refresh the flat text so it reflects the refined ordering. Keep
+    # the original on empty join as a safety net.
+    joined = " ".join(u.text for u in new_utts).strip()
+    if joined:
+        try:
+            transcript.text = joined
+        except Exception:
+            pass
+    return transcript
 
 
 class SpeakerAnalysis(BaseModel):

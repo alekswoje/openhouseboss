@@ -4,6 +4,7 @@ from pathlib import Path
 
 import assemblyai as aai
 
+from .identify import refine_diarization
 from .vad import trim_silence
 
 
@@ -68,6 +69,15 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
         transcript = transcriber.transcribe(str(upload_path))
         if transcript.error:
             raise RuntimeError(f"AssemblyAI error: {transcript.error}")
+        # Claude post-correction: fix speaker swaps on rapid back-and-forth
+        # and split merged turns ("what's your name? I'm Alex. Hi Alex." in
+        # one utterance). Non-fatal — if Claude returns malformed JSON or
+        # invents speaker labels, the original AAI utterances are kept.
+        # Disable via DIARIZATION_REFINE_ENABLED=false on Render.
+        try:
+            transcript = refine_diarization(transcript)
+        except Exception as e:
+            print(f"[diarization-refine] failed, keeping raw AAI output: {e}", flush=True)
         return transcript
     finally:
         if tmp_wav is not None:
