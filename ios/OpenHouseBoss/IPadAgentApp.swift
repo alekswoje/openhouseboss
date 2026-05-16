@@ -8935,7 +8935,7 @@ private struct DiarizationAbTestSheet: View {
     private func displayName(_ key: String) -> String {
         switch key {
         case "assemblyai": return "AssemblyAI (current)"
-        case "deepgram": return "Deepgram nova-3"
+        case "deepgram": return "Deepgram nova-2"
         case "speechmatics": return "Speechmatics enhanced"
         default: return key
         }

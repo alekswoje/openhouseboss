@@ -85,12 +85,18 @@ def run_assemblyai(audio_path: Path, api_key: str) -> ProviderResult:
 def run_deepgram(audio_path: Path, api_key: str) -> ProviderResult:
     t0 = time.time()
     try:
+        # nova-3 collapsed every word to speaker_0 on a real iPhone open-house
+        # recording during the A/B bake-off — diarization quality regressed
+        # vs nova-2 on noisy single-mic audio. Stick with nova-2 here until
+        # Deepgram's own benchmarks change. multichannel=false is explicit so
+        # the diarizer doesn't try to treat mono iPhone audio as multi-track.
         params = {
-            "model": "nova-3",
+            "model": "nova-2",
             "diarize": "true",
             "punctuate": "true",
             "smart_format": "true",
             "utterances": "true",
+            "multichannel": "false",
             "language": "en",
         }
         with audio_path.open("rb") as f:
@@ -166,13 +172,15 @@ def run_speechmatics(audio_path: Path, api_key: str) -> ProviderResult:
     t0 = time.time()
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
+        # transcription_config schema is strict — enable_partials lives on the
+        # realtime websocket config, NOT the batch /jobs config, so passing it
+        # here gets the whole job rejected with HTTP 400. Removed.
         config = {
             "type": "transcription",
             "transcription_config": {
                 "language": "en",
                 "operating_point": "enhanced",
                 "diarization": "speaker",
-                "enable_partials": False,
             },
         }
         with audio_path.open("rb") as f:
