@@ -39,9 +39,13 @@ struct VoiceWaveform: View {
         // cheap and Swift's compositor handles smoothing.
         TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
-            // Subtle amplitude swell from incoming mic level — clamped
-            // so the visuals always look alive even at silence.
-            let live = recording ? max(0.45, min(1.0, 0.55 + level * 0.65)) : 0.30
+            // Audio-reactive amplitude. Floor stays low so silence reads as
+            // calm (small lapping waves around the orb), but speech swells
+            // the waves dramatically. The pow(level, 1.3) curve compresses
+            // the bottom of the range — room ambience (norm ~0.1-0.2) stays
+            // visually quiet — and lets real speech (norm 0.6+) take over.
+            let shaped = pow(max(0, min(1, level)), 1.3)
+            let live = recording ? max(0.12, min(1.0, 0.12 + shaped * 1.0)) : 0.08
 
             ZStack {
                 // Radial glow behind everything — gives the orb a halo.
@@ -57,8 +61,8 @@ struct VoiceWaveform: View {
                             endRadius: 260
                         )
                     )
-                    .scaleEffect(1 + level * 0.12)
-                    .animation(.easeOut(duration: 0.18), value: level)
+                    .scaleEffect(1 + shaped * 0.18)
+                    .animation(.easeOut(duration: 0.15), value: level)
 
                 // Wave layers — drawn front to back, then capped with the
                 // orb on top so the lines disappear "behind" it.
@@ -159,17 +163,17 @@ private struct OrbView: View {
                     )
                 )
                 .frame(width: size, height: size)
-                .shadow(color: FoyerTheme.gold.opacity(recording ? 0.7 : 0.3),
-                        radius: 30 + level * 16, x: 0, y: 0)
-                .shadow(color: FoyerTheme.gold.opacity(0.35),
-                        radius: 70 + level * 24, x: 0, y: 0)
+                .shadow(color: FoyerTheme.gold.opacity(recording ? 0.5 + level * 0.4 : 0.25),
+                        radius: 22 + level * 32, x: 0, y: 0)
+                .shadow(color: FoyerTheme.gold.opacity(0.20 + level * 0.30),
+                        radius: 50 + level * 50, x: 0, y: 0)
                 .overlay(
                     Circle()
                         .stroke(Color.white.opacity(0.18), lineWidth: 0.6)
                         .blendMode(.overlay)
                 )
-                .scaleEffect(1 + level * 0.06)
-                .animation(.easeOut(duration: 0.18), value: level)
+                .scaleEffect(1 + level * 0.14)
+                .animation(.easeOut(duration: 0.15), value: level)
                 .opacity(recording ? 1 : 0.55)
         }
     }
