@@ -41,10 +41,13 @@ targets:
     info:
       path: OpenHouseBoss/Generated-Info.plist
       properties:
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
-        NSMicrophoneUsageDescription: "Record audio during open houses to identify speakers and generate follow-ups"
-        NSFaceIDUsageDescription: "Authenticate to exit kiosk mode so only the agent can leave the sign-in screen"
+        # All networking goes to https://openhouseboss-api.onrender.com — no
+        # cleartext exceptions needed. NSAllowsArbitraryLoads=true was a
+        # leftover from local-dev (`http://<mac-lan-ip>:8000`); App Review
+        # rejects apps with it set in production. Switch back via
+        # localhost-only exception if local dev breaks.
+        NSMicrophoneUsageDescription: "Record audio during open houses to identify speakers and generate follow-ups."
+        NSFaceIDUsageDescription: "Authenticate to exit kiosk mode so only the agent can leave the sign-in screen."
         NSSupportsLiveActivities: true
         UIBackgroundModes:
           - audio

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foyer — Privacy Policy</title>
+<link rel="stylesheet" href="/brand.css">
+<style>
+  body { background: #0a0a0a; color: #f5efe1; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 48px 24px; }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 8px; font-weight: 600; letter-spacing: -0.5px; }
+  h2 { font-size: 18px; margin: 32px 0 10px; font-weight: 600; color: #d4af6a; }
+  p, li { font-size: 14.5px; color: #d8d0bf; }
+  ul { padding-left: 22px; }
+  a { color: #d4af6a; }
+  .updated { color: #88817a; font-size: 12px; margin-bottom: 28px; }
+  code { background: #1a1a1a; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: May 16, 2026</p>
+
+  <p>Foyer ("we", "us") is an iOS app built for real-estate agents to capture
+  open-house conversations, identify visitors, and draft follow-up emails.
+  This policy explains what the app collects, why, and how it's stored.</p>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>Audio recordings</strong> of open-house conversations you
+      choose to record. Capture only starts when you tap Record and stops
+      when you tap End Session.</li>
+    <li><strong>Transcripts</strong> generated from those recordings.</li>
+    <li><strong>Visitor contact info</strong> (name, email, phone) that
+      visitors enter on the kiosk sign-in screen or that you add manually.</li>
+    <li><strong>Your account info</strong> — name and email from your Google
+      Sign-In, used to identify your sessions and send emails on your behalf
+      when you grant the Gmail send scope.</li>
+    <li><strong>Property listings</strong> you create inside the app
+      (address, price, photos, marketing copy).</li>
+  </ul>
+
+  <h2>What we do with it</h2>
+  <ul>
+    <li>Transcribe audio via <a href="https://www.assemblyai.com">AssemblyAI</a>
+      to identify distinct speakers and what they said.</li>
+    <li>Analyze the transcript via <a href="https://www.anthropic.com">Anthropic
+      Claude</a> to tag each visitor (Buyer / Seller / Browser), score their
+      interest, and draft a personalized follow-up email.</li>
+    <li>Send follow-up emails from your own Google account (only after you
+      explicitly grant the <code>gmail.send</code> scope), with the body you
+      reviewed and approved.</li>
+    <li>Store sessions on our backend so you can re-open them on a different
+      device and so we can re-analyze recordings if the pipeline improves.</li>
+  </ul>
+
+  <h2>What we don't do</h2>
+  <ul>
+    <li>Sell or share your data, transcripts, or audio with advertisers.</li>
+    <li>Use your data to train AI models. AssemblyAI and Anthropic process
+      your audio/transcripts on a request-by-request basis; neither uses
+      Foyer's data for model training.</li>
+    <li>Track your location, browse other apps, or access your contacts
+      outside what you explicitly type in.</li>
+  </ul>
+
+  <h2>Visitor consent</h2>
+  <p>You are responsible for obtaining recording consent from visitors. The
+  kiosk sign-in screen includes a recording-consent checkbox that visitors
+  must check before joining a session. Local and state laws on consent vary
+  — please follow the rules where you're recording.</p>
+
+  <h2>Storage and security</h2>
+  <p>Audio recordings, transcripts, and session metadata are stored on our
+  backend (hosted on Render in Oregon, USA) on an encrypted persistent
+  disk. Visitor contact info and your account info are stored in the same
+  backend. Authentication uses JSON Web Tokens signed with a server-side
+  secret; all network traffic is TLS-encrypted.</p>
+
+  <h2>Deletion</h2>
+  <p>You can delete an entire session — recording, transcript, analysis,
+  and leads — from the Session Detail screen by tapping the Delete button.
+  Deletion is immediate and permanent.</p>
+  <p>To delete your account and all associated data, email
+  <a href="mailto:gfxefhe@gmail.com">gfxefhe@gmail.com</a> from the address
+  you signed in with and we will purge everything within 7 days.</p>
+
+  <h2>Third-party services</h2>
+  <p>Foyer uses these services to function. Their privacy policies apply to
+  data they receive from us:</p>
+  <ul>
+    <li><a href="https://policies.google.com/privacy">Google</a> (Sign-In + Gmail send)</li>
+    <li><a href="https://www.assemblyai.com/legal/privacy-policy">AssemblyAI</a> (transcription)</li>
+    <li><a href="https://www.anthropic.com/legal/privacy">Anthropic</a> (analysis + drafting)</li>
+    <li><a href="https://render.com/privacy">Render</a> (backend hosting)</li>
+  </ul>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy or your data: <a href="mailto:gfxefhe@gmail.com">gfxefhe@gmail.com</a>.</p>
+
+  <p style="margin-top: 48px; color: #88817a; font-size: 12px;">© 2026 Foyer. All rights reserved.</p>
+</main>
+</body>
+</html>
