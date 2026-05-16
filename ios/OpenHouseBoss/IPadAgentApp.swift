@@ -20,7 +20,7 @@ import UIKit
 // APIClient.updateLeadState. No SampleData references here.
 struct IPadAgentApp: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case home, record, kiosk, leads, offers, listings, profile
+        case home, record, kiosk, leads, scripts, offers, listings, profile
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -28,6 +28,7 @@ struct IPadAgentApp: View {
             case .record:   return "Record"
             case .kiosk:    return "Kiosk"
             case .leads:    return "Leads"
+            case .scripts:  return "Scripts"
             case .offers:   return "Offers"
             case .listings: return "Listings"
             case .profile:  return "Profile"
@@ -39,6 +40,7 @@ struct IPadAgentApp: View {
             case .record:   return "waveform"
             case .kiosk:    return "person.badge.plus"
             case .leads:    return "tray"
+            case .scripts:  return "doc.text"
             case .offers:   return "tag"
             case .listings: return "square.grid.2x2"
             case .profile:  return "person.crop.circle"
@@ -50,6 +52,7 @@ struct IPadAgentApp: View {
             case .record:   return "waveform.circle.fill"
             case .kiosk:    return "person.badge.plus.fill"
             case .leads:    return "tray.fill"
+            case .scripts:  return "doc.text.fill"
             case .offers:   return "tag.fill"
             case .listings: return "square.grid.2x2.fill"
             case .profile:  return "person.crop.circle.fill"
@@ -397,6 +400,8 @@ struct IPadAgentApp: View {
             )
         case .leads:
             IPadLeads(store: store, initialFilter: activeSessionId)
+        case .scripts:
+            IPadScripts(store: store)
         case .offers:
             IPadOffers()
         case .listings:
@@ -6089,6 +6094,366 @@ private struct OfferEditorSheet: View {
             onSaved(offer)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: – Scripts (dedicated tab)
+
+// Top-level Scripts surface. Lists every script (presets + user-created) as
+// a tappable card. Tapping opens a full detail sheet that shows the script's
+// description and every step's verbatim quote + intent (fetched lazily from
+// GET /scripts/{id}). The "New script" button and edit affordance reuse the
+// same ScriptEditorSheet that lives behind the Profile card.
+private struct IPadScripts: View {
+    let store: SessionStore
+
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var isCompact: Bool { hSize == .compact }
+
+    @State private var openScriptId: String? = nil
+    @State private var editingScriptId: String? = nil
+    @State private var showNewScript: Bool = false
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: isCompact ? 20 : 28) {
+                header
+                if store.availableScripts.isEmpty {
+                    HStack {
+                        Spacer()
+                        FoyerLoadingView(size: 64, cornerRadius: 10)
+                        Spacer()
+                    }
+                    .padding(.top, 60)
+                } else {
+                    cards
+                }
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, isCompact ? 16 : 44)
+            .padding(.top, isCompact ? 18 : 36)
+            .padding(.bottom, isCompact ? 32 : 120)
+        }
+        .refreshable { await store.refreshScripts() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .task { await store.refreshScripts() }
+        .sheet(item: Binding(
+            get: { openScriptId.map { ScriptIdRef(id: $0) } },
+            set: { openScriptId = $0?.id }
+        )) { ref in
+            ScriptDetailSheet(
+                scriptId: ref.id,
+                store: store,
+                onClose: { openScriptId = nil },
+                onEdit: { id in
+                    openScriptId = nil
+                    editingScriptId = id
+                }
+            )
+        }
+        .sheet(isPresented: $showNewScript) {
+            ScriptEditorSheet(
+                existingId: nil,
+                onCancel: { showNewScript = false },
+                onSaved: {
+                    showNewScript = false
+                    Task { await store.refreshScripts() }
+                }
+            )
+        }
+        .sheet(item: Binding(
+            get: { editingScriptId.map { ScriptIdRef(id: $0) } },
+            set: { editingScriptId = $0?.id }
+        )) { ref in
+            ScriptEditorSheet(
+                existingId: ref.id,
+                onCancel: { editingScriptId = nil },
+                onSaved: {
+                    editingScriptId = nil
+                    Task { await store.refreshScripts() }
+                }
+            )
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Scripts")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.5)
+                Text("The walkthrough you want to deliver at every open house. We grade each session's transcript against your default script.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineSpacing(3)
+            }
+            Spacer()
+            Button { showNewScript = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("New script")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var cards: some View {
+        VStack(spacing: 12) {
+            ForEach(store.availableScripts) { s in
+                scriptCard(s)
+            }
+        }
+    }
+
+    private func scriptCard(_ s: ScriptSummary) -> some View {
+        let isDefault = store.defaultScriptId == s.id
+        return Button { openScriptId = s.id } label: {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text(s.name)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                        if s.isPreset {
+                            Text("PRESET")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.2)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color(white: 0.12), in: Capsule())
+                        }
+                        if isDefault {
+                            Text("DEFAULT")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .tracking(1.2)
+                                .foregroundStyle(FoyerTheme.gold)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(FoyerTheme.goldSoft, in: Capsule())
+                        }
+                    }
+                    Text(s.description)
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
+                    Text("\(s.stepCount) STEPS")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(isDefault ? FoyerTheme.gold.opacity(0.45) : Color.white.opacity(0.04), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// Full-text reader for a single script. Loads the verbatim quotes + intents
+// from GET /scripts/{id}, groups them by section, and offers Set-as-default
+// plus (for user scripts) Edit. Presets are read-only.
+private struct ScriptDetailSheet: View {
+    let scriptId: String
+    let store: SessionStore
+    var onClose: () -> Void
+    var onEdit: (String) -> Void
+
+    @State private var detail: APIClient.ScriptDetailDTO?
+    @State private var loading: Bool = true
+    @State private var loadError: String?
+
+    private var summary: ScriptSummary? {
+        store.availableScripts.first(where: { $0.id == scriptId })
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    headerBlock
+                    defaultToggle
+                    if loading {
+                        HStack {
+                            Spacer()
+                            ProgressView().tint(FoyerTheme.gold)
+                            Spacer()
+                        }
+                        .padding(.top, 40)
+                    } else if let detail {
+                        stepsBlock(detail)
+                    } else if let err = loadError {
+                        Text(err)
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
+                    Spacer(minLength: 20)
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
+                .padding(.bottom, 40)
+                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Color.black.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { onClose() }
+                        .tint(FoyerTheme.gold)
+                }
+                if let s = summary, !s.isPreset {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Edit") { onEdit(scriptId) }
+                            .tint(FoyerTheme.gold)
+                    }
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .task { await load() }
+    }
+
+    private var headerBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let s = summary {
+                HStack(spacing: 8) {
+                    if s.isPreset {
+                        Text("PRESET")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .tracking(1.2)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    if store.defaultScriptId == s.id {
+                        Text("DEFAULT")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .tracking(1.2)
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                }
+                Text(s.name)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.4)
+                Text(s.description)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineSpacing(3)
+            }
+        }
+    }
+
+    private var defaultToggle: some View {
+        let isDefault = store.defaultScriptId == scriptId
+        return Button {
+            store.defaultScriptId = isDefault ? nil : scriptId
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isDefault ? "star.slash.fill" : "star.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(isDefault ? "Remove as default" : "Set as default for new sessions")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(isDefault ? FoyerTheme.creamDim : FoyerTheme.inkOnGold)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(isDefault ? Color(white: 0.10) : FoyerTheme.gold, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func stepsBlock(_ detail: APIClient.ScriptDetailDTO) -> some View {
+        let groups = groupedSections(detail.steps)
+        VStack(alignment: .leading, spacing: 22) {
+            ForEach(groups, id: \.0) { section, steps in
+                VStack(alignment: .leading, spacing: 12) {
+                    if !section.isEmpty {
+                        Text(section.uppercased())
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.gold)
+                    }
+                    VStack(spacing: 10) {
+                        ForEach(Array(steps.enumerated()), id: \.element.id) { _, step in
+                            stepCard(step)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func stepCard(_ step: APIClient.ScriptDetailDTO.Step) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(step.label)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+            if let quote = step.quote, !quote.isEmpty {
+                Text("\u{201C}\(quote)\u{201D}")
+                    .font(.system(size: 15))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(4)
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(FoyerTheme.gold.opacity(0.55))
+                            .frame(width: 2)
+                    }
+            }
+            if let intent = step.intent, !intent.isEmpty {
+                Text(intent)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineSpacing(2)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+        )
+    }
+
+    private func groupedSections(_ steps: [APIClient.ScriptDetailDTO.Step]) -> [(String, [APIClient.ScriptDetailDTO.Step])] {
+        var order: [String] = []
+        var bucket: [String: [APIClient.ScriptDetailDTO.Step]] = [:]
+        for s in steps {
+            let key = s.section ?? ""
+            if bucket[key] == nil {
+                bucket[key] = []
+                order.append(key)
+            }
+            bucket[key]?.append(s)
+        }
+        return order.map { ($0, bucket[$0] ?? []) }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        do {
+            detail = try await APIClient.shared.getScript(id: scriptId)
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 }
