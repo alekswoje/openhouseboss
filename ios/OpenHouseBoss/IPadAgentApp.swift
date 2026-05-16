@@ -8511,6 +8511,9 @@ private struct IPadSessionDetail: View {
     @State private var reanalyzing = false
     @State private var reanalyzeError: String?
     @State private var showAbTest = false
+    // Open House Report — presented as a full-screen sheet from this
+    // detail screen so the agent stays in their session context.
+    @State private var showReport = false
 
     private var audioURL: URL {
         Config.backendURL
@@ -8534,6 +8537,7 @@ private struct IPadSessionDetail: View {
                     if reanalyzing {
                         processingNote
                     } else if let result = session.result {
+                        reportSection(session: session)
                         if let coverage = result.scriptCoverage {
                             coverageSection(coverage)
                         }
@@ -8573,6 +8577,73 @@ private struct IPadSessionDetail: View {
         } message: {
             Text("This permanently removes the recording, transcript, analysis, and all leads from this session. It can't be undone.")
         }
+        .fullScreenCover(isPresented: $showReport) {
+            // Full-screen so the report has the same canvas it gets when
+            // pushed from SummaryView on iPhone — keeps the layout
+            // consistent regardless of entry point.
+            NavigationStack {
+                ReportView(sessionId: sessionId)
+                    .environment(AppRouter())
+            }
+        }
+    }
+
+    // Report card — homeowner-facing summary, generated on demand. Sits
+    // just above the leads list because it's the primary post-session
+    // action (sellers want a recap; the leads list is for the agent's own
+    // workflow). Shows whether a report has been generated/edited/sent.
+    @ViewBuilder
+    private func reportSection(session: Session) -> some View {
+        let meta = session.reportMeta
+        let hasReport = session.report != nil
+        Button { showReport = true } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(FoyerTheme.gold)
+                        .shadow(color: FoyerTheme.gold.opacity(0.5), radius: 12, y: 4)
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                }
+                .frame(width: 46, height: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Open house report")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Text(reportSubtitle(hasReport: hasReport, meta: meta))
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func reportSubtitle(hasReport: Bool, meta: ReportMeta?) -> String {
+        if let sentAt = meta?.sentAt, let to = meta?.sentTo {
+            return "Sent to \(to)"
+            + (meta?.edited == true ? " · edited" : "")
+        }
+        if hasReport {
+            return meta?.edited == true
+                ? "Drafted · edited · ready to send"
+                : "Drafted · ready to review + send"
+        }
+        return "Generate · review · send to homeowner"
     }
 
     private var topBar: some View {

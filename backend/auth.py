@@ -745,8 +745,15 @@ def send_gmail_email(
     to: str,
     subject: str,
     body: str,
+    *,
+    html_body: str | None = None,
 ) -> dict:
-    """Send a plain-text email through the agent's connected Gmail account.
+    """Send an email through the agent's connected Gmail account.
+
+    `body` is the plain-text version (always sent). When `html_body` is
+    provided, the email is sent as multipart/alternative — modern mail
+    clients render the HTML version; older clients fall back to text.
+    Used by the Open House Report flow to ship a styled report inline.
 
     Returns Gmail's message resource ({id, threadId, labelIds, ...}). Raises
     HTTPException(400) when Gmail isn't connected — the iOS client treats
@@ -773,6 +780,10 @@ def send_gmail_email(
         msg["From"] = from_email
     msg["Subject"] = subject
     msg.set_content(body or "")
+    if html_body:
+        # Adds an HTML alternative — Gmail/Apple Mail render the HTML;
+        # plain-text-only clients still see the body above.
+        msg.add_alternative(html_body, subtype="html")
     raw = base64.urlsafe_b64encode(bytes(msg)).decode()
 
     resp = requests.post(

@@ -243,6 +243,9 @@ struct SummaryView: View {
     private var visitorList: some View {
         let visitors = store.session?.result?.visitors ?? []
         return VStack(alignment: .leading, spacing: 0) {
+            reportCTA
+                .padding(.horizontal, 20)
+                .padding(.bottom, 22)
             if let coverage = store.session?.result?.scriptCoverage {
                 scriptCoverageSection(coverage)
                 Spacer().frame(height: 20)
@@ -272,6 +275,47 @@ struct SummaryView: View {
             reanalyzeSection(detected: visitors.count)
         }
         .padding(.top, 6)
+    }
+
+    // The headline CTA after a session completes: generate (or open) the
+    // homeowner-facing Open House Report. Once the session is "ready", this
+    // is the agent's primary next action — every other surface is review.
+    private var reportCTA: some View {
+        Button {
+            router.push(.report(sessionId: store.session?.id))
+        } label: {
+            GlassSurface(cornerRadius: 16, strong: true) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle()
+                            .fill(FoyerTheme.gold)
+                            .shadow(color: FoyerTheme.gold.opacity(0.5), radius: 12, y: 4)
+                        Image(systemName: "doc.text.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                    }
+                    .frame(width: 42, height: 42)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Open house report")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text("Generate · review · send to homeowner")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+                .padding(14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(FoyerTheme.gold.opacity(0.40), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     // Re-analyze affordance — for when diarization undercounts (e.g. one

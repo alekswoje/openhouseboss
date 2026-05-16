@@ -40,13 +40,25 @@ struct Session: Codable, Hashable, Identifiable {
     // older sessions cached on disk decode cleanly.
     var isLive: Bool?
     var lastSnapshotAt: String?
+    // Homeowner identity for the Open House Report. Optional — captured at
+    // session setup or set later from the Report tab via PATCH /homeowner.
+    var homeownerEmail: String?
+    var homeownerName: String?
+    // Cached Open House Report. Nil until the agent taps Generate the first
+    // time. Regenerable from the transcript + visitor analyses; the agent's
+    // edits are preserved via PATCH /report and a separate report_meta blob.
+    var report: SessionReport?
+    var reportMeta: ReportMeta?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, address, error, result
+        case id, status, address, error, result, report
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case isLive = "is_live"
         case lastSnapshotAt = "last_snapshot_at"
+        case homeownerEmail = "homeowner_email"
+        case homeownerName = "homeowner_name"
+        case reportMeta = "report_meta"
     }
 }
 
@@ -559,4 +571,95 @@ extension ISO8601DateFormatter {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+}
+
+// MARK: – Open House Report
+//
+// Homeowner-facing report generated from a session. The agent reviews
+// (and optionally edits), then emails to the seller. Backend: see
+// pipeline/report.py for generation + HTML rendering.
+
+struct ReportThemeQuote: Codable, Hashable, Identifiable {
+    var quote: String
+    var attribution: String = ""
+
+    var id: String { quote }
+}
+
+struct ReportTheme: Codable, Hashable, Identifiable {
+    var title: String
+    var frequency: Int
+    var summary: String
+    var quotes: [ReportThemeQuote] = []
+
+    var id: String { title }
+}
+
+struct ReportStandoutVisitor: Codable, Hashable, Identifiable {
+    var label: String
+    var score: Int
+    var summary: String
+    var followUpStatus: String
+
+    var id: String { label }
+
+    enum CodingKeys: String, CodingKey {
+        case label, score, summary
+        case followUpStatus = "follow_up_status"
+    }
+}
+
+struct SessionReport: Codable, Hashable {
+    var headline: String
+    var tldr: [String]
+    var trafficSummary: String
+    var highlights: [ReportTheme]
+    var concerns: [ReportTheme]
+    var priceSignal: String
+    var standoutVisitors: [ReportStandoutVisitor]
+    var agentTake: String
+    var nextSteps: [String]
+
+    // Metadata stamped by backend at generation time. Editable but rarely
+    // touched by the agent — these are facts derived from the session.
+    var address: String = ""
+    var dateLabel: String = ""
+    var durationMinutes: Int = 0
+    var visitorCount: Int = 0
+    var groupCountEstimate: Int = 0
+    var agentName: String = ""
+    var generatedAt: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case headline, tldr, highlights, concerns, address
+        case trafficSummary = "traffic_summary"
+        case priceSignal = "price_signal"
+        case standoutVisitors = "standout_visitors"
+        case agentTake = "agent_take"
+        case nextSteps = "next_steps"
+        case dateLabel = "date_label"
+        case durationMinutes = "duration_minutes"
+        case visitorCount = "visitor_count"
+        case groupCountEstimate = "group_count_estimate"
+        case agentName = "agent_name"
+        case generatedAt = "generated_at"
+    }
+}
+
+struct ReportMeta: Codable, Hashable {
+    var generatedAt: String?
+    var updatedAt: String?
+    var edited: Bool = false
+    var sentAt: String?
+    var sentTo: String?
+    var sentMessageId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case edited
+        case generatedAt = "generated_at"
+        case updatedAt = "updated_at"
+        case sentAt = "sent_at"
+        case sentTo = "sent_to"
+        case sentMessageId = "sent_message_id"
+    }
 }

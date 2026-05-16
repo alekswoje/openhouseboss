@@ -22,6 +22,11 @@ from pipeline.analyze import analyze_visitor, refine_draft
 from pipeline.leads_agent import query_leads_agent
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
+from pipeline.report import (
+    SessionReport,
+    generate_report as _generate_report,
+    render_report_html,
+)
 from pipeline.script_coverage import grade_against_script
 from pipeline.scripts import get_script, list_scripts_summary, save_user_script, update_user_script, delete_user_script
 from pipeline.tags import DEFAULT_TAGS
@@ -938,6 +943,8 @@ async def create_session(
     address: Optional[str] = Form(None),
     speakers_expected: Optional[int] = Form(None),
     script_id: Optional[str] = Form(None),
+    homeowner_email: Optional[str] = Form(None),
+    homeowner_name: Optional[str] = Form(None),
     current_user: dict = Depends(auth_lib.get_current_user),
 ):
     if not audio and not mock_transcript:
@@ -975,6 +982,10 @@ async def create_session(
         "result": None,
         "error": None,
         "user_id": current_user["id"],
+        # Homeowner identity for the eventual Open House Report. Optional at
+        # session-create time; can be filled in later via PATCH /homeowner.
+        "homeowner_email": (homeowner_email or "").strip() or None,
+        "homeowner_name": (homeowner_name or "").strip() or None,
     }
     with _sessions_lock:
         _sessions[session_id] = session
@@ -2205,6 +2216,322 @@ def abtest_session(
                 "error": f"{provider.upper()}_API_KEY not set on backend",
             }
     return {"results": [results[p] for p in order]}
+
+
+# --------------------------------------------------------------------------
+# Open House Report — homeowner-facing report generated from a session.
+#
+# Stored on the session dict as `report` (the structured SessionReport) plus
+# `report_meta` (metadata: generated_at, updated_at, agent edits). The
+# report is regenerable from the transcript + visitor analyses, but cached
+# so the agent's edits aren't blown away on re-fetch.
+# --------------------------------------------------------------------------
+
+
+def _load_session_or_404(session_id: str, current_user: dict) -> dict:
+    """Pull a session from the in-memory cache, hydrating from disk if
+    needed. Returns the session dict (mutable, lock-managed elsewhere) or
+    raises 404 / 403."""
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+        _require_owner(session, current_user, session_id)
+        return session
+
+
+def _format_date_label(iso_ts: Optional[str]) -> str:
+    """Render '2026-05-16T14:30:00Z' → 'Saturday, May 16, 2026'. Strips
+    the time portion — the homeowner just wants the day. Used in the
+    report header."""
+    if not iso_ts:
+        return ""
+    try:
+        d = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return d.strftime("%A, %B %-d, %Y")
+
+
+def _stamp_report_metadata(report: SessionReport, session: dict) -> SessionReport:
+    """Fill in the metadata fields on the report from session-level data.
+    Done outside the Claude call so the model can't drift on facts that
+    we already know precisely (address, visitor count, etc.)."""
+    result = session.get("result") or {}
+    visitors = result.get("visitors") or []
+    utterances = result.get("utterances") or []
+    duration_min = 0
+    if utterances:
+        end_ms = max((u.get("end_ms") or u.get("start_ms") or 0) for u in utterances)
+        duration_min = int(end_ms / 60_000)
+
+    report.address = session.get("address") or ""
+    report.date_label = _format_date_label(session.get("created_at"))
+    report.duration_minutes = duration_min
+    report.visitor_count = len(visitors)
+    # Heuristic: open house visitors typically arrive in pairs (couples).
+    report.group_count_estimate = max(0, (len(visitors) + 1) // 2)
+    report.generated_at = datetime.now(timezone.utc).isoformat()
+    return report
+
+
+def _agent_signature_html(user: dict) -> str:
+    """Build the email-signature HTML from the agent's user profile.
+    Falls back to bare name when phone/brokerage aren't captured."""
+    name = (user.get("name") or "").strip()
+    email = (user.get("email") or "").strip()
+    bits: list[str] = []
+    if name:
+        bits.append(f'<div style="font-weight:600;color:#1a1a1a;">{name}</div>')
+    if email:
+        bits.append(
+            f'<div style="font-size:11px;color:#888;">'
+            f'<a href="mailto:{email}" style="color:#888;text-decoration:none;">'
+            f'{email}</a></div>'
+        )
+    return "".join(bits)
+
+
+@app.post("/sessions/{session_id}/homeowner")
+def set_homeowner(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Update the homeowner's name + email on a session. Both optional —
+    pass empty string to clear. Used by iOS when the agent didn't capture
+    these at session creation and adds them later before sending the
+    report."""
+    session = _load_session_or_404(session_id, current_user)
+    with _sessions_lock:
+        if "homeowner_email" in payload:
+            v = (payload.get("homeowner_email") or "").strip()
+            session["homeowner_email"] = v or None
+        if "homeowner_name" in payload:
+            v = (payload.get("homeowner_name") or "").strip()
+            session["homeowner_name"] = v or None
+        _persist(session_id)
+        return {
+            "homeowner_email": session.get("homeowner_email"),
+            "homeowner_name": session.get("homeowner_name"),
+        }
+
+
+@app.post("/sessions/{session_id}/report")
+def create_or_regenerate_report(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Generate (or regenerate) the open house report from the session
+    data. Overwrites any cached report — the agent's manual edits are
+    lost on regen by design (otherwise stale edits drift over fresh
+    Claude output). The iOS client warns before calling this when a
+    report already exists."""
+    session = _load_session_or_404(session_id, current_user)
+    if not session.get("result"):
+        raise HTTPException(409, "Session has no analysis yet — wait for processing to finish")
+
+    # Claude call runs outside the lock — generation takes ~10-30s.
+    report = _generate_report(session)
+    report = _stamp_report_metadata(report, session)
+
+    with _sessions_lock:
+        # Re-fetch in case another writer touched the session while we
+        # were calling Claude (snapshot pipeline etc).
+        session = _sessions.get(session_id) or session
+        session["report"] = report.model_dump()
+        session["report_meta"] = {
+            "generated_at": report.generated_at,
+            "updated_at": report.generated_at,
+            "edited": False,
+            "sent_at": (session.get("report_meta") or {}).get("sent_at"),
+        }
+        _persist(session_id)
+
+    return {"report": session["report"], "report_meta": session["report_meta"]}
+
+
+@app.get("/sessions/{session_id}/report")
+def get_report(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Return the cached report (or 404 if it hasn't been generated yet).
+    iOS checks this on Report tab open; if 404, shows the Generate button."""
+    session = _load_session_or_404(session_id, current_user)
+    report = session.get("report")
+    if not report:
+        raise HTTPException(404, "Report not generated yet")
+    return {"report": report, "report_meta": session.get("report_meta") or {}}
+
+
+@app.patch("/sessions/{session_id}/report")
+def update_report(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Save the agent's edits to the report. Body is the full
+    SessionReport JSON (iOS sends the entire edited structure rather
+    than a diff — the report is small and this avoids merge headaches).
+    Sets `edited: true` so the UI can show a 'Custom' badge."""
+    session = _load_session_or_404(session_id, current_user)
+    with _sessions_lock:
+        # Validate the payload by routing it through the Pydantic model
+        # — keeps a broken iOS build from corrupting the saved report.
+        try:
+            validated = SessionReport(**payload)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"Invalid report payload: {exc}")
+        session["report"] = validated.model_dump()
+        meta = session.get("report_meta") or {}
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        meta["edited"] = True
+        session["report_meta"] = meta
+        _persist(session_id)
+        return {"report": session["report"], "report_meta": meta}
+
+
+@app.get("/sessions/{session_id}/report.html", response_class=HTMLResponse)
+def get_report_html(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Return the rendered HTML version of the report — for the iOS
+    'Export PDF' flow (WKWebView loads this URL, then renders to PDF)
+    and for previewing the email body the homeowner will see."""
+    session = _load_session_or_404(session_id, current_user)
+    raw = session.get("report")
+    if not raw:
+        raise HTTPException(404, "Report not generated yet")
+    report = SessionReport(**raw)
+    html_body = render_report_html(
+        report,
+        agent_signature_html=_agent_signature_html(current_user),
+    )
+    return HTMLResponse(content=html_body)
+
+
+@app.post("/sessions/{session_id}/report/send")
+def send_report(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Email the report to the homeowner via the agent's connected Gmail
+    account. Body fields (all optional, all override session defaults):
+      - to:      recipient email (defaults to session.homeowner_email)
+      - subject: defaults to "Open House Report — {address}"
+      - greeting: prepended above the report ("Hi Sarah — here's the
+                  recap from Saturday's open house...")
+
+    The HTML body is the rendered report. The plain-text fallback is a
+    short note pointing to the HTML version (mail clients that can't
+    render HTML get the headline + TL;DR plus a "see HTML version" line).
+    """
+    session = _load_session_or_404(session_id, current_user)
+    raw = session.get("report")
+    if not raw:
+        raise HTTPException(409, "Report not generated yet")
+
+    to_addr = (
+        (payload.get("to") or "").strip()
+        or (session.get("homeowner_email") or "").strip()
+    )
+    if not to_addr:
+        raise HTTPException(
+            400,
+            "No recipient email — set the homeowner's email first "
+            "(POST /sessions/{id}/homeowner) or pass `to` in the body."
+        )
+
+    address = session.get("address") or "your open house"
+    subject = (
+        payload.get("subject")
+        or f"Open House Report — {address}"
+    ).strip()
+    greeting = (payload.get("greeting") or "").strip()
+
+    report = SessionReport(**raw)
+    html_body = render_report_html(
+        report,
+        agent_signature_html=_agent_signature_html(current_user),
+    )
+
+    # If the agent included a personal greeting, splice it in just above
+    # the report's headline card. Avoids them needing to edit the HTML
+    # template by hand.
+    if greeting:
+        greeting_html = (
+            f'<div style="max-width:640px;margin:0 auto 0 auto;'
+            f'padding:20px 28px 0 28px;background:#fff;'
+            f'font-family:-apple-system,BlinkMacSystemFont,Helvetica Neue,Arial,sans-serif;'
+            f'font-size:14px;color:#1a1a1a;line-height:1.6;'
+            f'white-space:pre-wrap;">{html_module.escape(greeting)}</div>'
+        )
+        # Inject after the opening <body> tag.
+        html_body = html_body.replace("<body", "<body").replace(
+            '<div style="max-width:640px;margin:0 auto;padding:32px 28px;background:#fff;">',
+            greeting_html + '<div style="max-width:640px;margin:0 auto;padding:20px 28px 32px 28px;background:#fff;">',
+            1,
+        )
+
+    text_fallback = _report_plain_text_fallback(report, greeting=greeting)
+
+    gmail_result = auth_lib.send_gmail_email(
+        user_id=current_user["id"],
+        to=to_addr,
+        subject=subject,
+        body=text_fallback,
+        html_body=html_body,
+    )
+    message_id = gmail_result.get("id")
+
+    with _sessions_lock:
+        session = _sessions.get(session_id) or session
+        now_iso = datetime.now(timezone.utc).isoformat()
+        meta = session.get("report_meta") or {}
+        meta["sent_at"] = now_iso
+        meta["sent_to"] = to_addr
+        meta["sent_message_id"] = message_id
+        session["report_meta"] = meta
+        _persist(session_id)
+        return {
+            "sent": True,
+            "to": to_addr,
+            "message_id": message_id,
+            "report_meta": meta,
+        }
+
+
+def _report_plain_text_fallback(report: SessionReport, *, greeting: str = "") -> str:
+    """Plain-text version of the report for mail clients that can't render
+    HTML. Kept concise — the HTML version is the real product; this just
+    needs to convey the essentials so a text-only client isn't useless."""
+    lines: list[str] = []
+    if greeting:
+        lines.append(greeting)
+        lines.append("")
+    lines.append(f"OPEN HOUSE REPORT — {report.address or 'your property'}")
+    if report.date_label:
+        lines.append(report.date_label)
+    lines.append("")
+    lines.append(report.headline)
+    lines.append("")
+    for b in report.tldr:
+        lines.append(f"  • {b}")
+    lines.append("")
+    lines.append("(View the formatted version in any HTML-capable mail client.)")
+    return "\n".join(lines)
+
+
+# Imported here (not at top) because `html` is a tiny stdlib module we only
+# need inside the report-send flow. Aliased to avoid shadowing FastAPI's
+# HTMLResponse import already in scope.
+import html as html_module  # noqa: E402
 
 
 def _summarize(s: dict) -> dict:

@@ -38,6 +38,7 @@
 		D630737EBAA8096E73D8081A /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */; };
 		DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */; };
 		F22743D92A34275936122583 /* VoiceWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4F7AE09868D8B2C52624330 /* VoiceWaveform.swift */; };
+		FCA7C85B08108A99C9F60A70 /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C46301E704D6989929CB5B /* ReportView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,6 +87,7 @@
 		88172970AE449A66CFAE784B /* RecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordView.swift; sourceTree = "<group>"; };
 		9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A15107E5607D6C8A1CB330C5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1C46301E704D6989929CB5B /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		A4F7AE09868D8B2C52624330 /* VoiceWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWaveform.swift; sourceTree = "<group>"; };
 		B24B8C774159A0F354B9176D /* FoyerBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoyerBrand.swift; sourceTree = "<group>"; };
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
@@ -139,6 +141,7 @@
 				FFE577A9E7DBCF6DCC8F6928 /* OpenHouseBossApp.swift */,
 				059742BE4DC8DE3BC37C3420 /* RecordingActivityAttributes.swift */,
 				88172970AE449A66CFAE784B /* RecordView.swift */,
+				A1C46301E704D6989929CB5B /* ReportView.swift */,
 				7639E9BFDB5C581D58043144 /* SampleData.swift */,
 				22C2623D371CC35BE5C79E0F /* SessionStore.swift */,
 				14804FB0F6B1FF7D9A98509F /* SummaryView.swift */,
@@ -267,6 +270,7 @@
 				371F09E8CA61B1078CD2AFC4 /* OpenHouseBossApp.swift in Sources */,
 				C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */,
 				53967D9C031DD32DC893EE85 /* RecordingActivityAttributes.swift in Sources */,
+				FCA7C85B08108A99C9F60A70 /* ReportView.swift in Sources */,
 				7B880972808B12F311F66774 /* SampleData.swift in Sources */,
 				9F99468A8A85EE024AFE3903 /* SessionStore.swift in Sources */,
 				2E66898E45212FB451BFFBFB /* StopRecordingIntent.swift in Sources */,

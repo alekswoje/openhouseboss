@@ -28,6 +28,10 @@ enum AppRoute: Hashable {
     case kiosk
     case scriptDetail(scriptId: String)
     case scriptEdit
+    // Open House Report — generated from a finished session, sent to
+    // the homeowner. `sessionId` nil means "the active session in
+    // SessionStore" (i.e. the one we just recorded).
+    case report(sessionId: String?)
 }
 
 enum HomeTab: Hashable, CaseIterable {
@@ -149,6 +153,7 @@ struct RootView: View {
         case .kiosk:                       KioskSignInView()
         case .scriptDetail(let id):        ScriptDetailView(scriptId: id)
         case .scriptEdit:                  ScriptEditView()
+        case .report(let id):              ReportView(sessionId: id)
         }
     }
 }

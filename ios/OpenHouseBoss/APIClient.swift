@@ -793,6 +793,156 @@ actor APIClient {
         return try JSONDecoder().decode(SendEmailResult.self, from: data)
     }
 
+    // MARK: – Open House Report
+
+    struct ReportEnvelope: Codable {
+        let report: SessionReport
+        let reportMeta: ReportMeta?
+
+        enum CodingKeys: String, CodingKey {
+            case report
+            case reportMeta = "report_meta"
+        }
+    }
+
+    struct ReportSendResult: Codable {
+        let sent: Bool
+        let to: String
+        let messageId: String?
+        let reportMeta: ReportMeta?
+
+        enum CodingKeys: String, CodingKey {
+            case sent, to
+            case messageId = "message_id"
+            case reportMeta = "report_meta"
+        }
+    }
+
+    // Returns nil when the backend reports "report not generated yet" (404).
+    // Other errors propagate so the UI can surface them.
+    func getReport(sessionId: String) async throws -> ReportEnvelope? {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report"
+        ))
+        req.httpMethod = "GET"
+        req.timeoutInterval = 15
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+            return nil
+        }
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ReportEnvelope.self, from: data)
+    }
+
+    // Triggers a Claude call (~10-30s). Overwrites any cached report,
+    // including agent edits — the iOS client warns before calling this
+    // when a report already exists.
+    func generateReport(sessionId: String) async throws -> ReportEnvelope {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Claude generation is the slow path here. Give it room — Sonnet
+        // typically lands in 10-20s for a normal-size open house.
+        req.timeoutInterval = 60
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ReportEnvelope.self, from: data)
+    }
+
+    // Saves the agent's edits — full report payload, not a diff. Sets
+    // `edited: true` on report_meta.
+    func updateReport(sessionId: String, report: SessionReport) async throws -> ReportEnvelope {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report"
+        ))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+        authorize(&req)
+        req.httpBody = try JSONEncoder().encode(report)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ReportEnvelope.self, from: data)
+    }
+
+    // Send the report to the homeowner via the agent's connected Gmail.
+    // `to` defaults to session.homeownerEmail server-side when nil.
+    func sendReport(
+        sessionId: String,
+        to: String? = nil,
+        subject: String? = nil,
+        greeting: String? = nil
+    ) async throws -> ReportSendResult {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report/send"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 30
+        authorize(&req)
+        var payload: [String: Any] = [:]
+        if let to { payload["to"] = to }
+        if let subject { payload["subject"] = subject }
+        if let greeting { payload["greeting"] = greeting }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await self.session.data(for: req)
+        // Reuse the visitor-send error mapping — same Gmail backend, same
+        // failure modes (not connected, no recipient, generic).
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 400 {
+                let txt = String(data: data, encoding: .utf8) ?? ""
+                if txt.contains("Gmail not connected") {
+                    throw SendEmailError.gmailNotConnected
+                }
+                if txt.contains("No recipient email") {
+                    throw SendEmailError.noRecipient
+                }
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw SendEmailError.generic(String(data: data, encoding: .utf8) ?? "Send failed")
+            }
+        }
+        return try JSONDecoder().decode(ReportSendResult.self, from: data)
+    }
+
+    // URL to the rendered HTML report. iOS loads this in a WKWebView for
+    // the PDF export flow (WKWebView → UIPrintPageRenderer → PDF data).
+    // Includes the JWT as a header — we pass an authenticated URLRequest
+    // to the webview rather than the bare URL.
+    func reportHtmlRequest(sessionId: String) -> URLRequest {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report.html"
+        ))
+        authorize(&req)
+        return req
+    }
+
+    // Update the homeowner's email/name on a session. Pass empty string to
+    // clear a field; pass nil to leave it untouched.
+    func setHomeowner(
+        sessionId: String,
+        email: String?,
+        name: String?
+    ) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/homeowner"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 10
+        authorize(&req)
+        var payload: [String: Any] = [:]
+        if let email { payload["homeowner_email"] = email }
+        if let name { payload["homeowner_name"] = name }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
     // MARK: – Lead CRM (notes, tasks, history, schedule)
 
     struct LeadStateEnvelope: Codable {
