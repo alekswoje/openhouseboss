@@ -8118,7 +8118,9 @@ private struct IPadSessionDetail: View {
                         errorCard(deleteError)
                     }
                     playbackBar
-                    if let result = session.result {
+                    if reanalyzing {
+                        processingNote
+                    } else if let result = session.result {
                         if let coverage = result.scriptCoverage {
                             coverageSection(coverage)
                         }
@@ -8128,7 +8130,8 @@ private struct IPadSessionDetail: View {
                         } else if !result.fullTranscript.isEmpty {
                             transcriptSection(result.fullTranscript)
                         }
-                    } else if session.status == "processing" || reanalyzing {
+                        reanalyzeFooter
+                    } else if session.status == "processing" {
                         processingNote
                     } else if let err = session.error {
                         sessionErrorCard(err)
@@ -8706,6 +8709,40 @@ private struct IPadSessionDetail: View {
         } catch {
             reanalyzeError = error.localizedDescription
         }
+    }
+
+    // Subtle footer affordance on ready sessions — for testing pipeline
+    // improvements against a known recording, or recovering an old session
+    // whose analysis looks off (wrong speaker labels, merged turns, etc.).
+    // Less prominent than the error-state CTA because the session already
+    // has a usable result here.
+    private var reanalyzeFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let extra = reanalyzeError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+            Button { Task { await reanalyze() } } label: {
+                HStack(spacing: 8) {
+                    if reanalyzing {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.creamDim)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    Text(reanalyzing ? "Re-analyzing…" : "Re-analyze recording")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundStyle(FoyerTheme.creamDim)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(Color.white.opacity(0.06), in: Capsule())
+                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .disabled(reanalyzing)
+        }
+        .padding(.top, 8)
     }
 
     private func relativeTime(_ iso: String?) -> String {
