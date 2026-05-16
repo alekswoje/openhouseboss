@@ -16,11 +16,21 @@ final class SessionStore {
 
     static let shared = SessionStore()
 
+    private static let pastSessionsCacheKey = "pastSessionsCache.v1"
+
     private init() {
         self.defaultScriptId = UserDefaults.standard.string(forKey: "defaultScriptId")
         if let data = UserDefaults.standard.data(forKey: "listings"),
            let decoded = try? JSONDecoder().decode([Listing].self, from: data) {
             self.listings = decoded
+        }
+        // Stale-while-revalidate: paint the cached sessions list immediately
+        // on launch so the Home tab isn't empty during the GET /sessions
+        // round-trip. refreshSessions runs in the background and rewrites
+        // the cache when fresh data arrives.
+        if let data = UserDefaults.standard.data(forKey: Self.pastSessionsCacheKey),
+           let decoded = try? JSONDecoder().decode([SessionSummary].self, from: data) {
+            self.pastSessions = decoded
         }
     }
 
@@ -395,6 +405,9 @@ final class SessionStore {
             await MainActor.run {
                 self.pastSessions = items
                 self.listLoading = false
+            }
+            if let data = try? JSONEncoder().encode(items) {
+                UserDefaults.standard.set(data, forKey: Self.pastSessionsCacheKey)
             }
             Log.net("refreshSessions ← \(items.count) items in \(Int(Date().timeIntervalSince(start) * 1000))ms")
         } catch {
