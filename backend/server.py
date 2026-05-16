@@ -1,8 +1,9 @@
 import json
 import os
+import secrets
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from backend import auth as auth_lib
 from backend import mls_store
 from backend import mls_replicator
+from backend import stats as stats_lib
 from pipeline.analyze import analyze_visitor, refine_draft
 from pipeline.leads_agent import query_leads_agent
 from pipeline.identify import identify_agent_and_visitors
@@ -190,6 +192,20 @@ def auth_me(user: dict = Depends(auth_lib.get_current_user)):
         # against Config.backendURL.
         "profile": profile,
     }
+
+
+@app.get("/me/insights")
+def get_my_insights(
+    period: str = "month",
+    user: dict = Depends(auth_lib.get_current_user),
+):
+    """Aggregated stats across the agent's open-house history. Drives the
+    Insights tab — totals + per-day-of-week / per-hour-of-day breakdowns
+    + the 20 most recent sessions for the timeline. `period` is one of
+    "week", "month", "year", "all"; unknown values fall through to "all"."""
+    if period not in {"week", "month", "year", "all"}:
+        period = "all"
+    return stats_lib.query_insights(user["id"], period=period)
 
 
 @app.get("/me/profile")
@@ -803,10 +819,86 @@ _sessions: dict[str, dict] = {}
 # "request timed out" on iOS. RLock counts ownership per thread.
 _sessions_lock = threading.RLock()
 
+# Live-companion pairing codes. Keyed by 6-digit numeric string; value is
+# {session_id, user_id, expires_at (datetime), redeemed (bool)}. In-memory
+# only — codes expire in 4h and there's no reason to survive a redeploy
+# (the companion just re-pairs by asking the agent for a fresh code).
+_live_codes: dict[str, dict] = {}
+_live_codes_lock = threading.Lock()
+LIVE_CODE_TTL = timedelta(hours=4)
+
+
+def _evict_expired_live_codes() -> None:
+    """Drop codes whose TTL has expired. Called lazily on mint + redeem so
+    we don't need a background sweeper for what's typically a tiny dict."""
+    now = datetime.now(timezone.utc)
+    with _live_codes_lock:
+        stale = [c for c, v in _live_codes.items() if v["expires_at"] <= now]
+        for c in stale:
+            del _live_codes[c]
+
+
+def _mint_live_code(session_id: str, user_id: str) -> dict:
+    """Generates a fresh 6-digit code bound to (session_id, user_id) and
+    returns {code, expires_at}. Collisions are vanishingly rare at 6 digits
+    plus 4h TTL plus a tiny live-session count, but we still retry on
+    collision to be safe."""
+    _evict_expired_live_codes()
+    expires_at = datetime.now(timezone.utc) + LIVE_CODE_TTL
+    with _live_codes_lock:
+        # Drop any prior code bound to this session — re-minting always
+        # invalidates the old one so a lost device can't keep peeking.
+        for c in [c for c, v in _live_codes.items() if v["session_id"] == session_id]:
+            del _live_codes[c]
+        for _ in range(20):
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            if code not in _live_codes:
+                _live_codes[code] = {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "expires_at": expires_at,
+                    "redeemed": False,
+                }
+                return {"code": code, "expires_at": expires_at.isoformat()}
+        raise HTTPException(500, "Failed to mint a unique live code")
+
+
+def _redeem_live_code(code: str) -> dict:
+    """Looks up a code; marks it redeemed (single-use — the companion gets
+    a JWT, the code is then dead). Returns the bound (session_id, user_id)
+    so the caller can mint a scoped JWT."""
+    _evict_expired_live_codes()
+    with _live_codes_lock:
+        entry = _live_codes.get(code)
+        if entry is None:
+            raise HTTPException(404, "Invalid or expired code")
+        if entry["redeemed"]:
+            raise HTTPException(409, "Code has already been used")
+        entry["redeemed"] = True
+        return {
+            "session_id": entry["session_id"],
+            "user_id": entry["user_id"],
+            "expires_at": entry["expires_at"],
+        }
+
 
 def _persist(session_id: str) -> None:
     path = SESSIONS_DIR / session_id / "session.json"
-    path.write_text(json.dumps(_sessions[session_id], indent=2, default=str))
+    session = _sessions[session_id]
+    path.write_text(json.dumps(session, indent=2, default=str))
+    # Capture stats for the Insights dashboard. Idempotent — the helper
+    # only writes for sessions with status=ready, and a re-call after
+    # (e.g.) the agent sends the report just updates the existing row.
+    # Wrapped in try/except so a stats failure can never break the
+    # session-save path the agent's UI depends on.
+    try:
+        user_id = session.get("user_id")
+        if user_id and session.get("status") == "ready":
+            stats_lib.capture_session_stats(session, user_id)
+    except Exception as exc:  # noqa: BLE001
+        # Log but swallow — Insights can be re-derived from disk via
+        # backfill_from_disk() on the next backend start.
+        print(f"[stats] capture failed for {session_id}: {exc}", flush=True)
 
 
 def _update(session_id: str, **updates) -> None:
@@ -815,7 +907,7 @@ def _update(session_id: str, **updates) -> None:
         _persist(session_id)
 
 
-def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None, user_id: Optional[str] = None, analysis_depth: str = "full") -> None:
+def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Path], visitors_path: Optional[Path], speakers_expected: Optional[int] = None, script_id: Optional[str] = None, user_id: Optional[str] = None, analysis_depth: str = "full", check_in_id: Optional[str] = None) -> None:
     """analysis_depth:
       - "full":  re-transcribe + diarize + run per-visitor Claude analysis +
                  script coverage. Used on session creation and final end.
@@ -958,8 +1050,7 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         ]
 
         now_finish = datetime.now(timezone.utc).isoformat()
-        _update(
-            session_id,
+        updates: dict = dict(
             status="ready",
             completed_at=now_finish,
             # `last_snapshot_at` ticks every pass so the iPad can render
@@ -977,13 +1068,27 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                 "script_coverage": script_coverage_out,
             },
         )
+        # If this run was triggered by a companion check-in, stamp the
+        # completed id so the companion's polling loop knows its requested
+        # snapshot finished. Also clear the pending flag — the iPhone
+        # polling loop uses pending != last to decide whether to act.
+        if check_in_id:
+            updates["last_check_in_id"] = check_in_id
+            updates["pending_check_in_id"] = None
+        _update(session_id, **updates)
     except Exception as e:
-        _update(
-            session_id,
+        err_updates: dict = dict(
             status="error",
             error=_friendly_error(str(e)),
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
+        # Even on failure we should clear the pending flag so the companion
+        # can request another check-in instead of being stuck "Listening…"
+        # forever. Stamp last_check_in_id too so its polling loop unblocks.
+        if check_in_id:
+            err_updates["last_check_in_id"] = check_in_id
+            err_updates["pending_check_in_id"] = None
+        _update(session_id, **err_updates)
 
 
 def _friendly_error(raw: str) -> str:
@@ -1084,6 +1189,7 @@ async def snapshot_session(
     audio: UploadFile = File(...),
     speakers_expected: Optional[int] = Form(None),
     analysis_depth: str = Form("light"),
+    check_in_id: Optional[str] = Form(None),
     current_user: dict = Depends(auth_lib.get_current_user),
 ):
     """Mid-session audio snapshot. Pass `analysis_depth=light` (default) to
@@ -1091,6 +1197,11 @@ async def snapshot_session(
     Claude pass; `full` runs the whole pipeline (used by the final upload
     when the agent ends the session). Replaces the session's audio file on
     disk so the next snapshot's diarization sees the full audio history.
+
+    `check_in_id` is optional. When set, this snapshot is fulfilling a
+    companion-device check-in request — `_process` stamps it onto the
+    session as `last_check_in_id` when finished so the companion's polling
+    loop knows the request completed.
     """
     if analysis_depth not in ("light", "full"):
         raise HTTPException(400, "analysis_depth must be 'light' or 'full'")
@@ -1130,10 +1241,134 @@ async def snapshot_session(
 
     threading.Thread(
         target=_process,
-        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id, current_user["id"], analysis_depth),
+        args=(session_id, audio_path, None, None, speakers_expected, existing_script_id, current_user["id"], analysis_depth, check_in_id),
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing", "analysis_depth": analysis_depth}
+
+
+# --------------------------------------------------------------------------
+# Live companion — second-device coaching view
+# --------------------------------------------------------------------------
+#
+# Flow:
+#   1. iOS POSTs /live/codes (agent auth) → 6-digit code, expires in 4h
+#   2. Companion device opens openhousecopilot.com/#/live, types code
+#   3. Companion POSTs /live/redeem (no auth) → scoped JWT for this session
+#   4. Companion polls GET /live/sessions/{id} every 3s — sees slim view
+#      with current script_coverage (Phase 1) / coaching (Phase 2)
+#   5. Companion taps "Check in" → POST /live/sessions/{id}/check_in →
+#      backend stamps session.pending_check_in_id = <new uuid>
+#   6. iPhone's polling loop sees pending_check_in_id != last_handled →
+#      triggers a snapshot with that check_in_id; _process stamps
+#      last_check_in_id when complete
+#   7. Companion's polling loop sees last_check_in_id == requested →
+#      pulls fresh coaching/coverage and shows it
+
+def _live_session_view(session: dict) -> dict:
+    """Slim, companion-safe projection of a session. Strips lead PII
+    (visitor names, emails, follow-up drafts) and only exposes what the
+    coaching view actually needs: address, liveness, snapshot timestamps,
+    pending/last check-in ids, and the existing script-coverage block."""
+    result = session.get("result") or {}
+    return {
+        "id": session.get("id"),
+        "address": session.get("address"),
+        "name": session.get("name"),
+        "is_live": session.get("is_live"),
+        "status": session.get("status"),
+        "started_at": session.get("created_at"),
+        "last_snapshot_at": session.get("last_snapshot_at"),
+        "pending_check_in_id": session.get("pending_check_in_id"),
+        "last_check_in_id": session.get("last_check_in_id"),
+        "script_coverage": result.get("script_coverage"),
+        "error": session.get("error"),
+    }
+
+
+@app.post("/live/codes")
+def create_live_code(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Mint a 6-digit pairing code bound to one of the agent's in-flight
+    sessions. Returns {code, expires_at}. Re-minting for the same session
+    invalidates any prior code."""
+    session_id = (payload or {}).get("session_id") or ""
+    if not session_id:
+        raise HTTPException(400, "session_id is required")
+    session = _load_session(session_id)
+    _require_owner(session, current_user, session_id)
+    return _mint_live_code(session_id, current_user["id"])
+
+
+@app.post("/live/redeem")
+def redeem_live_code(payload: dict):
+    """Exchange a 6-digit code for a scoped JWT. No auth required — the code
+    is the credential. Single-use: the same code can't be redeemed twice
+    (so the agent can tell whether someone else is already paired)."""
+    code = (payload or {}).get("code") or ""
+    code = code.strip().replace("-", "").replace(" ", "")
+    if not code or not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "Code must be 6 digits")
+    bound = _redeem_live_code(code)
+    token, exp = auth_lib.mint_live_companion_jwt(
+        bound["session_id"], bound["user_id"]
+    )
+    return {
+        "token": token,
+        "session_id": bound["session_id"],
+        "expires_at": exp.isoformat(),
+    }
+
+
+@app.get("/live/sessions/{session_id}")
+def get_live_session(
+    session_id: str,
+    companion: dict = Depends(auth_lib.get_live_companion),
+):
+    """Companion-facing read of the in-flight session. Returns a slim
+    projection (no lead PII) — see `_live_session_view`."""
+    session = _load_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session {session_id} not found")
+    # `_require_owner` is wrong for companion access; the JWT itself binds
+    # the caller to this exact session_id, so just verify the session
+    # still belongs to the user who minted the code.
+    if session.get("user_id") and session["user_id"] != companion["user_id"]:
+        raise HTTPException(404, f"Session {session_id} not found")
+    return _live_session_view(session)
+
+
+@app.post("/live/sessions/{session_id}/check_in")
+def request_live_check_in(
+    session_id: str,
+    companion: dict = Depends(auth_lib.get_live_companion),
+):
+    """Companion taps "Check in" → stamp a new pending_check_in_id onto the
+    session. The iPhone's polling loop sees it and kicks a snapshot. If a
+    check-in is already pending, return that one instead of stacking — the
+    UI shows "Listening…" either way and there's no value in queueing.
+    """
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+        if session is None:
+            raise HTTPException(404, f"Session {session_id} not found")
+        if session.get("user_id") and session["user_id"] != companion["user_id"]:
+            raise HTTPException(404, f"Session {session_id} not found")
+        pending = session.get("pending_check_in_id")
+        if pending:
+            return {"check_in_id": pending, "queued": False}
+        new_id = str(uuid.uuid4())
+        session["pending_check_in_id"] = new_id
+        session["pending_check_in_requested_at"] = datetime.now(timezone.utc).isoformat()
+        _persist(session_id)
+    return {"check_in_id": new_id, "queued": True}
 
 
 @app.get("/scripts")

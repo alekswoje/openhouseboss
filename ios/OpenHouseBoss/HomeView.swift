@@ -295,13 +295,80 @@ struct SessionsTabContent: View {
 
     @ViewBuilder
     private var sessionsList: some View {
-        if let err = store.listError {
-            errorState(err)
-        } else if store.pastSessions.isEmpty && !store.listLoading {
-            emptyState
-        } else {
-            buckets
+        VStack(alignment: .leading, spacing: 12) {
+            if store.unfinishedRecording != nil {
+                unfinishedRecordingBanner
+            }
+            if let err = store.listError {
+                errorState(err)
+            } else if store.pastSessions.isEmpty && !store.listLoading {
+                emptyState
+            } else {
+                buckets
+            }
         }
+    }
+
+    // Surfaced on launch when the app finds an InFlightRecording with
+    // cleanlyEnded=false on disk — the prior run died mid-session. Tapping
+    // Recover finalizes whatever chunks are on disk through the standard
+    // snapshot pipeline; Discard drops the record (chunks stay on disk for
+    // manual rescue via Files.app).
+    private var unfinishedRecordingBanner: some View {
+        GlassSurface(cornerRadius: 14, strong: true) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                    Eyebrow(text: "Unfinished recording", color: FoyerTheme.terracotta)
+                    Spacer()
+                }
+                Text(unfinishedRecordingSubtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(2)
+                HStack(spacing: 10) {
+                    Button {
+                        store.recoverUnfinishedRecording()
+                        router.path = [.summary]
+                    } label: {
+                        Text("Recover")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.inkOnGold)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(FoyerTheme.gold, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button { store.dismissUnfinishedRecording() } label: {
+                        Text("Discard")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+    }
+
+    private var unfinishedRecordingSubtitle: String {
+        guard let r = store.unfinishedRecording else { return "" }
+        let label = r.name ?? r.address ?? "Open house"
+        let when: String = {
+            let delta = max(0, Date().timeIntervalSince(r.startedAt))
+            let h = Int(delta / 3600)
+            let m = Int((delta.truncatingRemainder(dividingBy: 3600)) / 60)
+            if h > 0 { return "\(h)h \(m)m ago" }
+            if m > 0 { return "\(m)m ago" }
+            return "just now"
+        }()
+        return "\(label) · started \(when). Upload the audio captured so far."
     }
 
     private var emptyState: some View {

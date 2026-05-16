@@ -9,6 +9,11 @@ struct SummaryView: View {
     @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
     @State private var player = AudioPlayer()
+    // Inline rename state — populated lazily from session.name when the
+    // sheet opens so the user always sees what's currently saved.
+    @State private var showRenameSheet = false
+    @State private var renameText: String = ""
+    @State private var continueError: String?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -67,6 +72,7 @@ struct SummaryView: View {
     }
 
     private var sessionLabel: String {
+        if let n = store.session?.name, !n.isEmpty { return n }
         if let addr = store.session?.address, !addr.isEmpty { return addr }
         if let id = pastSessionId { return id.prefix(8).description }
         return "Today's open house"
@@ -96,7 +102,37 @@ struct SummaryView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Eyebrow(text: headerEyebrow, color: FoyerTheme.gold)
+            HStack(spacing: 8) {
+                Eyebrow(text: headerEyebrow, color: FoyerTheme.gold)
+                Spacer()
+                // Rename affordance — visible whenever we have a session id
+                // to PATCH against (live + past).
+                if store.session?.id != nil {
+                    Button {
+                        renameText = store.session?.name ?? ""
+                        showRenameSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10, weight: .medium))
+                            Text("RENAME")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .tracking(1.4)
+                        }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(FoyerTheme.bgElev, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            // Session name (or fallback) prints above the phase title. This
+            // is what the agent actually scans the list for — keep it big.
+            if let label = sessionDisplayName {
+                Text(label)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
             Text(headerTitle)
                 .foyerDisplay(32)
                 .foregroundStyle(FoyerTheme.cream)
@@ -109,6 +145,24 @@ struct SummaryView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 18)
+        .alert("Rename session", isPresented: $showRenameSheet) {
+            TextField("Session name", text: $renameText)
+                .textInputAutocapitalization(.sentences)
+            Button("Save") {
+                if let id = store.session?.id {
+                    store.renameSession(id: id, to: renameText)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Empty name clears the nickname (display falls back to address).")
+        }
+    }
+
+    private var sessionDisplayName: String? {
+        if let n = store.session?.name, !n.isEmpty { return n }
+        if let a = store.session?.address, !a.isEmpty { return a }
+        return nil
     }
 
     @ViewBuilder
@@ -457,13 +511,33 @@ struct SummaryView: View {
     private var footerButton: some View {
         switch store.phase {
         case .ready:
-            // The agent reviews and sends per-visitor drafts from inside the
-            // visitor cards above — there's nothing to bulk-approve from
-            // this screen, so a single Done back to Sessions is enough.
-            Button { router.popToRoot() } label: { Text("Done · back to sessions") }
-                .buttonStyle(FoyerPrimaryButton())
-                .padding(.horizontal, 20)
-                .padding(.bottom, 36)
+            // Two actions: Continue recording resumes capture into the same
+            // backend session (so a "stop for now, resume later" workflow
+            // works without creating a duplicate session); Done is the
+            // existing bail-to-home affordance.
+            VStack(spacing: 10) {
+                if let err = continueError {
+                    Text(err)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
+                if store.session?.id != nil {
+                    Button { continueRecordingTapped() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Continue recording")
+                        }
+                    }
+                    .buttonStyle(FoyerGhostButton())
+                }
+                Button { router.popToRoot() } label: { Text("Done · back to sessions") }
+                    .buttonStyle(FoyerPrimaryButton())
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 36)
 
         case .failed:
             Button { router.popToRoot() } label: { Text("Back to home") }
@@ -479,6 +553,28 @@ struct SummaryView: View {
                 .buttonStyle(FoyerGhostButton())
                 .padding(.horizontal, 20)
                 .padding(.bottom, 36)
+        }
+    }
+
+    private func continueRecordingTapped() {
+        guard let id = store.session?.id else { return }
+        let address = store.session?.address
+        let name = store.session?.name
+        // Picks the script the session was originally graded on (if any)
+        // so coverage re-grading after the resumed segment uses the same
+        // rubric. Falls back to the agent's default the same way the
+        // fresh-recording flow does.
+        let scriptId = store.session?.result?.scriptCoverage?.scriptId
+        Task { @MainActor in
+            continueError = nil
+            do {
+                try await store.continueRecording(
+                    sessionId: id, address: address, name: name, scriptId: scriptId
+                )
+                router.path = [.live]
+            } catch {
+                continueError = "Couldn't resume: \(error.localizedDescription)"
+            }
         }
     }
 

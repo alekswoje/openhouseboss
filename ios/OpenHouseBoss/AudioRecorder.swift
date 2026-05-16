@@ -61,7 +61,11 @@ final class AudioRecorder {
         await AVAudioApplication.requestRecordPermission()
     }
 
-    func startRecording(address: String? = nil) throws {
+    // Start a fresh recording. Pass `resumingFrom` to continue into an
+    // existing chunks directory (used by crash recovery + Continue recording
+    // on past sessions) — chunkIndex picks up past any chunk_NNN.m4a already
+    // on disk so the new audio appends to the prior session's archive.
+    func startRecording(address: String? = nil, resumingFrom existingDir: URL? = nil) throws {
         let session = AVAudioSession.sharedInstance()
         // .record (not .playAndRecord) keeps the mic active when the screen
         // locks; combined with `UIBackgroundModes: ["audio"]` in Info.plist
@@ -73,13 +77,23 @@ final class AudioRecorder {
         // collide across sessions. The session-display URL points at the
         // first chunk to start with; concatenatedURL() builds the full file
         // on demand for upload.
-        let sessionId = filenameForNow()  // doubles as a unique session prefix
-        let dir = AudioRecorder.recordingsDirectory
-            .appendingPathComponent(sessionId, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir: URL
+        if let existingDir {
+            try? FileManager.default.createDirectory(at: existingDir, withIntermediateDirectories: true)
+            dir = existingDir
+            chunkURLs = AudioRecorder.scanChunks(in: dir)
+            // Next chunk index = max existing chunk's index + 1. -1 sentinel
+            // for an empty dir gives a starting index of 0.
+            chunkIndex = (chunkURLs.compactMap { Self.chunkNumber(from: $0) }.max() ?? -1) + 1
+        } else {
+            let sessionId = filenameForNow()  // doubles as a unique session prefix
+            dir = AudioRecorder.recordingsDirectory
+                .appendingPathComponent(sessionId, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            chunkURLs = []
+            chunkIndex = 0
+        }
         chunksDirectory = dir
-        chunkIndex = 0
-        chunkURLs = []
 
         settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
@@ -88,7 +102,7 @@ final class AudioRecorder {
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
 
-        let firstURL = dir.appendingPathComponent("chunk_000.m4a")
+        let firstURL = dir.appendingPathComponent(String(format: "chunk_%03d.m4a", chunkIndex))
         let r = try AVAudioRecorder(url: firstURL, settings: settings)
         r.isMeteringEnabled = true
         r.record()
@@ -351,5 +365,45 @@ final class AudioRecorder {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         return "OpenHouse_\(f.string(from: Date())).m4a"
+    }
+
+    // Last-path-component of the active chunks directory — used by the
+    // SessionStore in-flight record so a relaunch can re-resolve the dir
+    // under Documents/Recordings without trusting an absolute path (the
+    // app container path changes between installs).
+    var chunksDirectoryName: String? {
+        chunksDirectory?.lastPathComponent
+    }
+
+    // Wire AudioRecorder up to an existing chunks dir without starting a
+    // new recording. Used by crash recovery — caller wants the recorder's
+    // chunkURLs populated so concatenatedURL() can build a single m4a
+    // from what's on disk, then upload + finalize the session.
+    func adoptExistingChunks(dir: URL, urls: [URL]) {
+        chunksDirectory = dir
+        chunkURLs = urls
+        chunkIndex = (urls.compactMap { Self.chunkNumber(from: $0) }.max() ?? -1) + 1
+    }
+
+    // Scan a chunks directory for finalized chunk_NNN.m4a files, sorted by
+    // numeric index. Used on resume (continue recording / crash recovery) to
+    // pick up where rotation left off and rebuild the upload archive.
+    static func scanChunks(in dir: URL) -> [URL] {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let chunks = urls.filter {
+            $0.pathExtension.lowercased() == "m4a"
+                && $0.lastPathComponent.hasPrefix("chunk_")
+        }
+        return chunks.sorted { lhs, rhs in
+            (chunkNumber(from: lhs) ?? -1) < (chunkNumber(from: rhs) ?? -1)
+        }
+    }
+
+    static func chunkNumber(from url: URL) -> Int? {
+        let stem = url.deletingPathExtension().lastPathComponent  // "chunk_007"
+        let parts = stem.split(separator: "_")
+        guard parts.count == 2 else { return nil }
+        return Int(parts[1])
     }
 }

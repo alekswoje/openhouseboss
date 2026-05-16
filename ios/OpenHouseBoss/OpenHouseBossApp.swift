@@ -99,6 +99,13 @@ struct RootView: View {
                         Task {
                             await auth.restore()
                             if auth.isSignedIn {
+                                // Surface a crashed mid-session recording on
+                                // the Home banner if one is sitting on disk —
+                                // sync, but fast (UserDefaults read + dir
+                                // existence check). Runs before the network
+                                // hits so the banner is up before the list
+                                // even paints.
+                                SessionStore.shared.scanForUnfinishedRecording()
                                 await SessionStore.shared.refreshSessions()
                                 await SessionStore.shared.refreshScripts()
                             }

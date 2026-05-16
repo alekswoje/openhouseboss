@@ -20,7 +20,7 @@ import UIKit
 // APIClient.updateLeadState. No SampleData references here.
 struct IPadAgentApp: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case home, record, kiosk, leads, scripts, offers, listings, profile
+        case home, record, kiosk, leads, scripts, offers, listings, insights, profile
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -31,6 +31,7 @@ struct IPadAgentApp: View {
             case .scripts:  return "Scripts"
             case .offers:   return "Offers"
             case .listings: return "Listings"
+            case .insights: return "Insights"
             case .profile:  return "Profile"
             }
         }
@@ -43,6 +44,7 @@ struct IPadAgentApp: View {
             case .scripts:  return "doc.text"
             case .offers:   return "tag"
             case .listings: return "square.grid.2x2"
+            case .insights: return "chart.bar"
             case .profile:  return "person.crop.circle"
             }
         }
@@ -55,6 +57,7 @@ struct IPadAgentApp: View {
             case .scripts:  return "doc.text.fill"
             case .offers:   return "tag.fill"
             case .listings: return "square.grid.2x2.fill"
+            case .insights: return "chart.bar.fill"
             case .profile:  return "person.crop.circle.fill"
             }
         }
@@ -310,6 +313,13 @@ struct IPadAgentApp: View {
                     activeSessionId = sid
                     viewingPastSession = nil
                     tab = .leads
+                },
+                onContinueRecording: {
+                    // SessionStore.continueRecording already kicked off
+                    // capture via AudioRecorder.shared; switching to Record
+                    // surfaces the live pane the agent expects.
+                    viewingPastSession = nil
+                    selectTab(.record)
                 }
             )
         } else {
@@ -421,6 +431,8 @@ struct IPadAgentApp: View {
                 },
                 onAdd: { showAddListing = true }
             )
+        case .insights:
+            InsightsView()
         case .profile:
             IPadProfile(store: store, auth: auth)
         }
@@ -966,12 +978,12 @@ private struct LiveSessionBar: View {
 
     private var title: String {
         if recorder.isRecording {
-            return store.pendingAddress ?? "Recording"
+            return store.pendingName ?? store.pendingAddress ?? "Recording"
         }
         if let s = store.session {
-            return s.address ?? "Live session"
+            return s.name ?? s.address ?? "Live session"
         }
-        return store.pendingAddress ?? "Ready to start"
+        return store.pendingName ?? store.pendingAddress ?? "Ready to start"
     }
 
     private var subtitle: String {
@@ -1021,6 +1033,9 @@ private struct IPadHome: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: isCompact ? 24 : 36) {
                 greeting
+                if store.unfinishedRecording != nil {
+                    unfinishedRecordingBanner
+                }
                 if let listing = store.listings.first {
                     heroListing(listing)
                 } else {
@@ -1047,6 +1062,84 @@ private struct IPadHome: View {
         .refreshable { await store.refreshSessions() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
+    }
+
+    // Surfaced on launch when the app finds an InFlightRecording with
+    // cleanlyEnded=false on disk — the prior run died mid-session. Tapping
+    // Recover finalizes whatever chunks are on disk through the snapshot
+    // pipeline; Discard drops the record (chunks stay on disk in case the
+    // agent wants to pull them via Files.app, but the banner goes away).
+    @ViewBuilder
+    private var unfinishedRecordingBanner: some View {
+        if let r = store.unfinishedRecording {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                    Text("UNFINISHED RECORDING")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundStyle(FoyerTheme.terracotta)
+                    Spacer()
+                }
+                Text(unfinishedRecordingSubtitle(r))
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button {
+                        store.recoverUnfinishedRecording()
+                        if let id = r.backendSessionId {
+                            onOpenSession(id)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.doc")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Recover")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(FoyerTheme.gold, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button { store.dismissUnfinishedRecording() } label: {
+                        Text("Discard")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 9)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(FoyerTheme.terracotta.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(FoyerTheme.terracotta.opacity(0.32), lineWidth: 1)
+            )
+        }
+    }
+
+    private func unfinishedRecordingSubtitle(_ r: InFlightRecording) -> String {
+        let label = r.name ?? r.address ?? "Open house"
+        let when: String = {
+            let delta = max(0, Date().timeIntervalSince(r.startedAt))
+            let h = Int(delta / 3600)
+            let m = Int((delta.truncatingRemainder(dividingBy: 3600)) / 60)
+            if h > 0 { return "\(h)h \(m)m ago" }
+            if m > 0 { return "\(m)m ago" }
+            return "just now"
+        }()
+        return "\(label) · started \(when). Upload the audio captured so far?"
     }
 
     private var loadingFeed: some View {
@@ -2666,7 +2759,7 @@ private struct IPadLeads: View {
                     activeId = nil
                 } label: {
                     HStack {
-                        Text(s.address ?? "Open house")
+                        Text(s.displayTitle)
                         if filterSessionId == s.id {
                             Image(systemName: "checkmark")
                         }
@@ -2694,7 +2787,7 @@ private struct IPadLeads: View {
               let s = sessionsForFilter.first(where: { $0.id == id }) else {
             return "All leads (\(allLeads.count))"
         }
-        return s.address ?? "Selected open house"
+        return s.displayTitle
     }
 
     private var emptyList: some View {
@@ -7963,6 +8056,12 @@ private struct IPadRecord: View {
     // otherwise re-fire if the user navigates back to Record while a ready
     // session is still on the store.
     @State private var openedSessionId: String?
+    // Optional nickname for the session. Filled in on the recording screen
+    // and synced to SessionStore.pendingName; skips the End-Session prompt
+    // when non-empty.
+    @State private var sessionName: String = ""
+    @State private var showEndNamePrompt = false
+    @State private var endNamePromptText: String = ""
 
     var body: some View {
         ZStack {
@@ -7972,6 +8071,10 @@ private struct IPadRecord: View {
         .onAppear {
             resetIfFinishedSession()
             paused = recorder.isPaused
+            // Hydrate the local name field from the store so a Continue-
+            // recording flow lands on the recording screen with the prior
+            // session's nickname pre-filled.
+            sessionName = store.pendingName ?? ""
         }
         // Keep the local `paused` mirror aligned with the recorder so a mute
         // triggered from the Live Activity widget flips the in-app pill +
@@ -7996,6 +8099,22 @@ private struct IPadRecord: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Enable microphone access in Settings to record audio.")
+        }
+        .alert("Name this session", isPresented: $showEndNamePrompt) {
+            TextField("Yellow craftsman on Elm", text: $endNamePromptText)
+                .textInputAutocapitalization(.sentences)
+            Button("Save") {
+                store.pendingName = endNamePromptText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty
+                finishEndSession()
+            }
+            Button("Skip", role: .cancel) {
+                store.pendingName = nil
+                finishEndSession()
+            }
+        } message: {
+            Text("Optional — helps you find this session later.")
         }
     }
 
@@ -8317,7 +8436,7 @@ private struct IPadRecord: View {
     private var voiceVisualizer: some View {
         VStack(spacing: 24) {
             VStack(spacing: 10) {
-                Text(store.pendingAddress ?? "Open house")
+                Text(store.pendingName ?? store.pendingAddress ?? "Open house")
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .tracking(-0.4)
@@ -8327,6 +8446,7 @@ private struct IPadRecord: View {
                     .font(.system(size: 13))
                     .foregroundStyle(FoyerTheme.textDim)
             }
+            sessionNameField
             // Single flowing-wave visualization replaces the previous
             // mic-disc + bar-meter pair. Same VoiceWaveform component
             // the iPhone surface uses, scaled up for the iPad canvas.
@@ -8335,6 +8455,31 @@ private struct IPadRecord: View {
                           orbSize: 140)
                 .frame(height: 360)
         }
+    }
+
+    // Optional nickname so the session is findable in the past-sessions
+    // list. Filling this in skips the End-Session "Name this session" prompt.
+    private var sessionNameField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SESSION NAME · OPTIONAL")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.gold)
+            TextField("e.g. Yellow craftsman on Elm", text: $sessionName)
+                .font(.system(size: 16))
+                .foregroundStyle(FoyerTheme.cream)
+                .textInputAutocapitalization(.sentences)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.10), lineWidth: 0.5))
+                .onChange(of: sessionName) { _, new in
+                    store.pendingName = new
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .nonEmpty
+                }
+        }
+        .frame(maxWidth: 520)
     }
 
     private var recordingControls: some View {
@@ -8535,6 +8680,18 @@ private struct IPadRecord: View {
     }
 
     private func endSession() {
+        // If the agent already named the session on the recording screen,
+        // skip straight to End. Otherwise prompt — they can still Skip to
+        // leave it anonymous (display falls back to address / date).
+        if let n = store.pendingName, !n.isEmpty {
+            finishEndSession()
+        } else {
+            endNamePromptText = store.pendingAddress ?? ""
+            showEndNamePrompt = true
+        }
+    }
+
+    private func finishEndSession() {
         // Fires one final full-depth snapshot, stops recording, and lets
         // the snapshotTick flip phase → .ready when the pipeline returns.
         store.endLiveSnapshotLoop()
@@ -8556,6 +8713,7 @@ private struct IPadSessionDetail: View {
     let store: SessionStore
     var onBack: () -> Void
     var onOpenLeads: (String) -> Void
+    var onContinueRecording: () -> Void
 
     @Environment(\.horizontalSizeClass) private var hSize
     private var isCompact: Bool { hSize == .compact }
@@ -8572,6 +8730,9 @@ private struct IPadSessionDetail: View {
     @State private var reanalyzing = false
     @State private var reanalyzeError: String?
     @State private var showAbTest = false
+    @State private var showRenamePrompt = false
+    @State private var renameText: String = ""
+    @State private var resumeError: String?
     // Open House Report — presented as a full-screen sheet from this
     // detail screen so the agent stays in their session context.
     @State private var showReport = false
@@ -8637,6 +8798,21 @@ private struct IPadSessionDetail: View {
             }
         } message: {
             Text("This permanently removes the recording, transcript, analysis, and all leads from this session. It can't be undone.")
+        }
+        .alert("Rename session", isPresented: $showRenamePrompt) {
+            TextField("Session name", text: $renameText)
+                .textInputAutocapitalization(.sentences)
+            Button("Save") {
+                store.renameSession(id: sessionId, to: renameText)
+                // Mirror onto the locally-cached `session` so the header
+                // re-renders immediately without waiting for a refresh.
+                session?.name = renameText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Empty name clears the nickname (display falls back to address).")
         }
         .fullScreenCover(isPresented: $showReport) {
             // Full-screen so the report has the same canvas it gets when
@@ -8723,6 +8899,24 @@ private struct IPadSessionDetail: View {
             .buttonStyle(.plain)
             Spacer()
             if let session, session.status == "ready" {
+                // Pick capture back up against this same session id —
+                // SessionStore.continueRecording handles either reusing the
+                // local chunks dir (same device) or seeding chunk_000.m4a
+                // from /sessions/{id}/audio when chunks are gone.
+                Button { continueRecordingTapped() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Continue recording")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            if let session, session.status == "ready" {
                 Button { onOpenLeads(session.id) } label: {
                     HStack(spacing: 6) {
                         Text("Open in Leads")
@@ -8733,6 +8927,23 @@ private struct IPadSessionDetail: View {
                     .foregroundStyle(FoyerTheme.inkOnGold)
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            if let session {
+                Button {
+                    renameText = session.name ?? ""
+                    showRenamePrompt = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Rename")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.white.opacity(0.06), in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
@@ -8754,6 +8965,24 @@ private struct IPadSessionDetail: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(deleting)
+            }
+        }
+    }
+
+    private func continueRecordingTapped() {
+        guard let session else { return }
+        resumeError = nil
+        Task { @MainActor in
+            do {
+                try await store.continueRecording(
+                    sessionId: session.id,
+                    address: session.address,
+                    name: session.name,
+                    scriptId: session.result?.scriptCoverage?.scriptId
+                )
+                onContinueRecording()
+            } catch {
+                resumeError = "Couldn't resume: \(error.localizedDescription)"
             }
         }
     }
@@ -8788,11 +9017,31 @@ private struct IPadSessionDetail: View {
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .tracking(2.0)
                 .foregroundStyle(FoyerTheme.gold)
-            Text(session.address ?? "Open house")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundStyle(FoyerTheme.cream)
-                .tracking(-0.5)
-                .lineLimit(2)
+            // Title chain: agent-set name → address → "Open house". Tapping
+            // opens the rename prompt for a fast inline edit (same control
+            // as the topBar Rename button, just bigger affordance).
+            Button {
+                renameText = session.name ?? ""
+                showRenamePrompt = true
+            } label: {
+                Text(headerTitle(session))
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(-0.5)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if let n = session.name, !n.isEmpty,
+               let addr = session.address, !addr.isEmpty {
+                // When a nickname is set, also show the address underneath
+                // so the agent can still tell which house was recorded —
+                // names are great for memory but addresses are factual.
+                Text(addr)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
             HStack(spacing: 10) {
                 Text(relativeTime(session.createdAt))
                     .font(.system(size: 13))
@@ -8810,7 +9059,20 @@ private struct IPadSessionDetail: View {
                         .foregroundStyle(FoyerTheme.textDim)
                 }
             }
+            if let resumeError {
+                Text(resumeError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .lineLimit(2)
+                    .padding(.top, 4)
+            }
         }
+    }
+
+    private func headerTitle(_ session: Session) -> String {
+        if let n = session.name, !n.isEmpty { return n }
+        if let a = session.address, !a.isEmpty { return a }
+        return "Open house"
     }
 
     private func statusBadge(_ status: String) -> some View {

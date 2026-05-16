@@ -24,6 +24,7 @@
 		75B80CF41E60950CFD1B894F /* VisitorDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AF9EB1C202D2DA5DB88A1EC /* VisitorDetailView.swift */; };
 		7B880972808B12F311F66774 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7639E9BFDB5C581D58043144 /* SampleData.swift */; };
 		8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 486C86D53F7F13F83881027C /* FollowupView.swift */; };
+		994CB8138326823ECA807674 /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8C2198C2100222C0B0990A /* InsightsView.swift */; };
 		9D444B6AC2E2DA852776D5EB /* RecordingActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059742BE4DC8DE3BC37C3420 /* RecordingActivityAttributes.swift */; };
 		9F99468A8A85EE024AFE3903 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C2623D371CC35BE5C79E0F /* SessionStore.swift */; };
 		9FAA8326243F5997E8634DA9 /* OpenHouseBossWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3988A31ECC5ABDE712E61764 /* OpenHouseBossWidgetsBundle.swift */; };
@@ -68,6 +69,7 @@
 
 /* Begin PBXFileReference section */
 		059742BE4DC8DE3BC37C3420 /* RecordingActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingActivityAttributes.swift; sourceTree = "<group>"; };
+		0B8C2198C2100222C0B0990A /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		14804FB0F6B1FF7D9A98509F /* SummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryView.swift; sourceTree = "<group>"; };
 		17AAE43B7C807B2B3D1CD658 /* DevMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevMode.swift; sourceTree = "<group>"; };
 		198B53E137D70F2852D04E7B /* OpenHouseBossWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OpenHouseBossWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -137,6 +139,7 @@
 				B6DB7C9D6CA21742ED702246 /* foyer-loading.gif */,
 				B24B8C774159A0F354B9176D /* FoyerBrand.swift */,
 				9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */,
+				0B8C2198C2100222C0B0990A /* InsightsView.swift */,
 				C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */,
 				701CBCDE2440532BB88C1222 /* LiveView.swift */,
 				B550150CDEF72AE1714252D7 /* Log.swift */,
@@ -268,6 +271,7 @@
 				A8CC3AF05D4BE251321536C7 /* FoyerBrand.swift in Sources */,
 				DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */,
 				36A2F83B5677D376932A1CB0 /* IPadAgentApp.swift in Sources */,
+				994CB8138326823ECA807674 /* InsightsView.swift in Sources */,
 				1083B061DCE584035504F74C /* LiveView.swift in Sources */,
 				A9FD41F941A91A0BB7101205 /* Log.swift in Sources */,
 				3746A7E818ACECF5E1FE9EE1 /* Models.swift in Sources */,

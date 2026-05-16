@@ -30,6 +30,9 @@ struct Session: Codable, Hashable, Identifiable {
     let id: String
     var status: String          // "processing" | "ready" | "error"
     var address: String?
+    // Agent-set nickname. Edited inline on SummaryView; persisted via
+    // PATCH /sessions/{id}. Display fallback: name -> address -> "Session …".
+    var name: String?
     var createdAt: String?
     var completedAt: String?
     var error: String?
@@ -40,6 +43,12 @@ struct Session: Codable, Hashable, Identifiable {
     // older sessions cached on disk decode cleanly.
     var isLive: Bool?
     var lastSnapshotAt: String?
+    // Live companion check-in coordination. The companion device stamps
+    // `pendingCheckInId` via POST /live/.../check_in; the iPhone's polling
+    // loop sees pendingCheckInId != lastCheckInId and kicks a snapshot
+    // tagged with that id. `_process` writes lastCheckInId on completion.
+    var pendingCheckInId: String?
+    var lastCheckInId: String?
     // Homeowner identity for the Open House Report. Optional — captured at
     // session setup or set later from the Report tab via PATCH /homeowner.
     var homeownerEmail: String?
@@ -51,14 +60,42 @@ struct Session: Codable, Hashable, Identifiable {
     var reportMeta: ReportMeta?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, address, error, result, report
+        case id, status, address, name, error, result, report
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case isLive = "is_live"
         case lastSnapshotAt = "last_snapshot_at"
+        case pendingCheckInId = "pending_check_in_id"
+        case lastCheckInId = "last_check_in_id"
         case homeownerEmail = "homeowner_email"
         case homeownerName = "homeowner_name"
         case reportMeta = "report_meta"
+    }
+}
+
+// Pairing code minted by POST /live/codes. Shown to the agent in LiveView
+// so the companion device can type it into openhousecopilot.com/#/live.
+struct LiveCode: Codable, Hashable {
+    let code: String         // 6-digit numeric, e.g. "472913"
+    let expiresAt: String    // ISO-8601 — used to dim the affordance once
+                              // the code is past its 4-hour TTL.
+
+    enum CodingKeys: String, CodingKey {
+        case code
+        case expiresAt = "expires_at"
+    }
+
+    var formatted: String {
+        // Render "472-913" so the agent can read it aloud / the companion
+        // user can type it without losing their place.
+        guard code.count == 6 else { return code }
+        let mid = code.index(code.startIndex, offsetBy: 3)
+        return "\(code[..<mid])-\(code[mid...])"
+    }
+
+    var expiresDate: Date? {
+        ISO8601DateFormatter.fractionalSeconds.date(from: expiresAt)
+            ?? ISO8601DateFormatter().date(from: expiresAt)
     }
 }
 
@@ -68,6 +105,10 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     let id: String
     let status: String
     let address: String?
+    // Agent-set nickname. Display chain in lists: name -> address -> date.
+    // Optional + decoded with a default so cached summaries from older
+    // builds still parse.
+    var name: String?
     let createdAt: String
     let completedAt: String?
     let visitorCount: Int
@@ -78,7 +119,7 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     var kind: String = "recorded"
 
     enum CodingKeys: String, CodingKey {
-        case id, status, address, kind
+        case id, status, address, name, kind
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case visitorCount = "visitor_count"
@@ -89,6 +130,7 @@ struct SessionSummary: Codable, Hashable, Identifiable {
         id = try c.decode(String.self, forKey: .id)
         status = try c.decode(String.self, forKey: .status)
         address = try c.decodeIfPresent(String.self, forKey: .address)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
         createdAt = try c.decode(String.self, forKey: .createdAt)
         completedAt = try c.decodeIfPresent(String.self, forKey: .completedAt)
         visitorCount = try c.decode(Int.self, forKey: .visitorCount)
@@ -556,6 +598,25 @@ extension SessionSummary {
         ISO8601DateFormatter.fractionalSeconds.date(from: createdAt)
     }
     var displayTitle: String {
+        if let n = name, !n.isEmpty { return n }
+        if let a = address, !a.isEmpty { return a }
+        return "Session " + String(id.prefix(8))
+    }
+}
+
+extension String {
+    // Returns self if non-empty, otherwise nil. Useful when converting a
+    // trimmed TextField string into an optional that empty-strings become
+    // nil in (so the backend gets `null` instead of `""`).
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
+extension Session {
+    // Display chain: agent-set nickname → address → fallback. Mirrors the
+    // SessionSummary.displayTitle path so list cells and detail views show
+    // the same label.
+    var displayTitle: String {
+        if let n = name, !n.isEmpty { return n }
         if let a = address, !a.isEmpty { return a }
         return "Session " + String(id.prefix(8))
     }
@@ -662,4 +723,141 @@ struct ReportMeta: Codable, Hashable {
         case sentTo = "sent_to"
         case sentMessageId = "sent_message_id"
     }
+}
+
+// MARK: – Insights (per-agent stats dashboard)
+//
+// Aggregated stats across the agent's open-house history. Backend
+// computes everything in one round trip (backend/stats.py); the iOS
+// view groups and renders. Period filters the underlying SQL window.
+
+enum InsightsPeriod: String, CaseIterable, Identifiable {
+    case week, month, year, all
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .week:  return "Week"
+        case .month: return "Month"
+        case .year:  return "Year"
+        case .all:   return "All time"
+        }
+    }
+}
+
+struct InsightsDayOfWeek: Codable, Hashable, Identifiable {
+    let dayOfWeek: Int      // 0=Mon … 6=Sun (Python weekday() convention)
+    let sessions: Int
+    let visitors: Int
+    let hot: Int
+    let avgScore: Double
+
+    var id: Int { dayOfWeek }
+
+    enum CodingKeys: String, CodingKey {
+        case sessions, visitors, hot
+        case dayOfWeek = "day_of_week"
+        case avgScore = "avg_score"
+    }
+
+    var label: String {
+        switch dayOfWeek {
+        case 0: return "Mon"
+        case 1: return "Tue"
+        case 2: return "Wed"
+        case 3: return "Thu"
+        case 4: return "Fri"
+        case 5: return "Sat"
+        case 6: return "Sun"
+        default: return "?"
+        }
+    }
+}
+
+struct InsightsHourOfDay: Codable, Hashable, Identifiable {
+    let hourOfDay: Int      // 0..23 UTC — caller renders in local time
+    let sessions: Int
+    let visitors: Int
+    let hot: Int
+    let avgScore: Double
+
+    var id: Int { hourOfDay }
+
+    enum CodingKeys: String, CodingKey {
+        case sessions, visitors, hot
+        case hourOfDay = "hour_of_day"
+        case avgScore = "avg_score"
+    }
+}
+
+struct InsightsSessionRow: Codable, Hashable, Identifiable {
+    let sessionId: String
+    let address: String?
+    let createdAt: String?
+    let durationMin: Int
+    let visitorCountTotal: Int
+    let hotVisitorCount: Int
+    let avgVisitorScore: Double
+    let scriptCoverageScore: Int?
+    let reportSent: Bool
+
+    var id: String { sessionId }
+
+    enum CodingKeys: String, CodingKey {
+        case address
+        case sessionId = "session_id"
+        case createdAt = "created_at"
+        case durationMin = "duration_min"
+        case visitorCountTotal = "visitor_count_total"
+        case hotVisitorCount = "hot_visitor_count"
+        case avgVisitorScore = "avg_visitor_score"
+        case scriptCoverageScore = "script_coverage_score"
+        case reportSent = "report_sent"
+    }
+}
+
+struct AgentInsights: Codable, Hashable {
+    let period: String
+    let sessionCount: Int
+    let visitorCount: Int
+    let hotVisitorCount: Int
+    let reportsSentCount: Int
+    let reportSendRate: Double
+    let followupsSentCount: Int
+    let avgVisitorsPerSession: Double
+    let avgScore: Double
+    let avgDurationMin: Double
+    let byDayOfWeek: [InsightsDayOfWeek]
+    let byHourOfDay: [InsightsHourOfDay]
+    let bestDayOfWeek: Int?
+    let bestHourOfDay: Int?
+    let recentSessions: [InsightsSessionRow]
+
+    enum CodingKeys: String, CodingKey {
+        case period
+        case sessionCount = "session_count"
+        case visitorCount = "visitor_count"
+        case hotVisitorCount = "hot_visitor_count"
+        case reportsSentCount = "reports_sent_count"
+        case reportSendRate = "report_send_rate"
+        case followupsSentCount = "followups_sent_count"
+        case avgVisitorsPerSession = "avg_visitors_per_session"
+        case avgScore = "avg_score"
+        case avgDurationMin = "avg_duration_min"
+        case byDayOfWeek = "by_day_of_week"
+        case byHourOfDay = "by_hour_of_day"
+        case bestDayOfWeek = "best_day_of_week"
+        case bestHourOfDay = "best_hour_of_day"
+        case recentSessions = "recent_sessions"
+    }
+
+    static let empty = AgentInsights(
+        period: "all",
+        sessionCount: 0, visitorCount: 0, hotVisitorCount: 0,
+        reportsSentCount: 0, reportSendRate: 0.0, followupsSentCount: 0,
+        avgVisitorsPerSession: 0.0, avgScore: 0.0, avgDurationMin: 0.0,
+        byDayOfWeek: [], byHourOfDay: [],
+        bestDayOfWeek: nil, bestHourOfDay: nil,
+        recentSessions: []
+    )
 }

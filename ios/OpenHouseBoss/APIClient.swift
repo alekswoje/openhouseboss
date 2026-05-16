@@ -237,6 +237,24 @@ actor APIClient {
         return try JSONDecoder().decode(AuthUser.self, from: data)
     }
 
+    // MARK: – Insights (cross-session stats dashboard)
+
+    // GET /me/insights?period=week|month|year|all → aggregated dashboard
+    // payload. Single round trip; everything's precomputed server-side.
+    func getInsights(period: InsightsPeriod = .month) async throws -> AgentInsights {
+        var comps = URLComponents(
+            url: Config.backendURL.appendingPathComponent("me/insights"),
+            resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [URLQueryItem(name: "period", value: period.rawValue)]
+        var req = URLRequest(url: comps.url!)
+        req.timeoutInterval = 15
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AgentInsights.self, from: data)
+    }
+
     // MARK: – Agent profile (brokerage / license / phone / title / tagline / headshot)
 
     func getProfile() async throws -> AgentProfile {
@@ -316,12 +334,15 @@ actor APIClient {
     // Authenticated GET for a session's recorded audio. Used by
     // SessionStore.continueRecording when local chunks are gone — we pull
     // the backend's authoritative recording and seed chunk_000.m4a so the
-    // resumed snapshot still includes the prior session's audio.
-    func audioFetchRequest(sessionId: String) -> URLRequest {
+    // resumed snapshot still includes the prior session's audio. Nonisolated
+    // because it doesn't touch any APIClient state — it's a pure builder.
+    nonisolated func audioFetchRequest(sessionId: String) -> URLRequest {
         var req = URLRequest(url: Config.backendURL
             .appendingPathComponent("sessions/\(sessionId)/audio"))
         req.timeoutInterval = 60
-        authorize(&req)
+        if let token = Keychain.get(AuthStore.tokenKey) {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         return req
     }
 
@@ -437,7 +458,8 @@ actor APIClient {
         sessionId: String,
         audioURL: URL,
         depth: AnalysisDepth = .light,
-        speakersExpected: Int? = nil
+        speakersExpected: Int? = nil,
+        checkInId: String? = nil
     ) async throws {
         let boundary = "Boundary-\(UUID().uuidString)"
         var req = URLRequest(url: Config.backendURL.appendingPathComponent(
@@ -453,6 +475,12 @@ actor APIClient {
         if let n = speakersExpected, n > 0 {
             body.appendField(boundary: boundary, name: "speakers_expected", value: String(n))
         }
+        // When set, backend stamps this id onto session.last_check_in_id
+        // after _process finishes. The companion's polling loop watches for
+        // that stamp to know its requested check-in completed.
+        if let cid = checkInId, !cid.isEmpty {
+            body.appendField(boundary: boundary, name: "check_in_id", value: cid)
+        }
         let audioData = try Data(contentsOf: audioURL)
         body.appendForm(boundary: boundary, name: "audio", filename: "snapshot.m4a",
                         contentType: "audio/m4a", data: audioData)
@@ -460,6 +488,23 @@ actor APIClient {
 
         let (data, response) = try await uploadWithRetry(req, body: body)
         try validate(response: response, data: data)
+    }
+
+    // MARK: – Live companion (second-device coaching view)
+    //
+    // The agent device only owns code minting; the companion-side calls
+    // (redeem, read session, request check-in) all live in the web app.
+
+    func mintLiveCode(sessionId: String) async throws -> LiveCode {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("live/codes"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": sessionId])
+        let (data, response) = try await coldStartPOST(request: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(LiveCode.self, from: data)
     }
 
     // GET /scripts — presets + user-created.

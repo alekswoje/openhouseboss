@@ -9,6 +9,17 @@ struct LiveView: View {
     @State private var recorder = AudioRecorder()
     @State private var permissionDenied = false
     @State private var paused = false
+    // Local mirror of SessionStore.pendingName so the TextField stays
+    // responsive. Synced to the store on every change; if the agent leaves
+    // it blank, the End-Session prompt asks for one.
+    @State private var sessionName: String = ""
+    @State private var showEndNamePrompt = false
+    @State private var endNamePromptText: String = ""
+    // "Show coach code" sheet — mints a 6-digit pairing code on open so a
+    // second device can subscribe to live coaching. The mint is lazy
+    // because most sessions won't use a companion; no point burning a
+    // backend call up front.
+    @State private var showCoachCodeSheet = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -25,6 +36,7 @@ struct LiveView: View {
                         )
                     }
                     title
+                    sessionNameField
                     voiceVisualizer
                     capturedHint
                     Spacer().frame(height: 200)
@@ -33,6 +45,22 @@ struct LiveView: View {
             }
 
             controls
+        }
+        .alert("Name this session", isPresented: $showEndNamePrompt) {
+            TextField("Yellow craftsman on Elm", text: $endNamePromptText)
+                .textInputAutocapitalization(.sentences)
+            Button("Save") {
+                SessionStore.shared.pendingName = endNamePromptText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty
+                finishEndSession()
+            }
+            Button("Skip", role: .cancel) {
+                SessionStore.shared.pendingName = nil
+                finishEndSession()
+            }
+        } message: {
+            Text("Optional — helps you find this session later.")
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
@@ -68,6 +96,32 @@ struct LiveView: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
+    }
+
+    // Optional nickname so the session shows up as something memorable in
+    // the past-sessions list ("Yellow craftsman on Elm") instead of just an
+    // address or date. Setting it here skips the End-Session prompt; either
+    // way the agent can rename later from SummaryView.
+    private var sessionNameField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(text: "Session name · optional", color: FoyerTheme.gold)
+            TextField("e.g. Yellow craftsman on Elm", text: $sessionName)
+                .font(.system(size: 16))
+                .foregroundStyle(FoyerTheme.cream)
+                .textInputAutocapitalization(.sentences)
+                .autocorrectionDisabled(false)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.border, lineWidth: 0.5))
+                .onChange(of: sessionName) { _, new in
+                    SessionStore.shared.pendingName = new
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .nonEmpty
+                }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
     }
 
     // The cinematic voice animation. Three layers:
@@ -154,6 +208,18 @@ struct LiveView: View {
     }
 
     private func endSession() {
+        // If the agent already named the session, skip straight to upload.
+        // Otherwise prompt for a name — they can still Skip to keep it
+        // anonymous (display falls back to address / date).
+        if let n = SessionStore.shared.pendingName, !n.isEmpty {
+            finishEndSession()
+        } else {
+            endNamePromptText = SessionStore.shared.pendingAddress ?? ""
+            showEndNamePrompt = true
+        }
+    }
+
+    private func finishEndSession() {
         guard let url = recorder.stopRecording() else { return }
         SessionStore.shared.uploadAndProcess(audioURL: url)
         // Replace the back-stack so Summary becomes the only screen on top

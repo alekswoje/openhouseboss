@@ -23,3 +23,12 @@ dnspython>=2.6.0
 # on the system path.
 onnxruntime>=1.18.0
 av>=12.0.0
+# Per-session stats live in a real DB so the Insights tab can do
+# weekly/monthly/yearly aggregations across the agent's whole history
+# without re-reading every session.json on every page load. SQLAlchemy
+# Core (not the ORM) gives us a clean way to support Postgres on Render
+# AND SQLite for local dev from the same code path. psycopg2-binary is
+# only needed when DATABASE_URL points at Postgres — local dev with
+# SQLite doesn't need it (stdlib sqlite3 covers that case).
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0

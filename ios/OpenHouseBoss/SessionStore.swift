@@ -1,6 +1,30 @@
 import Foundation
 import Observation
 
+// Recording-state record persisted to UserDefaults during an in-flight
+// session. Drives:
+//   1. **Crash recovery** — if the app dies mid-recording, on next launch
+//      we see this record (cleanlyEnded=false) and offer "Recover unfinished
+//      recording" on the Home banner.
+//   2. **Continue recording** — even on a clean End Session we keep the
+//      record around (cleanlyEnded=true, backendSessionId populated) so
+//      SummaryView / IPadSessionDetail can resume capture into the same
+//      chunks dir + backend session.
+//
+// Stored in UserDefaults under `inFlightRecording.v1`. There's at most one
+// record at a time; a new recording overwrites the prior one.
+struct InFlightRecording: Codable {
+    var localChunksDirName: String      // bare dir name under Documents/Recordings/
+    var backendSessionId: String?       // nil until first snapshot tick lands
+    var name: String?
+    var address: String?
+    var scriptId: String?
+    var expectedSpeakers: Int?
+    var startedAt: Date
+    var cleanlyEnded: Bool
+    var lastSnapshotAt: Date?
+}
+
 // Shared session store — drives both the live → upload → poll → results flow
 // and the past-session browsing flow.
 @MainActor
@@ -17,6 +41,7 @@ final class SessionStore {
     static let shared = SessionStore()
 
     private static let pastSessionsCacheKey = "pastSessionsCache.v1"
+    fileprivate static let inFlightRecordingKey = "inFlightRecording.v1"
 
     private init() {
         self.defaultScriptId = UserDefaults.standard.string(forKey: "defaultScriptId")
@@ -65,6 +90,14 @@ final class SessionStore {
     var listError: String?
     // Address typed in SetupView, used by uploadAndProcess.
     var pendingAddress: String?
+    // Agent-set nickname for the in-flight session. Wired to the name field
+    // on the recording surface; if non-empty at End Session, we skip the
+    // "Name this session" prompt and submit straight to upload.
+    var pendingName: String?
+    // Unfinished recording detected at app launch — drives the Home-tab
+    // "Recover unfinished recording" banner. nil = no leftover record or
+    // it's already been cleared/recovered.
+    var unfinishedRecording: InFlightRecording?
     // Expected-guest-count hint typed in SetupView. Forwarded to AssemblyAI
     // as `speakers_expected` — significantly improves diarization when the
     // model would otherwise collapse similar voices into one speaker.
@@ -104,11 +137,21 @@ final class SessionStore {
     var liveSnapshotInFlight: Bool = false
     var liveLastSnapshotAt: Date?
     var liveSnapshotError: String?
+
+    // Live-companion pairing state. Populated when the agent taps "Show
+    // live code" in LiveView; cleared on session end. The polling task
+    // watches session.pendingCheckInId and kicks a snapshot when the
+    // companion device requests one.
+    var liveCode: LiveCode?
+    var liveCodeError: String?
+    private var liveCheckInPollTask: Task<Void, Never>?
+    private var lastHandledCheckInId: String?
     // Snapshot of the setup args captured when the loop starts — the periodic
     // tick consumes them once, but the dev "Analyze now" button needs them
     // again for the first manual tick if the agent fires it before the 5-min
     // periodic tick has run. Stays put for the whole recording session.
     private var liveSnapshotAddress: String?
+    private var liveSnapshotName: String?
     private var liveSnapshotExpected: Int?
     private var liveSnapshotScriptId: String?
     private var liveSnapshotGuests: [VisitorInput] = []
@@ -199,14 +242,24 @@ final class SessionStore {
         liveSnapshotError = nil
         liveLastSnapshotAt = nil
         liveSnapshotAddress = pendingAddress
+        liveSnapshotName = pendingName
         liveSnapshotExpected = pendingSpeakersExpected
         liveSnapshotScriptId = pendingScriptId ?? defaultScriptId
         liveSnapshotGuests = pendingKioskGuests
         let address = liveSnapshotAddress
+        let nickname = liveSnapshotName
         let expected = liveSnapshotExpected
         let scriptId = liveSnapshotScriptId
         let guests = liveSnapshotGuests
+        // Stamp the persistent in-flight record so a crash mid-session is
+        // recoverable from Home. AudioRecorder.shared.chunksDirectory was
+        // just set by startRecording() — its last path component is the
+        // session-prefix string we keep in the record.
+        writeInFlightRecord(
+            address: address, name: nickname, scriptId: scriptId, expected: expected
+        )
         pendingAddress = nil
+        pendingName = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
         pendingKioskGuests = []
@@ -243,6 +296,7 @@ final class SessionStore {
                 if Task.isCancelled { return }
                 await self.snapshotTick(
                     address: address,
+                    name: nickname,
                     expected: expected,
                     scriptId: scriptId,
                     guests: guests,
@@ -260,19 +314,23 @@ final class SessionStore {
     func endLiveSnapshotLoop() {
         liveSnapshotTask?.cancel()
         liveSnapshotTask = nil
+        stopLiveCheckInPolling()
         // Prefer the stashed setup args (set by startLiveSnapshotLoop) so the
         // final tick has the same context the periodic ticks ran with. Fall
         // back to pending* on the off chance End fires without the loop ever
         // having started.
         let address = liveSnapshotAddress ?? pendingAddress
+        let nickname = liveSnapshotName ?? pendingName
         let expected = liveSnapshotExpected ?? pendingSpeakersExpected
         let scriptId = liveSnapshotScriptId ?? pendingScriptId ?? defaultScriptId
         let guests = liveSnapshotGuests.isEmpty ? pendingKioskGuests : liveSnapshotGuests
         pendingAddress = nil
+        pendingName = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
         pendingKioskGuests = []
         liveSnapshotAddress = nil
+        liveSnapshotName = nil
         liveSnapshotExpected = nil
         liveSnapshotScriptId = nil
         liveSnapshotGuests = []
@@ -284,6 +342,7 @@ final class SessionStore {
         pollTask = Task { [weak self] in
             await self?.snapshotTick(
                 address: address,
+                name: nickname,
                 expected: expected,
                 scriptId: scriptId,
                 guests: guests,
@@ -291,6 +350,105 @@ final class SessionStore {
                 isFinal: true
             )
         }
+    }
+
+    // ============================================================
+    // Live companion — second-device coaching view
+    // ============================================================
+
+    // Tap "Show live code" on LiveView → mint a 6-digit code + start the
+    // polling loop that watches for companion-device check-in requests.
+    // Idempotent: re-calling while a code is already minted is fine; the
+    // backend will return the same code (or a fresh one if expired).
+    func triggerLiveCodeMint() {
+        guard let id = session?.id else {
+            // No backend session yet — happens if the agent opens the
+            // code sheet within the first ~5 minutes before the first
+            // snapshot tick has created a session. The UI shows a hint;
+            // we retry implicitly on the next call.
+            liveCodeError = "Waiting for the first snapshot to create the session…"
+            return
+        }
+        liveCodeError = nil
+        Task { [weak self] in
+            do {
+                let lc = try await APIClient.shared.mintLiveCode(sessionId: id)
+                await MainActor.run {
+                    self?.liveCode = lc
+                    self?.startLiveCheckInPolling(sessionId: id)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.liveCodeError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    // Polls GET /sessions/{id} every 3s. When session.pendingCheckInId is
+    // non-nil and differs from the last id we acted on, kick a snapshot
+    // tagged with that id — the backend will stamp it onto last_check_in_id
+    // when the pipeline finishes, which the companion's polling loop uses
+    // to unblock its "Listening…" spinner.
+    private func startLiveCheckInPolling(sessionId: String) {
+        liveCheckInPollTask?.cancel()
+        // Seed lastHandled with whatever the session already has so a
+        // re-mint mid-session doesn't re-fire an old request.
+        lastHandledCheckInId = session?.lastCheckInId ?? session?.pendingCheckInId
+        liveCheckInPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                if Task.isCancelled { return }
+                guard let self else { return }
+                // Skip while a snapshot is already running — the cadence
+                // loop or End-Session may be mid-tick, and we don't want
+                // to pile on. We'll see the same pendingCheckInId on the
+                // next poll and act then.
+                if await MainActor.run(body: { self.liveSnapshotInFlight }) {
+                    continue
+                }
+                let fresh: Session?
+                do {
+                    fresh = try await APIClient.shared.getSession(id: sessionId)
+                } catch {
+                    // Transient — try again next tick.
+                    continue
+                }
+                guard let s = fresh,
+                      let pending = s.pendingCheckInId,
+                      !pending.isEmpty,
+                      pending != self.lastHandledCheckInId
+                else { continue }
+                let address = await MainActor.run { self.liveSnapshotAddress ?? self.pendingAddress }
+                let nickname = await MainActor.run { self.liveSnapshotName ?? self.pendingName }
+                let expected = await MainActor.run { self.liveSnapshotExpected ?? self.pendingSpeakersExpected }
+                let scriptId = await MainActor.run {
+                    self.liveSnapshotScriptId ?? self.pendingScriptId ?? self.defaultScriptId
+                }
+                let guests = await MainActor.run {
+                    self.liveSnapshotGuests.isEmpty ? self.pendingKioskGuests : self.liveSnapshotGuests
+                }
+                await MainActor.run { self.lastHandledCheckInId = pending }
+                await self.snapshotTick(
+                    address: address,
+                    name: nickname,
+                    expected: expected,
+                    scriptId: scriptId,
+                    guests: guests,
+                    depth: .light,
+                    isFinal: false,
+                    checkInId: pending
+                )
+            }
+        }
+    }
+
+    private func stopLiveCheckInPolling() {
+        liveCheckInPollTask?.cancel()
+        liveCheckInPollTask = nil
+        liveCode = nil
+        liveCodeError = nil
+        lastHandledCheckInId = nil
     }
 
     // Dev/test hook — fires one snapshot tick at full depth without ending
@@ -301,12 +459,14 @@ final class SessionStore {
     func triggerSnapshotNow() {
         guard !liveSnapshotInFlight else { return }
         let address = liveSnapshotAddress ?? pendingAddress
+        let nickname = liveSnapshotName ?? pendingName
         let expected = liveSnapshotExpected ?? pendingSpeakersExpected
         let scriptId = liveSnapshotScriptId ?? pendingScriptId ?? defaultScriptId
         let guests = liveSnapshotGuests.isEmpty ? pendingKioskGuests : liveSnapshotGuests
         Task { [weak self] in
             await self?.snapshotTick(
                 address: address,
+                name: nickname,
                 expected: expected,
                 scriptId: scriptId,
                 guests: guests,
@@ -319,13 +479,19 @@ final class SessionStore {
     // One snapshot pass — rotate to a fresh chunk, concat everything so
     // far, upload. Idempotent against being called from the cadence loop
     // (light) or the End-Session hook (full).
+    //
+    // `checkInId` is set when this tick is fulfilling a companion check-in
+    // request — the backend stamps it onto session.last_check_in_id when
+    // _process finishes so the companion's polling loop unblocks.
     private func snapshotTick(
         address: String?,
+        name: String?,
         expected: Int?,
         scriptId: String?,
         guests: [VisitorInput],
         depth: APIClient.AnalysisDepth,
-        isFinal: Bool = false
+        isFinal: Bool = false,
+        checkInId: String? = nil
     ) async {
         await MainActor.run { self.liveSnapshotInFlight = true }
         defer { Task { @MainActor in self.liveSnapshotInFlight = false } }
@@ -349,16 +515,19 @@ final class SessionStore {
                 // Subsequent tick — replace the in-flight audio + re-run
                 // pipeline at the requested depth.
                 try await APIClient.shared.uploadSnapshot(
-                    sessionId: id, audioURL: concatURL, depth: depth, speakersExpected: expected
+                    sessionId: id, audioURL: concatURL, depth: depth,
+                    speakersExpected: expected, checkInId: checkInId
                 )
                 let final = try await APIClient.shared.pollUntilDone(id: id)
                 await MainActor.run {
                     self.session = final
                     self.liveLastSnapshotAt = Date()
+                    self.touchInFlightSnapshotAt()
                     if isFinal {
                         self.phase = (final.status == "error")
                             ? .failed(final.error ?? "Unknown error")
                             : .ready
+                        if final.status != "error" { self.markInFlightCleanlyEnded() }
                     }
                 }
             } else {
@@ -368,24 +537,29 @@ final class SessionStore {
                 let initial: Session
                 if guests.isEmpty {
                     initial = try await APIClient.shared.createSession(
-                        audioURL: concatURL, address: address,
+                        audioURL: concatURL, address: address, name: name,
                         speakersExpected: expected, scriptId: scriptId
                     )
                 } else {
                     initial = try await APIClient.shared.createSession(
-                        audioURL: concatURL, address: address, visitors: guests,
+                        audioURL: concatURL, address: address, name: name, visitors: guests,
                         speakersExpected: expected, scriptId: scriptId
                     )
                 }
-                await MainActor.run { self.session = initial }
+                await MainActor.run {
+                    self.session = initial
+                    self.updateInFlightBackendId(initial.id)
+                }
                 let final = try await APIClient.shared.pollUntilDone(id: initial.id)
                 await MainActor.run {
                     self.session = final
                     self.liveLastSnapshotAt = Date()
+                    self.touchInFlightSnapshotAt()
                     if isFinal {
                         self.phase = (final.status == "error")
                             ? .failed(final.error ?? "Unknown error")
                             : .ready
+                        if final.status != "error" { self.markInFlightCleanlyEnded() }
                     }
                 }
             }
@@ -509,9 +683,11 @@ final class SessionStore {
 
     func reset() {
         cancel()
+        stopLiveCheckInPolling()
         session = nil
         phase = .idle
         pendingAddress = nil
+        pendingName = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
         lastRecordedAudioURL = nil
@@ -525,5 +701,214 @@ final class SessionStore {
         } catch {
             Log.warn("refreshScripts failed: \(error.localizedDescription)")
         }
+    }
+
+    // Update the session's agent-set nickname. Optimistic: applies locally
+    // first (so SummaryView re-renders immediately), then PATCHes the
+    // backend in the background. Rolls back on failure.
+    func renameSession(id: String, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored: String? = trimmed.isEmpty ? nil : trimmed
+        let priorOnSession = session?.name
+        let priorOnList = pastSessions.first(where: { $0.id == id })?.name
+        if session?.id == id { session?.name = stored }
+        if let idx = pastSessions.firstIndex(where: { $0.id == id }) {
+            pastSessions[idx].name = stored
+        }
+        Task { [weak self] in
+            do {
+                try await APIClient.shared.renameSession(id: id, name: trimmed)
+            } catch {
+                Log.warn("renameSession failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    if self?.session?.id == id { self?.session?.name = priorOnSession }
+                    if let idx = self?.pastSessions.firstIndex(where: { $0.id == id }) {
+                        self?.pastSessions[idx].name = priorOnList
+                    }
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // In-flight recording persistence + recovery + continue-recording
+    // ============================================================
+
+    private func writeInFlightRecord(
+        address: String?, name: String?, scriptId: String?, expected: Int?
+    ) {
+        guard let dir = AudioRecorder.shared.chunksDirectoryName else { return }
+        let record = InFlightRecording(
+            localChunksDirName: dir,
+            backendSessionId: nil,
+            name: name,
+            address: address,
+            scriptId: scriptId,
+            expectedSpeakers: expected,
+            startedAt: Date(),
+            cleanlyEnded: false,
+            lastSnapshotAt: nil
+        )
+        Self.saveInFlight(record)
+    }
+
+    fileprivate func updateInFlightBackendId(_ id: String) {
+        guard var record = Self.loadInFlight(), record.backendSessionId == nil else { return }
+        record.backendSessionId = id
+        Self.saveInFlight(record)
+    }
+
+    fileprivate func touchInFlightSnapshotAt() {
+        guard var record = Self.loadInFlight() else { return }
+        record.lastSnapshotAt = Date()
+        Self.saveInFlight(record)
+    }
+
+    fileprivate func markInFlightCleanlyEnded() {
+        guard var record = Self.loadInFlight() else { return }
+        record.cleanlyEnded = true
+        Self.saveInFlight(record)
+    }
+
+    // Called on app launch to surface a crashed recording in the Home-tab
+    // banner. We treat any record where cleanlyEnded=false as recoverable;
+    // the iPhone uploadAndProcess path that doesn't use the snapshot loop
+    // never writes a record, so we won't false-positive there.
+    func scanForUnfinishedRecording() {
+        guard let record = Self.loadInFlight() else { return }
+        guard !record.cleanlyEnded else { return }
+        let dir = AudioRecorder.recordingsDirectory
+            .appendingPathComponent(record.localChunksDirName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: dir.path) else {
+            Self.clearInFlight()
+            return
+        }
+        let chunks = AudioRecorder.scanChunks(in: dir)
+        guard !chunks.isEmpty else {
+            // Crash before the very first chunk finalized — nothing usable
+            // on disk, drop the record so we don't haunt the user forever.
+            Self.clearInFlight()
+            return
+        }
+        unfinishedRecording = record
+    }
+
+    // Tapping "Recover" on the banner: rebuild AudioRecorder's chunk list
+    // from disk, fire one final full-depth snapshot, transition into the
+    // Summary view so the agent can review whatever audio made it through
+    // the last rotation. Doesn't resume capture.
+    func recoverUnfinishedRecording() {
+        guard let record = unfinishedRecording else { return }
+        unfinishedRecording = nil
+        let dir = AudioRecorder.recordingsDirectory
+            .appendingPathComponent(record.localChunksDirName, isDirectory: true)
+        let chunks = AudioRecorder.scanChunks(in: dir)
+        guard !chunks.isEmpty else { Self.clearInFlight(); return }
+
+        AudioRecorder.shared.adoptExistingChunks(dir: dir, urls: chunks)
+
+        if let id = record.backendSessionId {
+            session = Session(
+                id: id, status: "processing", address: record.address, name: record.name,
+                createdAt: nil, completedAt: nil, error: nil, result: nil,
+                isLive: nil, lastSnapshotAt: nil,
+                pendingCheckInId: nil, lastCheckInId: nil,
+                homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil
+            )
+        } else {
+            session = nil
+        }
+        phase = .processing
+        pollTask?.cancel()
+        let address = record.address
+        let nickname = record.name
+        let expected = record.expectedSpeakers
+        let scriptId = record.scriptId
+        pollTask = Task { [weak self] in
+            await self?.snapshotTick(
+                address: address, name: nickname, expected: expected,
+                scriptId: scriptId, guests: [], depth: .full, isFinal: true
+            )
+        }
+    }
+
+    // Dismiss the banner without uploading. The local chunks stay on disk
+    // (the agent can still pull them via Files.app), but the record is
+    // cleared so the banner doesn't reappear.
+    func dismissUnfinishedRecording() {
+        unfinishedRecording = nil
+        Self.clearInFlight()
+    }
+
+    // Tapping "Continue recording" on a past session. Resumes capture into
+    // the same chunks dir + same backend session, so the next snapshot tick
+    // uploads the full concatenated audio (old + new) and the backend
+    // re-runs diarization across everything — visitors stay deduped.
+    //
+    // If the local chunks dir is gone (different device, manual cleanup),
+    // we seed a single chunk_000.m4a from `/sessions/{id}/audio` before
+    // starting recording, so the upload archive still contains the prior
+    // session's audio.
+    func continueRecording(sessionId: String, address: String?, name: String?, scriptId: String?) async throws {
+        cancel()
+        liveSnapshotTask?.cancel()
+        liveSnapshotTask = nil
+
+        let record = Self.loadInFlight()
+        let dir: URL
+        if let r = record, r.backendSessionId == sessionId,
+           FileManager.default.fileExists(atPath: AudioRecorder.recordingsDirectory
+            .appendingPathComponent(r.localChunksDirName, isDirectory: true).path) {
+            dir = AudioRecorder.recordingsDirectory
+                .appendingPathComponent(r.localChunksDirName, isDirectory: true)
+        } else {
+            // No usable local chunks — fetch the backend's audio and seed
+            // chunk_000.m4a so concat-and-upload still includes prior audio.
+            dir = AudioRecorder.recordingsDirectory
+                .appendingPathComponent("Resumed_\(sessionId)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if AudioRecorder.scanChunks(in: dir).isEmpty {
+                let audioReq = APIClient.shared.audioFetchRequest(sessionId: sessionId)
+                let (data, _) = try await URLSession.shared.data(for: audioReq)
+                let seed = dir.appendingPathComponent("chunk_000.m4a")
+                try data.write(to: seed)
+            }
+        }
+
+        pendingAddress = address
+        pendingName = name
+        pendingScriptId = scriptId
+        pendingSpeakersExpected = nil
+        pendingKioskGuests = []
+        // Stub a Session so snapshotTick routes to /snapshot rather than
+        // POST /sessions. Filled in properly when the first tick returns.
+        session = Session(
+            id: sessionId, status: "processing", address: address, name: name,
+            createdAt: nil, completedAt: nil, error: nil, result: nil,
+            isLive: nil, lastSnapshotAt: nil,
+            pendingCheckInId: nil, lastCheckInId: nil,
+            homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil
+        )
+        phase = .idle
+
+        try AudioRecorder.shared.startRecording(address: address, resumingFrom: dir)
+        startLiveSnapshotLoop()
+    }
+
+    // MARK: – InFlightRecording UserDefaults helpers
+
+    fileprivate static func saveInFlight(_ record: InFlightRecording) {
+        if let data = try? JSONEncoder().encode(record) {
+            UserDefaults.standard.set(data, forKey: inFlightRecordingKey)
+        }
+    }
+
+    fileprivate static func loadInFlight() -> InFlightRecording? {
+        guard let data = UserDefaults.standard.data(forKey: inFlightRecordingKey) else { return nil }
+        return try? JSONDecoder().decode(InFlightRecording.self, from: data)
+    }
+
+    fileprivate static func clearInFlight() {
+        UserDefaults.standard.removeObject(forKey: inFlightRecordingKey)
     }
 }
