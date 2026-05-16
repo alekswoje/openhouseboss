@@ -4,12 +4,14 @@
 // Shared brand components
 // ============================================================
 
-// Brand mark — the glowing-F image lives at /foyer-mark.png. Single
-// source for the rail, the crest, and any marketing surfaces; switch the
-// image and every surface picks it up.
+// Brand mark — twin-houses logo at /mark-400.png (downsized from the
+// 1270x832 master in /mark.png). Single source for the rail, the crest,
+// and any marketing surfaces; switch the image and every surface picks
+// it up. JS identifier kept as `FoyerMark` so the rest of the JSX (which
+// references it cross-file) doesn't need touching.
 const FoyerMark = ({ size = 32, rounded = 7 }) => (
   <img
-    src="foyer-mark.png"
+    src="mark-400.png"
     alt="Open House Copilot"
     width={size}
     height={size}
