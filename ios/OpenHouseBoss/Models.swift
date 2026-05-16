@@ -101,6 +101,44 @@ struct SessionResult: Codable, Hashable {
     }
 }
 
+// Response from POST /sessions/{id}/abtest — three providers' diarized
+// transcripts on the same audio, shown side-by-side in the iOS detail view
+// to evaluate diarization quality. Per-provider errors come back inline so
+// the UI can render partial results when (e.g.) Speechmatics times out but
+// the others succeeded.
+struct AbTestResponse: Codable, Hashable {
+    let results: [AbTestProviderResult]
+}
+
+struct AbTestProviderResult: Codable, Hashable, Identifiable {
+    let provider: String
+    let elapsedS: Double
+    let speakerCount: Int
+    let utterances: [AbTestUtterance]
+    let error: String?
+
+    var id: String { provider }
+
+    enum CodingKeys: String, CodingKey {
+        case provider, utterances, error
+        case elapsedS = "elapsed_s"
+        case speakerCount = "speaker_count"
+    }
+}
+
+struct AbTestUtterance: Codable, Hashable, Identifiable {
+    let speaker: String
+    let startMs: Int
+    let text: String
+
+    var id: String { "\(speaker):\(startMs)" }
+
+    enum CodingKeys: String, CodingKey {
+        case speaker, text
+        case startMs = "start_ms"
+    }
+}
+
 // One diarized turn — surfaced in the Summary "What you said" section so
 // the agent can see their own lines with the visitor they were addressing.
 struct Utterance: Codable, Hashable, Identifiable {

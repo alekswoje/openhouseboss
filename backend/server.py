@@ -2134,6 +2134,78 @@ def get_session(
     return session
 
 
+@app.post("/sessions/{session_id}/abtest")
+def abtest_session(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Run the saved audio through AssemblyAI, Deepgram, and Speechmatics in
+    parallel and return their diarized transcripts side-by-side. Used by the
+    iOS detail view's "Compare providers" button to evaluate which provider
+    handles tricky open-house diarization best on real recordings.
+
+    Each provider runs on a worker thread; a per-provider failure (e.g.
+    missing API key, provider 5xx) is reported inline rather than failing
+    the whole request — we want partial results visible in the UI."""
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import asdict
+    from pipeline.abtest_diarization import (
+        run_assemblyai, run_deepgram, run_speechmatics,
+    )
+
+    session_dir = SESSIONS_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, f"Session {session_id} not found")
+
+    with _sessions_lock:
+        if session_id not in _sessions:
+            path = session_dir / "session.json"
+            if path.exists():
+                _sessions[session_id] = json.loads(path.read_text())
+        _require_owner(_sessions.get(session_id), current_user, session_id)
+
+    audio_path: Optional[Path] = None
+    for candidate in session_dir.iterdir():
+        if candidate.suffix.lower() in {".m4a", ".mp4", ".wav", ".mp3", ".aac"}:
+            audio_path = candidate
+            break
+    if audio_path is None:
+        raise HTTPException(400, "No audio file saved for this session")
+
+    keys = {
+        "assemblyai": os.environ.get("ASSEMBLYAI_API_KEY", ""),
+        "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
+        "speechmatics": os.environ.get("SPEECHMATICS_API_KEY", ""),
+    }
+    runners = {
+        "assemblyai": run_assemblyai,
+        "deepgram": run_deepgram,
+        "speechmatics": run_speechmatics,
+    }
+
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {
+            provider: ex.submit(runners[provider], audio_path, keys[provider])
+            for provider in runners
+            if keys[provider]
+        }
+        for provider, fut in futures.items():
+            results[provider] = asdict(fut.result())
+    # Stable order: AAI (current baseline), then Deepgram, then Speechmatics.
+    order = ["assemblyai", "deepgram", "speechmatics"]
+    for provider in order:
+        if provider not in results:
+            results[provider] = {
+                "provider": provider,
+                "elapsed_s": 0.0,
+                "speaker_count": 0,
+                "utterances": [],
+                "error": f"{provider.upper()}_API_KEY not set on backend",
+            }
+    return {"results": [results[p] for p in order]}
+
+
 def _summarize(s: dict) -> dict:
     result = s.get("result") or {}
     visitors = result.get("visitors") or []

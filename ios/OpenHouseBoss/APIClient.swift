@@ -1216,6 +1216,24 @@ actor APIClient {
         }
     }
 
+    // Fan-out diarization A/B test — backend runs the saved audio through
+    // AssemblyAI, Deepgram, and Speechmatics in parallel and returns
+    // speaker-labeled transcripts for each. Used by the session detail
+    // "Compare providers" affordance to evaluate diarization quality on
+    // real recordings without leaving the app.
+    func abTestSession(id: String) async throws -> AbTestResponse {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)/abtest"))
+        req.httpMethod = "POST"
+        // Real wall time: Speechmatics polls every 2s and can take 30-60s
+        // on top of AAI's 5-15s. Push the timeout well past worst case so
+        // we don't drop the result right before it lands.
+        req.timeoutInterval = 240
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AbTestResponse.self, from: data)
+    }
+
     // MARK: – Follow Up Boss
 
     private static let fubBase = URL(string: "https://api.followupboss.com/v1")!

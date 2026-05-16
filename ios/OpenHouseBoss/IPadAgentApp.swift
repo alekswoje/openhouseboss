@@ -8098,6 +8098,7 @@ private struct IPadSessionDetail: View {
     @State private var deleteError: String?
     @State private var reanalyzing = false
     @State private var reanalyzeError: String?
+    @State private var showAbTest = false
 
     private var audioURL: URL {
         Config.backendURL
@@ -8723,26 +8724,46 @@ private struct IPadSessionDetail: View {
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.terracotta)
             }
-            Button { Task { await reanalyze() } } label: {
-                HStack(spacing: 8) {
-                    if reanalyzing {
-                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.creamDim)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .medium))
+            HStack(spacing: 10) {
+                Button { Task { await reanalyze() } } label: {
+                    HStack(spacing: 8) {
+                        if reanalyzing {
+                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.creamDim)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        Text(reanalyzing ? "Re-analyzing…" : "Re-analyze recording")
+                            .font(.system(size: 13, weight: .medium))
                     }
-                    Text(reanalyzing ? "Re-analyzing…" : "Re-analyze recording")
-                        .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+                    .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
                 }
-                .foregroundStyle(FoyerTheme.creamDim)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(Color.white.opacity(0.06), in: Capsule())
-                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+                .buttonStyle(.plain)
+                .disabled(reanalyzing)
+
+                Button { showAbTest = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "flask")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("Compare providers")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+                    .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .disabled(reanalyzing)
             }
-            .buttonStyle(.plain)
-            .disabled(reanalyzing)
         }
         .padding(.top, 8)
+        .sheet(isPresented: $showAbTest) {
+            DiarizationAbTestSheet(sessionId: sessionId)
+        }
     }
 
     private func relativeTime(_ iso: String?) -> String {
@@ -8764,6 +8785,179 @@ private struct IPadSessionDetail: View {
         } catch {
             await MainActor.run { self.loadError = error.localizedDescription }
         }
+    }
+}
+
+// MARK: – Diarization A/B test sheet
+//
+// Runs the saved audio through AssemblyAI, Deepgram, and Speechmatics in
+// parallel via /sessions/{id}/abtest and shows the three diarized
+// transcripts side-by-side so the user can pick the right provider for
+// real open-house audio. The current production path is AssemblyAI; this
+// sheet is the evidence-gathering tool before swapping it out.
+
+private struct DiarizationAbTestSheet: View {
+    let sessionId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var loading = true
+    @State private var loadError: String?
+    @State private var results: [AbTestProviderResult] = []
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Each provider gets the same recording. The current pipeline uses AssemblyAI; this comparison helps decide whether Deepgram or Speechmatics handles tricky single-mic diarization better.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 18)
+
+                    if loading {
+                        VStack(spacing: 10) {
+                            ProgressView().tint(FoyerTheme.gold)
+                            Text("Running 3 providers in parallel…")
+                                .font(.system(size: 12))
+                                .foregroundStyle(FoyerTheme.textDim)
+                            Text("Speechmatics can take up to a minute.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                    } else if let loadError {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Couldn't run A/B test")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(FoyerTheme.cream)
+                            Text(loadError)
+                                .font(.system(size: 12))
+                                .foregroundStyle(FoyerTheme.textDim)
+                        }
+                        .padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 18)
+                    } else {
+                        ForEach(results) { result in
+                            providerCard(result)
+                                .padding(.horizontal, 18)
+                        }
+                    }
+                }
+                .padding(.vertical, 18)
+            }
+            .background(Color.black)
+            .navigationTitle("Compare providers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(FoyerTheme.cream)
+                }
+            }
+        }
+        .task { await run() }
+    }
+
+    @MainActor
+    private func run() async {
+        loading = true
+        loadError = nil
+        defer { loading = false }
+        do {
+            let resp = try await APIClient.shared.abTestSession(id: sessionId)
+            results = resp.results
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func providerCard(_ r: AbTestProviderResult) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Text(displayName(r.provider))
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Spacer()
+                if r.error == nil {
+                    Text("\(r.utterances.count) turns · \(r.speakerCount) speakers · \(String(format: "%.1f", r.elapsedS))s")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+            }
+
+            if let err = r.error {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            } else if r.utterances.isEmpty {
+                Text("(No utterances returned.)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(r.utterances) { u in
+                        utteranceRow(u)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.border, lineWidth: 0.5))
+    }
+
+    private func utteranceRow(_ u: AbTestUtterance) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(u.speaker)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(speakerColor(u.speaker))
+                Text(timeLabel(u.startMs))
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            .frame(width: 70, alignment: .leading)
+            Text(u.text)
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.cream)
+                .lineSpacing(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func displayName(_ key: String) -> String {
+        switch key {
+        case "assemblyai": return "AssemblyAI (current)"
+        case "deepgram": return "Deepgram nova-3"
+        case "speechmatics": return "Speechmatics enhanced"
+        default: return key
+        }
+    }
+
+    private func timeLabel(_ ms: Int) -> String {
+        let s = ms / 1000
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    // Stable color per speaker label so the eye can scan for misalignments
+    // between providers. AAI uses letters (A/B/C), Deepgram uses
+    // speaker_0/1/2, Speechmatics uses S1/S2/S3 — we hash the label to pick.
+    private func speakerColor(_ speaker: String) -> Color {
+        let palette: [Color] = [
+            FoyerTheme.gold,
+            FoyerTheme.terracotta,
+            .mint, .purple, .cyan, .orange,
+        ]
+        var hash = 0
+        for ch in speaker.unicodeScalars { hash = (hash &* 31) &+ Int(ch.value) }
+        return palette[abs(hash) % palette.count]
     }
 }
 

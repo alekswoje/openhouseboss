@@ -12,6 +12,13 @@ services:
         sync: false
       - key: ASSEMBLYAI_API_KEY
         sync: false
+      # In-app A/B diarization test (/sessions/{id}/abtest) calls these in
+      # addition to AAI. Set in the Render dashboard. Missing keys produce a
+      # per-provider error in the response rather than failing the request.
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: SPEECHMATICS_API_KEY
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11"
       # MLS Grid replication — token + base URL set in the Render dashboard
