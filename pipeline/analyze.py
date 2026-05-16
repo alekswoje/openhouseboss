@@ -99,65 +99,105 @@ def analyze_visitor(
     ]
     template_block = _template_instructions(rendered_templates, force_templates)
 
-    client = Anthropic()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=1500,
-        system=(
-            "You help a real-estate agent follow up after an open house. You are given "
-            "a diarized transcript; focus on the visitor identified below. Produce a "
-            "short summary (3–5 sentences) of what they said and what they seem to want, "
-            "pick exactly one tag from the list, score their interest/urgency 0–100 "
-            "(0=cold, 50=warm, 80+=hot/transacting soon), extract 3–5 short signal "
-            "phrases (each ≤4 words — concrete facts like 'Pre-approved $1.4M', "
-            "'Close in 60 days', 'Owner 15 yrs'), and draft a SHORT follow-up email "
-            "(STRICT: max 4 sentences total, under 60 words, mobile-friendly, "
-            "ending with a single specific question or yes/no ask that converts to "
-            "a reply — e.g. 'Want me to send the comps?' or 'Open to a 15-minute call "
-            "Thursday?'). No long paragraphs, no boilerplate intro, no 'I hope this "
-            "finds you well'. Reference exactly one thing they said, then the ask. "
-            "\n\nANTI-HALLUCINATION RULES (these matter — the agent sends these "
-            "emails as-is and gets caught in a lie if you invent things):\n"
-            "- NEVER claim the agent has specific resources, listings, or "
-            "deliverables that aren't mentioned in the transcript or the "
-            "templates/offers block below. Forbidden examples: \"I have other "
-            "homes in your price range\", \"I'll send you the three comps I "
-            "pulled\", \"I have a unit in that neighborhood\", \"I've got a "
-            "buyer for your place\", \"my colleague specializes in that area\".\n"
-            "- The ask must be a QUESTION the agent can answer with their own "
-            "real resources, not a promise of something specific. Safe: \"Want "
-            "me to look into options in your range?\" / \"Open to a quick call "
-            "Thursday?\". Unsafe: \"I'll send you the three listings I have on "
-            "the West Side.\"\n"
-            "- Don't invent prices, square footage, neighborhood facts, market "
-            "stats, or timeline promises. If the transcript didn't say it and "
-            "no template/offer covers it, don't write it.\n"
-            "- It's fine — and often best — to keep the email generic. A short "
-            "warm note + a non-specific ask is much safer than a specific "
-            "promise the agent can't keep.\n\n"
-            "DO NOT include any sign-off, signature line, or agent name — the "
-            "email client appends the agent's signature automatically. End the "
-            "body with the ask sentence. NEVER use bracketed placeholders like "
-            "[Agent Name], [Address], [Phone], etc. — they get sent as-is and "
-            "embarrass the agent. If you don't know a value, leave it out."
-            + template_block
-            + "\n\n"
-            f"Visitor: {visitor.name} (Speaker {visitor.speaker})\n\n"
-            f"Tags (pick exactly one):\n{tag_block}\n\n"
-            "Return JSON only, no prose, format:\n"
-            "{\n"
-            '  "summary": "...",\n'
-            f'  "tag": "one of {tag_names}",\n'
-            '  "tag_reason": "one short sentence",\n'
-            '  "score": 0-100,\n'
-            '  "signals": ["...", "..."],\n'
-            '  "follow_up_draft": "..."\n'
-            "}"
-        ),
-        messages=[{"role": "user", "content": utterances_text}],
+    system_prompt = (
+        "You help a real-estate agent follow up after an open house. You are given "
+        "a diarized transcript; focus on the visitor identified below. Produce a "
+        "short summary (3–5 sentences) of what they said and what they seem to want, "
+        "pick exactly one tag from the list, score their interest/urgency 0–100 "
+        "(0=cold, 50=warm, 80+=hot/transacting soon), extract 3–5 short signal "
+        "phrases (each ≤4 words — concrete facts like 'Pre-approved $1.4M', "
+        "'Close in 60 days', 'Owner 15 yrs'), and draft a SHORT follow-up email "
+        "(STRICT: max 4 sentences total, under 60 words, mobile-friendly, "
+        "ending with a single specific question or yes/no ask that converts to "
+        "a reply — e.g. 'Want me to send the comps?' or 'Open to a 15-minute call "
+        "Thursday?'). No long paragraphs, no boilerplate intro, no 'I hope this "
+        "finds you well'. Reference exactly one thing they said, then the ask. "
+        "\n\nANTI-HALLUCINATION RULES (these matter — the agent sends these "
+        "emails as-is and gets caught in a lie if you invent things):\n"
+        "- NEVER claim the agent has specific resources, listings, or "
+        "deliverables that aren't mentioned in the transcript or the "
+        "templates/offers block below. Forbidden examples: \"I have other "
+        "homes in your price range\", \"I'll send you the three comps I "
+        "pulled\", \"I have a unit in that neighborhood\", \"I've got a "
+        "buyer for your place\", \"my colleague specializes in that area\".\n"
+        "- The ask must be a QUESTION the agent can answer with their own "
+        "real resources, not a promise of something specific. Safe: \"Want "
+        "me to look into options in your range?\" / \"Open to a quick call "
+        "Thursday?\". Unsafe: \"I'll send you the three listings I have on "
+        "the West Side.\"\n"
+        "- Don't invent prices, square footage, neighborhood facts, market "
+        "stats, or timeline promises. If the transcript didn't say it and "
+        "no template/offer covers it, don't write it.\n"
+        "- It's fine — and often best — to keep the email generic. A short "
+        "warm note + a non-specific ask is much safer than a specific "
+        "promise the agent can't keep.\n\n"
+        "DO NOT include any sign-off, signature line, or agent name — the "
+        "email client appends the agent's signature automatically. End the "
+        "body with the ask sentence. NEVER use bracketed placeholders like "
+        "[Agent Name], [Address], [Phone], etc. — they get sent as-is and "
+        "embarrass the agent. If you don't know a value, leave it out."
+        + template_block
+        + "\n\n"
+        f"Visitor: {visitor.name} (Speaker {visitor.speaker})\n\n"
+        f"Tags (pick exactly one):\n{tag_block}\n\n"
+        "Return JSON only, no prose, format:\n"
+        "{\n"
+        '  "summary": "...",\n'
+        f'  "tag": "one of {tag_names}",\n'
+        '  "tag_reason": "one short sentence",\n'
+        '  "score": 0-100,\n'
+        '  "signals": ["...", "..."],\n'
+        '  "follow_up_draft": "..."\n'
+        "}"
     )
-    text = _extract_json(response.content[0].text)
-    parsed = json.loads(text)
+
+    client = Anthropic()
+
+    def _call(extra_user_hint: str = "") -> str:
+        content = utterances_text + (f"\n\n{extra_user_hint}" if extra_user_hint else "")
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": content}],
+        )
+        return response.content[0].text
+
+    # Defensive parse: Claude occasionally returns an array wrapper, a
+    # truncated stub like "[", or text with unquoted values — each of
+    # those trips json.loads and would kill the whole session with a raw
+    # "Expecting value: line 1 column 2 (char 1)" message in the UI. Try
+    # once more with a stricter hint, then fall back to a stub so the
+    # session still completes (agent can write the draft themselves).
+    parsed: dict | None = None
+    for attempt in range(2):
+        raw = _call(
+            "" if attempt == 0 else
+            "IMPORTANT: your previous response was not valid JSON. "
+            "Respond with a single JSON OBJECT (starting with '{' and "
+            "ending with '}'), no array brackets, no markdown fences, "
+            "no commentary."
+        )
+        try:
+            candidate = json.loads(_extract_json(raw))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, list) and candidate and isinstance(candidate[0], dict):
+            candidate = candidate[0]  # tolerate [{...}] wrapping
+        if isinstance(candidate, dict):
+            parsed = candidate
+            break
+
+    if parsed is None:
+        parsed = {
+            "summary": "",
+            "tag": (tags[0].name if tags else "Browser"),
+            "tag_reason": "Auto-analysis didn't produce a structured result — review the transcript and tag manually.",
+            "score": 0,
+            "signals": [],
+            "follow_up_draft": "",
+        }
+
     parsed["words_spoken"] = words_spoken
     parsed["follow_up_draft"] = _scrub_placeholders(parsed.get("follow_up_draft") or "")
     return VisitorAnalysis(**parsed)
