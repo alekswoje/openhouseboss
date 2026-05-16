@@ -116,6 +116,11 @@ def _extract_json(text: str) -> str:
 
 
 class SpeakerAnalysis(BaseModel):
+    # Claude's pick for which speaker label is the listing agent, based on
+    # linguistic cues (introductions, asking the visitor's name/price range,
+    # describing property features). None if Claude is unsure — caller
+    # falls back to the duration heuristic.
+    agent_speaker: Optional[str] = None
     names: dict[str, str]
     # Claude's best guess at how many distinct humans were really in the
     # room (including the agent). When the diarizer undercounts — two
@@ -125,7 +130,7 @@ class SpeakerAnalysis(BaseModel):
     suspected_total: int
 
 
-def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerAnalysis:
+def analyze_speakers(transcript: aai.Transcript) -> SpeakerAnalysis:
     utterances_text = "\n".join(
         f"[{u.speaker}] {u.text}" for u in (transcript.utterances or [])
     )
@@ -136,12 +141,23 @@ def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerA
         model=MODEL,
         max_tokens=1024,
         system=(
-            f"You analyze diarized open-house transcripts. Speaker {agent_speaker} is "
-            "the real-estate agent. Every other speaker is a visitor. Two tasks:\n\n"
-            "1. Extract each visitor's first name. Visitors typically introduce "
-            "themselves when the agent asks. Use lowercase. Omit speakers whose "
-            "name is not mentioned.\n\n"
-            "2. Estimate how many distinct humans were really in the conversation, "
+            "You analyze diarized open-house transcripts. The recording is "
+            "the listing agent showing visitors around a property. Three tasks:\n\n"
+            "1. Identify which speaker label is the LISTING AGENT. Pick the "
+            "speaker whose language is the agent's: introduces themselves as "
+            "\"the listing agent\" / \"the agent\" / \"realtor\"; asks the "
+            "visitor's name; asks their price range, timeline, what they're "
+            "looking for; offers to show them around; describes the property's "
+            "features; says things like \"let me know if you have questions\". "
+            "The VISITOR is the one being asked these questions, talking about "
+            "their own needs (\"I need a 4th bedroom\", \"we have two kids\", "
+            "\"we're pre-approved for $X\"). Do NOT use talk-time — a visitor "
+            "monologuing about their needs is still a visitor. If the "
+            f"transcript truly doesn't tell you, return null. Detected: {detected}.\n\n"
+            "2. Extract each visitor's first name. Visitors typically introduce "
+            "themselves when the agent asks. Use lowercase. Omit the agent's "
+            "own name and any speaker whose name is not mentioned.\n\n"
+            "3. Estimate how many distinct humans were really in the conversation, "
             "including the agent. Diarization sometimes collapses two close-mic'd "
             "voices into one cluster — watch for these tells inside a single speaker "
             "label: two different first names being introduced (\"hi I'm sarah\" "
@@ -150,9 +166,10 @@ def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerA
             "\"my wife and I\", another says \"I'm single\"), or wildly different "
             "conversational styles. If you see clear evidence of a merge, return a "
             "higher count. If the transcript is consistent with the detected count, "
-            f"return the detected count. Detected speakers: {detected}.\n\n"
+            "return the detected count.\n\n"
             "Return JSON only, no prose, format: "
-            '{"names": {"B": "sarah", "C": "mike"}, "suspected_total": 3}'
+            '{"agent_speaker": "A", "names": {"B": "sarah", "C": "mike"}, '
+            '"suspected_total": 3}'
         ),
         messages=[{"role": "user", "content": utterances_text}],
     )
@@ -181,18 +198,26 @@ def analyze_speakers(transcript: aai.Transcript, agent_speaker: str) -> SpeakerA
     # Floor the suspected count at what we already detected — Claude should
     # never tell us there are *fewer* people than AAI already found.
     suspected = max(suspected, len(detected))
-    return SpeakerAnalysis(names=names, suspected_total=suspected)
-
-
-def extract_speaker_names(transcript: aai.Transcript, agent_speaker: str) -> dict[str, str]:
-    return analyze_speakers(transcript, agent_speaker).names
+    agent_pick = data.get("agent_speaker")
+    if not isinstance(agent_pick, str) or agent_pick not in detected:
+        agent_pick = None
+    return SpeakerAnalysis(
+        agent_speaker=agent_pick,
+        names=names,
+        suspected_total=suspected,
+    )
 
 
 def identify_agent_and_visitors(
     transcript: aai.Transcript, visitors_csv: Optional[Path] = None
 ) -> IdentificationResult:
-    agent = detect_agent_speaker(transcript)
-    analysis = analyze_speakers(transcript, agent)
+    # Claude picks the agent from linguistic cues (asks "what's your name",
+    # "what's your price range", introduces as the listing agent, etc.).
+    # Fall back to the longest-talker heuristic only if Claude is unsure —
+    # that fallback is wrong whenever the visitor monologues, which is most
+    # short open-house clips.
+    analysis = analyze_speakers(transcript)
+    agent = analysis.agent_speaker or detect_agent_speaker(transcript)
     speaker_names = analysis.names
     detected_total = len({u.speaker for u in (transcript.utterances or [])})
 
