@@ -36,6 +36,7 @@ targets:
       # iOS dispatches the intent's `perform()` inside the host app's
       # process. The widget references the same type to render its button.
       - path: OpenHouseBossWidgets/StopRecordingIntent.swift
+      - path: OpenHouseBossWidgets/ToggleMuteIntent.swift
     dependencies:
       - target: OpenHouseBossWidgets
     info:

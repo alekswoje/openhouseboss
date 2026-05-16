@@ -13,6 +13,10 @@ struct RecordingActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         var startedAt: Date
         var phase: Phase
+        // Mic capture is paused but the session is still active. Drives the
+        // widget's Mute/Unmute button label; the in-app surfaces read the
+        // same flag via AudioRecorder.isPaused so the two stay in sync.
+        var isMuted: Bool = false
 
         enum Phase: String, Codable {
             case recording

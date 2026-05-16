@@ -104,6 +104,14 @@ final class SessionStore {
     var liveSnapshotInFlight: Bool = false
     var liveLastSnapshotAt: Date?
     var liveSnapshotError: String?
+    // Snapshot of the setup args captured when the loop starts — the periodic
+    // tick consumes them once, but the dev "Analyze now" button needs them
+    // again for the first manual tick if the agent fires it before the 5-min
+    // periodic tick has run. Stays put for the whole recording session.
+    private var liveSnapshotAddress: String?
+    private var liveSnapshotExpected: Int?
+    private var liveSnapshotScriptId: String?
+    private var liveSnapshotGuests: [VisitorInput] = []
     private static let liveSnapshotSchedule: [TimeInterval] = [
         5 * 60, 10 * 60, 20 * 60, 30 * 60,
         50 * 60, 70 * 60, 90 * 60, 120 * 60,
@@ -190,10 +198,14 @@ final class SessionStore {
         liveSnapshotTask?.cancel()
         liveSnapshotError = nil
         liveLastSnapshotAt = nil
-        let address = pendingAddress
-        let expected = pendingSpeakersExpected
-        let scriptId = pendingScriptId ?? defaultScriptId
-        let guests = pendingKioskGuests
+        liveSnapshotAddress = pendingAddress
+        liveSnapshotExpected = pendingSpeakersExpected
+        liveSnapshotScriptId = pendingScriptId ?? defaultScriptId
+        liveSnapshotGuests = pendingKioskGuests
+        let address = liveSnapshotAddress
+        let expected = liveSnapshotExpected
+        let scriptId = liveSnapshotScriptId
+        let guests = liveSnapshotGuests
         pendingAddress = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
@@ -248,14 +260,22 @@ final class SessionStore {
     func endLiveSnapshotLoop() {
         liveSnapshotTask?.cancel()
         liveSnapshotTask = nil
-        let address = pendingAddress
-        let expected = pendingSpeakersExpected
-        let scriptId = pendingScriptId ?? defaultScriptId
-        let guests = pendingKioskGuests
+        // Prefer the stashed setup args (set by startLiveSnapshotLoop) so the
+        // final tick has the same context the periodic ticks ran with. Fall
+        // back to pending* on the off chance End fires without the loop ever
+        // having started.
+        let address = liveSnapshotAddress ?? pendingAddress
+        let expected = liveSnapshotExpected ?? pendingSpeakersExpected
+        let scriptId = liveSnapshotScriptId ?? pendingScriptId ?? defaultScriptId
+        let guests = liveSnapshotGuests.isEmpty ? pendingKioskGuests : liveSnapshotGuests
         pendingAddress = nil
         pendingSpeakersExpected = nil
         pendingScriptId = nil
         pendingKioskGuests = []
+        liveSnapshotAddress = nil
+        liveSnapshotExpected = nil
+        liveSnapshotScriptId = nil
+        liveSnapshotGuests = []
         // Show the processing pane immediately so the agent knows the final
         // pass is in flight; the snapshot tick replaces `phase` with .ready
         // (or .failed) when it returns.
@@ -269,6 +289,29 @@ final class SessionStore {
                 guests: guests,
                 depth: .full,
                 isFinal: true
+            )
+        }
+    }
+
+    // Dev/test hook — fires one snapshot tick at full depth without ending
+    // the session, so the agent can see what the analysis would look like
+    // mid-recording. Returns immediately if a tick is already in flight
+    // (the cadence loop or a previous manual trigger); the recording itself
+    // keeps capturing audio throughout via rotateChunk().
+    func triggerSnapshotNow() {
+        guard !liveSnapshotInFlight else { return }
+        let address = liveSnapshotAddress ?? pendingAddress
+        let expected = liveSnapshotExpected ?? pendingSpeakersExpected
+        let scriptId = liveSnapshotScriptId ?? pendingScriptId ?? defaultScriptId
+        let guests = liveSnapshotGuests.isEmpty ? pendingKioskGuests : liveSnapshotGuests
+        Task { [weak self] in
+            await self?.snapshotTick(
+                address: address,
+                expected: expected,
+                scriptId: scriptId,
+                guests: guests,
+                depth: .full,
+                isFinal: false
             )
         }
     }

@@ -174,6 +174,14 @@ struct IPadAgentApp: View {
             guard AudioRecorder.shared.isRecording else { return }
             stopRecording()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openhousebossToggleMute)) { _ in
+            // Posted by ToggleMuteIntent from the Live Activity Mute button.
+            // Flips the shared recorder between paused and recording without
+            // ending the session.
+            let r = AudioRecorder.shared
+            guard r.isRecording else { return }
+            if r.isPaused { r.resume() } else { r.pause() }
+        }
         .sheet(isPresented: $showAddListing) {
             IPadListingEditor(
                 store: store,
@@ -7904,6 +7912,12 @@ private struct IPadRecord: View {
             resetIfFinishedSession()
             paused = recorder.isPaused
         }
+        // Keep the local `paused` mirror aligned with the recorder so a mute
+        // triggered from the Live Activity widget flips the in-app pill +
+        // button label without the user having to interact in the app first.
+        .onChange(of: recorder.isPaused) { _, newValue in
+            paused = newValue
+        }
         // When the End-Session pass finishes, auto-navigate to the Session
         // detail. Without this the agent landed on a prompt pane asking
         // which screen to go to — the answer is almost always "open the
@@ -8132,7 +8146,7 @@ private struct IPadRecord: View {
                     .fill(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
                     .frame(width: 8, height: 8)
                     .modifier(PulseAnimation())
-                Text(paused ? "PAUSED" : "LIVE")
+                Text(paused ? "MUTED" : "LIVE")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .tracking(2.0)
                     .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
@@ -8149,6 +8163,9 @@ private struct IPadRecord: View {
             }
             #endif
             snapshotPill
+            #if DEBUG
+            analyzeNowChip
+            #endif
             Spacer()
             Text(timeString)
                 .font(.system(size: 22, weight: .medium, design: .monospaced))
@@ -8159,6 +8176,33 @@ private struct IPadRecord: View {
         .padding(.top, isCompact ? 18 : 36)
         .padding(.bottom, 8)
     }
+
+    // Debug-only "send the current audio to the pipeline now" button. Skips
+    // the 5/10/20/… cadence so the test agent can immediately see what the
+    // analysis looks like mid-recording. Disabled while a tick is already
+    // in flight so we don't pile two snapshots on the same chunks.
+    #if DEBUG
+    private var analyzeNowChip: some View {
+        Button {
+            store.triggerSnapshotNow()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: store.liveSnapshotInFlight ? "hourglass" : "bolt.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text(store.liveSnapshotInFlight ? "Analyzing…" : "Analyze now")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(Capsule().fill(FoyerTheme.gold.opacity(0.12)))
+            .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .disabled(store.liveSnapshotInFlight)
+        .opacity(store.liveSnapshotInFlight ? 0.7 : 1.0)
+    }
+    #endif
 
     // Status pill showing the last successful snapshot's age + current
     // coverage score. Hidden until the first snapshot lands at ~5 min in;
@@ -8218,7 +8262,7 @@ private struct IPadRecord: View {
                     .tracking(-0.4)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
-                Text(paused ? "Recording paused" : "Listening")
+                Text(paused ? "Muted · mic off" : "Listening")
                     .font(.system(size: 13))
                     .foregroundStyle(FoyerTheme.textDim)
             }
@@ -8239,15 +8283,18 @@ private struct IPadRecord: View {
                 paused.toggle()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: paused ? "play.fill" : "pause.fill")
+                    Image(systemName: paused ? "mic.fill" : "mic.slash.fill")
                         .font(.system(size: 14, weight: .semibold))
-                    Text(paused ? "Resume" : "Pause")
+                    Text(paused ? "Unmute" : "Mute")
                         .font(.system(size: 15, weight: .semibold))
                 }
                 .foregroundStyle(FoyerTheme.cream)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 18)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                .background(
+                    Color.white.opacity(paused ? 0.16 : 0.08),
+                    in: RoundedRectangle(cornerRadius: 14)
+                )
             }
             .buttonStyle(.plain)
 

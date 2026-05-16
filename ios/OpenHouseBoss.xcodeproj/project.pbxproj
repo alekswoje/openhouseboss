@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		1083B061DCE584035504F74C /* LiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 701CBCDE2440532BB88C1222 /* LiveView.swift */; };
 		2E66898E45212FB451BFFBFB /* StopRecordingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */; };
+		31252B8AD4EA911D1CFE924E /* ToggleMuteIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B0BA6C383B3D4BF64E34FD /* ToggleMuteIntent.swift */; };
 		318599127FDC9978A2EEFE2E /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A14FF6B9071E2F1778CD44 /* APIClient.swift */; };
 		325CF9ACBB86889E9D21EACC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0DF985428F286A7A4014BD /* Theme.swift */; };
 		36A2F83B5677D376932A1CB0 /* IPadAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */; };
@@ -30,6 +31,7 @@
 		A8CC3AF05D4BE251321536C7 /* FoyerBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24B8C774159A0F354B9176D /* FoyerBrand.swift */; };
 		A9FD41F941A91A0BB7101205 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = B550150CDEF72AE1714252D7 /* Log.swift */; };
 		AA19024C60B17597536B6CED /* DevMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17AAE43B7C807B2B3D1CD658 /* DevMode.swift */; };
+		C1D6502DE25AAE6FE2C55E6D /* ToggleMuteIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B0BA6C383B3D4BF64E34FD /* ToggleMuteIntent.swift */; };
 		C4A505C8F2873D25FA6891DA /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88172970AE449A66CFAE784B /* RecordView.swift */; };
 		CCE85596A80EAFE5C598CD60 /* StopRecordingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */; };
 		D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */; };
@@ -88,6 +90,7 @@
 		B24B8C774159A0F354B9176D /* FoyerBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoyerBrand.swift; sourceTree = "<group>"; };
 		B550150CDEF72AE1714252D7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		B6DB7C9D6CA21742ED702246 /* foyer-loading.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = "foyer-loading.gif"; sourceTree = "<group>"; };
+		B8B0BA6C383B3D4BF64E34FD /* ToggleMuteIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToggleMuteIntent.swift; sourceTree = "<group>"; };
 		BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadAgentApp.swift; sourceTree = "<group>"; };
 		FF7611614BAC0AFA7B0507EE /* OpenHouseBoss.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenHouseBoss.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -102,6 +105,7 @@
 				3988A31ECC5ABDE712E61764 /* OpenHouseBossWidgetsBundle.swift */,
 				8247ED02EC4FF7ECE5498E73 /* RecordingLiveActivity.swift */,
 				25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */,
+				B8B0BA6C383B3D4BF64E34FD /* ToggleMuteIntent.swift */,
 			);
 			path = OpenHouseBossWidgets;
 			sourceTree = "<group>";
@@ -268,6 +272,7 @@
 				2E66898E45212FB451BFFBFB /* StopRecordingIntent.swift in Sources */,
 				53A9D10A2C9014C5D5C8DF92 /* SummaryView.swift in Sources */,
 				325CF9ACBB86889E9D21EACC /* Theme.swift in Sources */,
+				31252B8AD4EA911D1CFE924E /* ToggleMuteIntent.swift in Sources */,
 				75B80CF41E60950CFD1B894F /* VisitorDetailView.swift in Sources */,
 				F22743D92A34275936122583 /* VoiceWaveform.swift in Sources */,
 			);
@@ -281,6 +286,7 @@
 				9D444B6AC2E2DA852776D5EB /* RecordingActivityAttributes.swift in Sources */,
 				A046864C4B521610B3DB16F8 /* RecordingLiveActivity.swift in Sources */,
 				CCE85596A80EAFE5C598CD60 /* StopRecordingIntent.swift in Sources */,
+				C1D6502DE25AAE6FE2C55E6D /* ToggleMuteIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

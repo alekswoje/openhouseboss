@@ -78,7 +78,7 @@ struct LiveView: View {
         GlassSurface(cornerRadius: 24, strong: true) {
             VStack(spacing: 22) {
                 HStack {
-                    Eyebrow(text: paused ? "Paused" : "Speaking now", color: FoyerTheme.terracotta)
+                    Eyebrow(text: paused ? "Muted" : "Speaking now", color: FoyerTheme.terracotta)
                     Spacer()
                     Text(timeString)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -126,12 +126,13 @@ struct LiveView: View {
     private var controls: some View {
         HStack(spacing: 10) {
             Button {
+                if paused { recorder.resume() } else { recorder.pause() }
                 paused.toggle()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: paused ? "play.fill" : "pause.fill")
+                    Image(systemName: paused ? "mic.fill" : "mic.slash.fill")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(paused ? "Resume" : "Pause")
+                    Text(paused ? "Unmute" : "Mute")
                 }
             }
             .buttonStyle(FoyerGhostButton())

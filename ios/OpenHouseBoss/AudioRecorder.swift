@@ -201,6 +201,7 @@ final class AudioRecorder {
         recorder?.pause()
         isPaused = true
         pauseStart = Date()
+        updateLiveActivityMute(true)
     }
 
     func resume() {
@@ -211,6 +212,22 @@ final class AudioRecorder {
         }
         pauseStart = nil
         isPaused = false
+        updateLiveActivityMute(false)
+    }
+
+    // Push the current mute state into the Live Activity so the widget's
+    // Mute / Unmute button label tracks reality. Phase stays .recording —
+    // muting doesn't end the session, just stops mic capture.
+    private func updateLiveActivityMute(_ muted: Bool) {
+        guard #available(iOS 16.2, *), let activity = liveActivity else { return }
+        let newState = RecordingActivityAttributes.ContentState(
+            startedAt: activity.content.state.startedAt,
+            phase: activity.content.state.phase,
+            isMuted: muted
+        )
+        Task {
+            await activity.update(ActivityContent(state: newState, staleDate: nil))
+        }
     }
 
     func stopRecording() -> URL? {
