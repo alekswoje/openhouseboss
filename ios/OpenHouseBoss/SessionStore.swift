@@ -406,20 +406,27 @@ final class SessionStore {
         }
     }
 
-    // Re-run analysis on the current session's saved audio with a different
-    // speakers_expected hint. The Summary screen uses this when diarization
-    // undercounts (e.g. one person doing impressions → AAI collapsed them).
+    // Re-run analysis on the current session's saved audio. Two callers:
+    // - Summary's "Re-analyze with N guests" control passes a count to fix
+    //   diarization undercounts.
+    // - Error-state "Re-analyze" passes nil to retry without a hint (lets
+    //   the backend's auto-correct logic re-do its thing — usually enough
+    //   to clear a transient LLM-shaped failure).
     //
     // `guestsExpected` is what the agent thinks in (number of OTHER people
     // in the room). AssemblyAI's API counts the agent too, so we add 1 on
     // the way out — set guestsExpected=2 → speakers_expected=3 → AAI looks
     // for agent + 2 guests.
-    func reanalyze(guestsExpected: Int) {
+    func reanalyze(guestsExpected: Int?) {
         guard let sessionId = session?.id else { return }
         cancel()
         phase = .processing
-        let totalSpeakers = guestsExpected + 1
-        Log.net("reanalyze → \(sessionId) guests=\(guestsExpected) (total speakers=\(totalSpeakers))")
+        let totalSpeakers = guestsExpected.map { $0 + 1 }
+        if let g = guestsExpected, let total = totalSpeakers {
+            Log.net("reanalyze → \(sessionId) guests=\(g) (total speakers=\(total))")
+        } else {
+            Log.net("reanalyze → \(sessionId) (no speaker hint)")
+        }
         pollTask = Task { [weak self] in
             do {
                 try await APIClient.shared.reprocessSession(id: sessionId, speakersExpected: totalSpeakers)

@@ -210,16 +210,32 @@ struct SummaryView: View {
     }
 
     private func errorCard(_ message: String) -> some View {
-        GlassSurface(cornerRadius: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow(text: "Couldn't process session", color: FoyerTheme.terracotta)
-                Text(message)
-                    .font(.system(size: 13))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .lineSpacing(3)
+        // The recording is preserved on the backend, so we can re-run the
+        // pipeline against the saved audio without making the agent re-record.
+        // Handy when (a) the failure was a transient LLM/decoder hiccup, or
+        // (b) we shipped a backend fix and want to retry old failed sessions.
+        VStack(spacing: 14) {
+            GlassSurface(cornerRadius: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Eyebrow(text: "Couldn't process session", color: FoyerTheme.terracotta)
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineSpacing(3)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if store.session?.id != nil {
+                Button { store.reanalyze(guestsExpected: nil) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Re-analyze recording")
+                    }
+                }
+                .buttonStyle(FoyerPrimaryButton())
+            }
         }
         .padding(.horizontal, 20)
     }
