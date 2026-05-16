@@ -2242,7 +2242,7 @@ struct FUBConnectSheet: View {
             Text("Push captured leads automatically")
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(FoyerTheme.cream)
-            Text("When you Send a follow-up draft, OpenHouseBoss creates the contact in FUB, attaches the session notes, and schedules a follow-up task.")
+            Text("When you Send a follow-up draft, Open House Copilot creates the contact in FUB, attaches the session notes, and schedules a follow-up task.")
                 .font(.system(size: 13))
                 .foregroundStyle(FoyerTheme.creamDim)
                 .lineSpacing(3)

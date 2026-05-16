@@ -4032,7 +4032,7 @@ private struct FUBConnectSheetIPad: View {
             Text("Push captured leads automatically")
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(FoyerTheme.cream)
-            Text("When you Send a follow-up draft, OpenHouseBoss creates the contact in FUB, attaches your session notes, and schedules a follow-up task. The API key stays in this device's Keychain — it never goes to our servers.")
+            Text("When you Send a follow-up draft, Open House Copilot creates the contact in FUB, attaches your session notes, and schedules a follow-up task. The API key stays in this device's Keychain — it never goes to our servers.")
                 .font(.system(size: 13))
                 .foregroundStyle(FoyerTheme.creamDim)
                 .fixedSize(horizontal: false, vertical: true)

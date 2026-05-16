@@ -3,7 +3,7 @@
 Everything below assumes the repo is on GitHub (or any Git provider Render/Cloudflare can pull from). If it isn't yet:
 
 ```
-cd /Users/alekswojewoda/OpenHouseBoss
+cd /Users/alekswojewoda/OpenHouseCopilot
 git init
 git add .
 git commit -m "Initial commit"
@@ -53,7 +53,7 @@ Free tier: unlimited bandwidth, unlimited requests, custom domains for $0 if you
 
 ## 3. iOS app → point at Render
 
-[ios/OpenHouseBoss/Config.swift](ios/OpenHouseBoss/Config.swift) flips automatically:
+[ios/OpenHouseCopilot/Config.swift](ios/OpenHouseCopilot/Config.swift) flips automatically:
 
 - **Debug builds** (running from Xcode) → `http://127.0.0.1:8000`. Keep `uvicorn backend.server:app --reload` running locally.
 - **Release builds** (Archive → TestFlight / App Store) → the Render URL.

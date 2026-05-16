@@ -26,7 +26,7 @@ const Login = () => {
           <Eyebrow num="1">Field notes</Eyebrow>
           <blockquote className="serif" style={{ fontSize: 38, lineHeight: 1.2, margin: '24px 0 0', color: 'var(--cream)', maxWidth: 520, fontWeight: 400 }}>
             <span className="serif-it" style={{ color: 'var(--gold)' }}>"</span>The art of selling a house begins
-            the moment the door opens. Foyer keeps
+            the moment the door opens. Open House Copilot keeps
             every quiet detail of that moment, so
             nothing of value goes unremembered<span className="serif-it" style={{ color: 'var(--gold)' }}>."</span>
           </blockquote>
@@ -77,7 +77,7 @@ const Login = () => {
             </button>
             <p style={{ marginTop: 16, color: 'var(--text-dim)', fontSize: 12, lineHeight: 1.6 }}>
               We'll never post anything to your account. Signing in with Google
-              lets Foyer match you to your captured open-house sessions.
+              lets Open House Copilot match you to your captured open-house sessions.
             </p>
           </div>
         </div>

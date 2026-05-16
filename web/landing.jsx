@@ -1,7 +1,7 @@
 /* global React, Crest, Eyebrow, Tag, Stat, Hairline, HeroDevices, HDIPhone, HDIPad, HDLaptop */
 
 const Landing = () => {
-  // Waitlist modal — opens from any CTA on the page. Foyer is invite-
+  // Waitlist modal — opens from any CTA on the page. Open House Copilot is invite-
   // only for now, so neither the header nor the bottom-of-page CTAs
   // expose a Sign-in / Sign-up path. Visitors drop their email and we
   // ping them when their cohort opens.
@@ -29,7 +29,7 @@ const Landing = () => {
         </nav>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
           {/* Sign-in is intentionally hidden on the marketing site —
-              Foyer is invite-only and invited agents get a direct
+              Open House Copilot is invite-only and invited agents get a direct
               #/login link in their welcome email. The only CTA here
               is "Join the waitlist", wired to the newsletter API. */}
           <button className="btn btn-primary" onClick={openWaitlist('header')}>Join the waitlist</button>
@@ -57,7 +57,7 @@ const Landing = () => {
               fontSize: 17, lineHeight: 1.6,
               color: 'var(--text-dim)',
             }}>
-              Foyer listens through your phone, identifies each guest who walked in,
+              Open House Copilot listens through your phone, identifies each guest who walked in,
               and drafts the follow-up before you've locked the front door. So you
               spend the showing showing — not scribbling.
             </p>
@@ -98,7 +98,7 @@ const Landing = () => {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1, background: 'var(--hairline)' }}>
             {[
-              { n: '01', title: 'Record', body: 'Tap once when the first guest arrives. Foyer captures every conversation through the open house, in pocket, on airplane mode if needed.' },
+              { n: '01', title: 'Record', body: 'Tap once when the first guest arrives. Open House Copilot captures every conversation through the open house, in pocket, on airplane mode if needed.' },
               { n: '02', title: 'Recognize', body: "Guests sign in on your iPad — we match each voice to a name, separate the buyers from the browsers, and pull out what they said matters to them." },
               { n: '03', title: 'Reach out', body: 'Walk out and the follow-up is already drafted in your voice, scheduled to send tomorrow at 9:14 AM, ready for your read.' },
             ].map(step => (
@@ -209,7 +209,7 @@ const Landing = () => {
               </h2>
             </div>
             <div style={{ maxWidth: 420, color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.7 }}>
-              Three new surfaces — built on the same Foyer pipeline — that
+              Three new surfaces — built on the same Open House Copilot pipeline — that
               turn the inbox into a conversation, not a backlog.
             </div>
           </div>
@@ -223,7 +223,7 @@ const Landing = () => {
               body={
                 <>Type a question or a request — <span className="serif-it" style={{ color: 'var(--gold)' }}>"send the $2,500
                 buyer credit blast to all warm buyers from Maple St"</span> — and
-                Foyer drafts every email, lines up the right recipients,
+                Open House Copilot drafts every email, lines up the right recipients,
                 and asks you to confirm once. Not 30 times.</>
               }
               mock={
@@ -263,7 +263,7 @@ const Landing = () => {
               title="Campaigns the AI can pull from."
               body={
                 <>Drop in your $2,500 buyer credit, your spring rate
-                lock, your seller comp report — Foyer references them
+                lock, your seller comp report — Open House Copilot references them
                 with <span className="mono" style={{ color: 'var(--gold)' }}>@name</span> in any prompt, or quietly picks
                 the best fit for each lead all on its own.</>
               }
@@ -307,7 +307,7 @@ const Landing = () => {
               body={
                 <>"Make it shorter," <span className="serif-it" style={{ color: 'var(--gold)' }}>"add a CTA to schedule
                 a private showing,"</span> "swap in the spring buyer
-                credit." Foyer rewrites in seconds — your tone, your
+                credit." Open House Copilot rewrites in seconds — your tone, your
                 edits, every time.</>
               }
               mock={
@@ -350,11 +350,11 @@ const Landing = () => {
             <div>
               <Eyebrow num="04">Three devices, three jobs</Eyebrow>
               <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
-                You bring the people. <span className="serif-it" style={{ color: 'var(--gold)' }}>Foyer does the rest.</span>
+                You bring the people. <span className="serif-it" style={{ color: 'var(--gold)' }}>Open House Copilot does the rest.</span>
               </h2>
             </div>
             <div style={{ maxWidth: 420, color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.7 }}>
-              Each device has one job — and Foyer runs it without you
+              Each device has one job — and Open House Copilot runs it without you
               touching a thing. Pocket, podium, follow-up.
             </div>
           </div>
@@ -365,7 +365,7 @@ const Landing = () => {
             title={<>Records the open house. <span className="serif-it" style={{ color: 'var(--gold)' }}>Names every voice.</span></>}
             bullets={[
               { k: 'Drop your phone in your pocket and tap once.',
-                d: 'Foyer captures the entire walkthrough in the background, even with the screen off.' },
+                d: 'Open House Copilot captures the entire walkthrough in the background, even with the screen off.' },
               { k: 'Speakers identified automatically.',
                 d: 'AI diarization separates every voice and matches them to the guests who signed in.' },
               { k: 'Saved continuously to the cloud.',
@@ -386,7 +386,7 @@ const Landing = () => {
               { k: 'Validation as the field types.',
                 d: 'Email gets checked while they\'re still on the page. Bad addresses don\'t make it through.' },
               { k: 'Queues guests for voice-matching.',
-                d: 'The moment Foyer hears them speak, the signed-in name attaches to their voiceprint.' },
+                d: 'The moment Open House Copilot hears them speak, the signed-in name attaches to their voiceprint.' },
             ]}
             device="ipad"
             scale={0.45}
@@ -399,7 +399,7 @@ const Landing = () => {
             title={<>AI drafts each follow-up. <span className="serif-it" style={{ color: 'var(--gold)' }}>And schedules it.</span></>}
             bullets={[
               { k: 'Personalized email per guest, written for you.',
-                d: 'Foyer reads what each lead actually said and drafts in your voice — not a template.' },
+                d: 'Open House Copilot reads what each lead actually said and drafts in your voice — not a template.' },
               { k: 'Auto-scheduled to 9:14 AM tomorrow.',
                 d: 'No "click send 30 times." Open houses turn into a queue of pre-flighted replies.' },
               { k: 'One confirmation for a hundred sends.',
@@ -419,7 +419,7 @@ const Landing = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 48 }}>
           {[
             { quote: "It is the difference between hosting an open house and harvesting one.", who: 'Eliana Morales', title: 'Top producer, UWS' },
-            { quote: "Foyer wrote a follow-up that closed a $2.4M townhouse. I sent it word for word.", who: 'David Chen', title: 'Principal broker' },
+            { quote: "Open House Copilot wrote a follow-up that closed a $2.4M townhouse. I sent it word for word.", who: 'David Chen', title: 'Principal broker' },
             { quote: "My team's response time went from three days to nine minutes. Quietly.", who: 'Renée Pinault', title: 'Brokerage owner, Boston' },
           ].map(q => (
             <figure key={q.who} style={{ margin: 0 }}>
@@ -453,7 +453,7 @@ const Landing = () => {
           The next cohort opens <span className="serif-it" style={{ color: 'var(--gold)' }}>soon.</span>
         </h2>
         <p style={{ maxWidth: 520, margin: '32px auto 0', color: 'var(--text-dim)', fontSize: 16, lineHeight: 1.7 }}>
-          Foyer is invite-only while we onboard our first hundred brokers.
+          Open House Copilot is invite-only while we onboard our first hundred brokers.
           Drop your email and we'll write when your seat opens — no spam, no
           calls from anyone in a quarter-zip.
         </p>
@@ -710,7 +710,7 @@ function WaitlistModal({ source, onClose }) {
               Join the next cohort.
             </h3>
             <p style={{ fontSize: 14, color: 'var(--text-dim)', lineHeight: 1.6, margin: '0 0 22px' }}>
-              Foyer is invite-only while we onboard our first hundred
+              Open House Copilot is invite-only while we onboard our first hundred
               brokers. Drop your email — we'll write when a seat opens.
             </p>
 

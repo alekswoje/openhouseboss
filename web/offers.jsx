@@ -175,7 +175,7 @@ function EmptyOffers({ onCreate }) {
         No offers yet
       </div>
       <p style={{ marginTop: 10, color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.6, maxWidth: 420, marginLeft: 'auto', marginRight: 'auto' }}>
-        Create your first campaign — Foyer can drop it into follow-ups
+        Create your first campaign — Open House Copilot can drop it into follow-ups
         when the lead is a fit, or you can call it out by name in a
         prompt.
       </p>

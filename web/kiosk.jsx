@@ -99,7 +99,7 @@ function pickRecentAddress(summaries) {
 // ============================================================
 //
 // Hardened so a walk-in can't escape:
-//   - No AppShell sidebar, no route-nav, no Foyer-crest link out
+//   - No AppShell sidebar, no route-nav, no Open House Copilot-crest link out
 //   - popstate listener pushes state forward whenever back is pressed
 //   - hashchange listener forces the hash back to #/kiosk-live
 //   - No internal links other than the Sign in button
@@ -199,7 +199,7 @@ const KioskLive = () => {
           width: 32, height: 32, fontSize: 16, fontFamily: 'var(--serif)',
           color: 'var(--gold)', border: '1px solid var(--gold)', borderRadius: 6,
         }}>F</span>
-        <span className="serif" style={{ fontSize: 20, color: 'var(--cream)' }}>Foyer</span>
+        <span className="serif" style={{ fontSize: 20, color: 'var(--cream)' }}>Open House Copilot</span>
       </div>
 
       <div style={{ position: 'absolute', top: 40, right: 56, fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--mono)', letterSpacing: '0.14em' }}>
@@ -294,7 +294,7 @@ const KioskLive = () => {
       )}
 
       <div style={{ position: 'absolute', bottom: 28, fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--mono)', letterSpacing: '0.16em' }}>
-        FOYER · NEVER SHARED · NEVER SPAMMED
+        OPEN HOUSE COPILOT · NEVER SHARED · NEVER SPAMMED
       </div>
     </div>
   );

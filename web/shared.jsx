@@ -10,7 +10,7 @@
 const FoyerMark = ({ size = 32, rounded = 7 }) => (
   <img
     src="foyer-mark.png"
-    alt="Foyer"
+    alt="Open House Copilot"
     width={size}
     height={size}
     style={{
@@ -22,7 +22,7 @@ const FoyerMark = ({ size = 32, rounded = 7 }) => (
   />
 );
 
-const Crest = ({ size = 22, name = 'Foyer' }) => (
+const Crest = ({ size = 22, name = 'Open House Copilot' }) => (
   <div className="crest" style={{ fontSize: size, gap: size * 0.4, alignItems: 'center' }}>
     <FoyerMark size={size * 1.3} rounded={Math.max(4, size * 0.3)} />
     <span>{name}</span>
@@ -434,7 +434,7 @@ function AppShell({ active, children, sessionStats }) {
             <>
               <a href="#/app" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
                 <FoyerMark size={32} rounded={7} />
-                <span style={{ fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 16, color: 'var(--cream)', letterSpacing: '-0.02em' }}>Foyer</span>
+                <span style={{ fontFamily: 'var(--sans)', fontWeight: 500, fontSize: 16, color: 'var(--cream)', letterSpacing: '-0.02em' }}>Open House Copilot</span>
               </a>
               <button
                 onClick={(e) => { e.stopPropagation(); toggleCollapsed(); }}

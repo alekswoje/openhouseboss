@@ -1245,7 +1245,7 @@ actor APIClient {
         let creds = "\(apiKey):"
         let token = Data(creds.utf8).base64EncodedString()
         req.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("OpenHouseBoss", forHTTPHeaderField: "X-System")
+        req.setValue("OpenHouseCopilot", forHTTPHeaderField: "X-System")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
@@ -1306,7 +1306,7 @@ actor APIClient {
             "lastName": lastName,
             "emails": emails,
             "phones": phones,
-            "source": "OpenHouseBoss",
+            "source": "OpenHouseCopilot",
             "tags": tags,
             "stage": "Lead",
         ]

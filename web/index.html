@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Foyer — every open house, quietly remembered.</title>
+  <title>Open House Copilot — every open house, quietly remembered.</title>
   <link rel="icon" type="image/png" href="foyer-mark.png">
   <link rel="apple-touch-icon" href="foyer-mark.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -479,7 +479,7 @@
           </div>
           <ToastHost toasts={toasts} />
           {showRouteNav && (
-            <nav className="route-nav" aria-label="Foyer demo routes">
+            <nav className="route-nav" aria-label="Open House Copilot demo routes">
               {ROUTES.filter(r => !r.kiosk).map(r => (
                 <a key={r.hash} href={r.hash} className={r.hash === hash ? 'is-active' : ''}>
                   {r.label}

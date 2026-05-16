@@ -1,14 +1,14 @@
-# Design Brief — OpenHouseBoss iOS App
+# Design Brief — OpenHouseCopilot iOS App
 
 > Copy everything below this line into Claude (or any design AI) to get a full app design back.
 
 ---
 
-You are designing **OpenHouseBoss**, a native iOS app for real estate agents. I need a complete visual design for every screen, in light and dark mode, with all relevant states (empty, loading, success, error). Deliver as high-fidelity mockups (SVG, PNG, or HTML/CSS — your call), one screen per artifact, plus a short style guide describing colors, typography, and component patterns.
+You are designing **OpenHouseCopilot**, a native iOS app for real estate agents. I need a complete visual design for every screen, in light and dark mode, with all relevant states (empty, loading, success, error). Deliver as high-fidelity mockups (SVG, PNG, or HTML/CSS — your call), one screen per artifact, plus a short style guide describing colors, typography, and component patterns.
 
 ## Product
 
-OpenHouseBoss records audio during a real estate open house, then uses speaker diarization + an LLM to:
+OpenHouseCopilot records audio during a real estate open house, then uses speaker diarization + an LLM to:
 1. Identify each visitor by voice (matched to a sign-in list)
 2. Tag each visitor (`Seller` / `Buyer` / future custom tags)
 3. Generate a personalized follow-up email for each visitor

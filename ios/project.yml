@@ -42,6 +42,11 @@ targets:
     info:
       path: OpenHouseBoss/Generated-Info.plist
       properties:
+        # Display name on the iPhone home screen + App Store listing. Set
+        # explicitly so we can rebrand without renaming the Xcode target /
+        # folder structure (which would churn the .pbxproj). The target
+        # stays "OpenHouseBoss" internally; users see "Open House Copilot".
+        CFBundleDisplayName: "Open House Copilot"
         # All networking goes to https://openhouseboss-api.onrender.com — no
         # cleartext exceptions needed. NSAllowsArbitraryLoads=true was a
         # leftover from local-dev (`http://<mac-lan-ip>:8000`); App Review

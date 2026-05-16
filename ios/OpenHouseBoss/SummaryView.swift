@@ -471,7 +471,7 @@ struct SummaryView: View {
     private var phaseDescription: String {
         switch store.phase {
         case .uploading:
-            return "Uploading the recording to the OpenHouseBoss API."
+            return "Uploading the recording to the Open House Copilot API."
         case .processing:
             return "Transcribing with AssemblyAI Universal-2, identifying speakers, then drafting per-visitor summaries and follow-ups. Typically 30–90 seconds for a 1-hour open house."
         default:

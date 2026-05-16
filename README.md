@@ -1,4 +1,4 @@
-# OpenHouseBoss
+# OpenHouseCopilot
 
 Open-house audio → diarized transcript → per-visitor summary, tag, and drafted follow-up.
 
