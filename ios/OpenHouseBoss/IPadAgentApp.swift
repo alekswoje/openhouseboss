@@ -8096,6 +8096,8 @@ private struct IPadSessionDetail: View {
     @State private var showDeleteConfirm = false
     @State private var deleting = false
     @State private var deleteError: String?
+    @State private var reanalyzing = false
+    @State private var reanalyzeError: String?
 
     private var audioURL: URL {
         Config.backendURL
@@ -8126,10 +8128,10 @@ private struct IPadSessionDetail: View {
                         } else if !result.fullTranscript.isEmpty {
                             transcriptSection(result.fullTranscript)
                         }
-                    } else if session.status == "processing" {
+                    } else if session.status == "processing" || reanalyzing {
                         processingNote
                     } else if let err = session.error {
-                        errorCard(err)
+                        sessionErrorCard(err)
                     }
                 } else if let loadError {
                     errorCard(loadError)
@@ -8653,6 +8655,57 @@ private struct IPadSessionDetail: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    // Variant for the session's own error state — adds a Re-analyze button
+    // so the agent can retry against the saved audio (handy after a
+    // transient LLM blip, or once we've shipped a backend fix and want to
+    // recover old failed sessions instead of deleting them).
+    private func sessionErrorCard(_ msg: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            errorCard(msg)
+            if let extra = reanalyzeError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+            Button { Task { await reanalyze() } } label: {
+                HStack(spacing: 8) {
+                    if reanalyzing {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.inkOnGold)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    Text(reanalyzing ? "Re-analyzing…" : "Re-analyze recording")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 16).padding(.vertical, 11)
+                .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(reanalyzing)
+        }
+    }
+
+    @MainActor
+    private func reanalyze() async {
+        guard let id = session?.id else { return }
+        reanalyzing = true
+        reanalyzeError = nil
+        defer { reanalyzing = false }
+        do {
+            try await APIClient.shared.reprocessSession(id: id, speakersExpected: nil)
+            let final = try await APIClient.shared.pollUntilDone(id: id)
+            session = final
+            await store.refreshSessions()
+            if final.status == "error" {
+                reanalyzeError = final.error
+            }
+        } catch {
+            reanalyzeError = error.localizedDescription
+        }
     }
 
     private func relativeTime(_ iso: String?) -> String {
