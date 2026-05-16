@@ -228,7 +228,7 @@ actor APIClient {
     }
 
     // GET /auth/me — used to (a) verify a Keychain token on launch and (b)
-    // pull the user's name/email/picture for the profile screen.
+    // pull the user's name/email/picture/profile for the profile screen.
     // Cold-start tolerant: this is one of the first calls after launch, so
     // it eats most of Render's free-tier wake-up cost.
     func fetchMe() async throws -> AuthUser {
@@ -237,23 +237,112 @@ actor APIClient {
         return try JSONDecoder().decode(AuthUser.self, from: data)
     }
 
+    // MARK: – Agent profile (brokerage / license / phone / title / tagline / headshot)
+
+    func getProfile() async throws -> AgentProfile {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/profile"))
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AgentProfile.self, from: data)
+    }
+
+    func updateProfile(
+        brokerage: String? = nil,
+        licenseNumber: String? = nil,
+        phone: String? = nil,
+        title: String? = nil,
+        tagline: String? = nil
+    ) async throws -> AgentProfile {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/profile"))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 10
+        authorize(&req)
+        var payload: [String: String] = [:]
+        if let brokerage     { payload["brokerage"]      = brokerage }
+        if let licenseNumber { payload["license_number"] = licenseNumber }
+        if let phone         { payload["phone"]          = phone }
+        if let title         { payload["title"]          = title }
+        if let tagline       { payload["tagline"]        = tagline }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AgentProfile.self, from: data)
+    }
+
+    // Upload the headshot as raw image data — backend writes it to disk and
+    // updates the profile's headshot_url. Caller passes UIImage's JPEG
+    // representation (default quality 0.85 = a reasonable email-friendly
+    // ~50-200KB for a square crop).
+    func uploadHeadshot(data: Data, contentType: String = "image/jpeg") async throws -> AgentProfile {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/profile/headshot"))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 30
+        authorize(&req)
+        var body = Data()
+        body.appendForm(boundary: boundary, name: "file", filename: "headshot.jpg",
+                        contentType: contentType, data: data)
+        body.append("--\(boundary)--\r\n")
+        let (respData, response) = try await uploadWithRetry(req, body: body)
+        try validate(response: response, data: respData)
+        return try JSONDecoder().decode(AgentProfile.self, from: respData)
+    }
+
+    func deleteHeadshot() async throws -> AgentProfile {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/profile/headshot"))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AgentProfile.self, from: data)
+    }
+
+    // Authenticated URL for the agent's own headshot — what the iOS
+    // profile editor displays. We return the URL request (not the URL)
+    // so callers can hand it to AsyncImage / URLSession with the JWT
+    // attached. Cache-buster comes from AgentProfile.headshotUrl.
+    func headshotRequest(relativePath: String) -> URLRequest {
+        var req = URLRequest(url: Config.backendURL
+            .appendingPathComponent(relativePath.trimmingCharacters(in: .init(charactersIn: "/"))))
+        authorize(&req)
+        return req
+    }
+
+    // Authenticated GET for a session's recorded audio. Used by
+    // SessionStore.continueRecording when local chunks are gone — we pull
+    // the backend's authoritative recording and seed chunk_000.m4a so the
+    // resumed snapshot still includes the prior session's audio.
+    func audioFetchRequest(sessionId: String) -> URLRequest {
+        var req = URLRequest(url: Config.backendURL
+            .appendingPathComponent("sessions/\(sessionId)/audio"))
+        req.timeoutInterval = 60
+        authorize(&req)
+        return req
+    }
+
     // iOS-only path: upload audio, let the backend synthesize visitors from
     // diarized speakers. Returns the freshly-created session (status=processing).
     // `speakersExpected` is forwarded to AssemblyAI as a diarization hint.
     // `scriptId` attaches a preset script for post-session coverage grading.
-    func createSession(audioURL: URL, address: String? = nil, speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
-        try await createSession(audioURL: audioURL, address: address, visitorsCSV: nil, speakersExpected: speakersExpected, scriptId: scriptId)
+    // `name` is the agent's nickname for the session (optional).
+    func createSession(audioURL: URL, address: String? = nil, name: String? = nil, speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
+        try await createSession(audioURL: audioURL, address: address, name: name, visitorsCSV: nil, speakersExpected: speakersExpected, scriptId: scriptId)
     }
 
     // Kiosk path: upload audio plus a sign-in CSV so the backend can match
     // named visitors to speakers.
-    func createSession(audioURL: URL, address: String?, visitors: [VisitorInput], speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
+    func createSession(audioURL: URL, address: String?, name: String? = nil, visitors: [VisitorInput], speakersExpected: Int? = nil, scriptId: String? = nil) async throws -> Session {
         let csv = (["name,email,phone,signed_in_at"]
             + visitors.map { "\($0.name),\($0.email),\($0.phone)," }).joined(separator: "\n")
-        return try await createSession(audioURL: audioURL, address: address, visitorsCSV: Data(csv.utf8), speakersExpected: speakersExpected, scriptId: scriptId)
+        return try await createSession(audioURL: audioURL, address: address, name: name, visitorsCSV: Data(csv.utf8), speakersExpected: speakersExpected, scriptId: scriptId)
     }
 
-    private func createSession(audioURL: URL, address: String?, visitorsCSV: Data?, speakersExpected: Int?, scriptId: String?) async throws -> Session {
+    private func createSession(audioURL: URL, address: String?, name: String?, visitorsCSV: Data?, speakersExpected: Int?, scriptId: String?) async throws -> Session {
         let boundary = "Boundary-\(UUID().uuidString)"
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions"))
         req.httpMethod = "POST"
@@ -267,6 +356,9 @@ actor APIClient {
         var body = Data()
         if let a = address?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty {
             body.appendField(boundary: boundary, name: "address", value: a)
+        }
+        if let nm = name?.trimmingCharacters(in: .whitespacesAndNewlines), !nm.isEmpty {
+            body.appendField(boundary: boundary, name: "name", value: nm)
         }
         if let n = speakersExpected, n > 0 {
             body.appendField(boundary: boundary, name: "speakers_expected", value: String(n))
@@ -546,6 +638,20 @@ actor APIClient {
         )
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Session.self, from: data)
+    }
+
+    // Update a session's agent-set nickname. Empty string clears it back
+    // to nil so the display falls through to address. Used by the inline
+    // rename control on SummaryView and the End-Session name prompt.
+    func renameSession(id: String, name: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(id)"))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 10
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
     }
 
     // Permanently delete a session and all its on-disk artifacts. The
@@ -1650,6 +1756,19 @@ final class AuthStore {
         }
     }
 
+    // Re-fetch /auth/me and update currentUser in place. Used after
+    // edits to the profile so other screens (avatar in IPadProfile, the
+    // report's email signature when re-rendered) see the new values
+    // without a full app re-launch. Silently ignores transient errors —
+    // the worst case is a stale cached profile.
+    func refreshMe() async {
+        guard token != nil else { return }
+        if let user = try? await APIClient.shared.fetchMe() {
+            currentUser = user
+            Self.cacheUser(user)
+        }
+    }
+
     // Drives the ASWebAuthenticationSession dance: open the backend's
     // /auth/google/start in a system-managed webview, listen for the
     // com.openhouseboss.app:// redirect, pull the token out, verify with
@@ -1696,6 +1815,39 @@ struct AuthUser: Codable, Hashable {
     let email: String?
     let name: String?
     let picture: String?
+    // Agent profile — same shape as the backend's profile_for() return.
+    // Optional so legacy cached AuthUsers (decoded from UserDefaults on
+    // launch before this field existed) still parse cleanly.
+    var profile: AgentProfile?
+}
+
+// Branding the agent puts on outgoing emails (Open House Report
+// signature today; future follow-ups will use the same block). Strings
+// default to "" so SwiftUI form bindings don't have to special-case nil.
+struct AgentProfile: Codable, Hashable {
+    var brokerage: String = ""
+    var licenseNumber: String = ""
+    var phone: String = ""
+    var title: String = ""
+    var tagline: String = ""
+    // Relative URL like "/me/profile/headshot?v=1700000000" — expand
+    // against Config.backendURL. nil = no headshot uploaded.
+    var headshotUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case brokerage, phone, title, tagline
+        case licenseNumber = "license_number"
+        case headshotUrl = "headshot_url"
+    }
+
+    static let empty = AgentProfile()
+
+    // True when at least one branded field is set — drives the "Set up
+    // branding" callout in the Profile screen.
+    var hasBranding: Bool {
+        !brokerage.isEmpty || !licenseNumber.isEmpty || !phone.isEmpty
+        || !title.isEmpty || !tagline.isEmpty || headshotUrl != nil
+    }
 }
 
 // ASWebAuthenticationSession wrapper. Adapts the callback-based API to

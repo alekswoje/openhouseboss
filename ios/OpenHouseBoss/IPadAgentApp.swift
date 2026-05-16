@@ -6649,11 +6649,16 @@ private struct IPadProfile: View {
     @State private var editingScriptId: String? = nil
     @State private var showNewScript: Bool = false
 
+    // Branding state — controls the brokerage/license/phone/headshot
+    // editor sheet that drives the agent's email signature.
+    @State private var showBrandingEditor: Bool = false
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: isCompact ? 20 : 28) {
                 header
                 accountCard
+                brandingCard
                 gmailCard
                 if gmail?.connected == true {
                     sendAsCard
@@ -6750,6 +6755,62 @@ private struct IPadProfile: View {
         } message: {
             Text("You'll need to sign back in with Google to access your sessions and leads.")
         }
+        .sheet(isPresented: $showBrandingEditor) {
+            BrandingEditorSheet(onSaved: { _ in
+                showBrandingEditor = false
+            })
+        }
+    }
+
+    // Branding card — shown right under the account card. Single tap
+    // opens the editor; the subtitle reflects the agent's current state
+    // so they know whether their report signature is "set up" or still
+    // bare-name-only.
+    private var brandingCard: some View {
+        let profile = auth.currentUser?.profile
+        let isSetup = profile?.hasBranding == true
+        return Button { showBrandingEditor = true } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                cardHeader(
+                    icon: "rosette",
+                    title: "Branding",
+                    subtitle: brandingSubtitle(profile)
+                )
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(isSetup ? FoyerTheme.sage : FoyerTheme.creamDim.opacity(0.4))
+                        .frame(width: 10, height: 10)
+                    Text(isSetup ? "Configured" : "Not set")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    Spacer()
+                    Text(isSetup ? "Edit" : "Set up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isSetup ? FoyerTheme.creamDim : FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(isSetup
+                                    ? Color(white: 0.08)
+                                    : FoyerTheme.gold,
+                                    in: Capsule())
+                }
+            }
+            .padding(20)
+            .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func brandingSubtitle(_ p: AgentProfile?) -> String {
+        guard let p, p.hasBranding else {
+            return "Brokerage, license, phone, headshot — used on every report you send."
+        }
+        var bits: [String] = []
+        if !p.brokerage.isEmpty { bits.append(p.brokerage) }
+        if !p.title.isEmpty { bits.append(p.title) }
+        if p.headshotUrl != nil { bits.append("Photo") }
+        return bits.isEmpty
+            ? "Email signature configured."
+            : bits.joined(separator: " · ")
     }
 
     private var fubCard: some View {

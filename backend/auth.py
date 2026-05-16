@@ -461,6 +461,239 @@ def set_gmail_send_from(user_id: str, address: Optional[str]) -> None:
 
 
 # --------------------------------------------------------------------------
+# Agent profile — brokerage, license, phone, title, tagline, headshot.
+# Used in the Open House Report header + the email signature appended to
+# every outgoing send. All fields are optional; the report-rendering side
+# silently skips any that aren't filled in, so an agent who only sets
+# brokerage still gets a cleaner signature than the default name-only one.
+# --------------------------------------------------------------------------
+
+# Fields the user can edit via PATCH /me/profile. Listed explicitly so an
+# accidentally-typed `gmail_refresh_token` in the payload can't sneak past
+# update_profile and overwrite the OAuth credential.
+PROFILE_FIELDS = (
+    "brokerage",
+    "license_number",
+    "phone",
+    "title",
+    "tagline",
+)
+
+
+def profile_for(user_id: str) -> dict:
+    """Return {brokerage, license_number, phone, title, tagline,
+    headshot_url} — the bits the iOS profile screen renders. Always
+    returns strings (empty when unset) so the iOS form doesn't have to
+    paper over nil vs "" everywhere."""
+    user = get_user_by_id(user_id) or {}
+    headshot = user.get("headshot_filename")
+    return {
+        "brokerage":      user.get("brokerage") or "",
+        "license_number": user.get("license_number") or "",
+        "phone":          user.get("phone") or "",
+        "title":          user.get("title") or "",
+        "tagline":        user.get("tagline") or "",
+        # Relative URL — the iOS client expands against Config.backendURL.
+        # `?v={epoch}` cache-buster forces avatars to refresh on iOS after
+        # re-upload (URLCache otherwise pins the old image for hours).
+        "headshot_url": (
+            f"/me/profile/headshot?v={user.get('headshot_updated_at') or ''}"
+            if headshot else None
+        ),
+    }
+
+
+def update_profile(user_id: str, updates: dict) -> dict:
+    """Patch the editable profile fields. Unknown keys are ignored —
+    PROFILE_FIELDS is the whitelist. Empty string clears a field; nil
+    leaves it unchanged."""
+    data = _load_users()
+    for u in data["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            for k in PROFILE_FIELDS:
+                if k not in updates:
+                    continue
+                v = updates[k]
+                if isinstance(v, str):
+                    v = v.strip()
+                if v == "" or v is None:
+                    u.pop(k, None)
+                else:
+                    u[k] = v
+            _save_users(data)
+            return profile_for(user_id)
+    raise HTTPException(404, "User not found")
+
+
+def headshot_path_for(user_id: str) -> Optional[Path]:
+    """Disk path for the user's uploaded headshot, or nil if none exists.
+    The file is stored under sessions/_auth/headshots/{user_id}.{ext} so
+    it persists on Render's mounted disk alongside users.json."""
+    user = get_user_by_id(user_id) or {}
+    name = user.get("headshot_filename")
+    if not name:
+        return None
+    p = USERS_DIR / "headshots" / name
+    return p if p.exists() else None
+
+
+def save_headshot(user_id: str, data: bytes, content_type: str) -> dict:
+    """Write the uploaded image to disk and record the filename + a
+    timestamp on the user. Returns the updated profile dict.
+
+    `content_type` picks the extension — we trust the iOS client to send
+    image/jpeg or image/png. Other types are coerced to .bin (best-effort
+    so a wrong content-type doesn't lose the upload entirely)."""
+    ext_map = {
+        "image/jpeg": ".jpg",
+        "image/jpg":  ".jpg",
+        "image/png":  ".png",
+        "image/heic": ".heic",
+        "image/webp": ".webp",
+    }
+    ext = ext_map.get(content_type.lower(), ".bin")
+    headshot_dir = USERS_DIR / "headshots"
+    headshot_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{user_id}{ext}"
+    (headshot_dir / filename).write_bytes(data)
+
+    # Clean up any pre-existing file with a different extension so we
+    # don't leak orphans when the user uploads a PNG after a JPEG.
+    for old in headshot_dir.glob(f"{user_id}.*"):
+        if old.name != filename:
+            old.unlink(missing_ok=True)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    users = _load_users()
+    for u in users["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            u["headshot_filename"] = filename
+            u["headshot_updated_at"] = now_iso
+            _save_users(users)
+            break
+    return profile_for(user_id)
+
+
+def clear_headshot(user_id: str) -> dict:
+    """Delete the headshot file and clear its fields on the user. Idempotent
+    — called when the agent taps Remove in the profile editor."""
+    headshot_dir = USERS_DIR / "headshots"
+    if headshot_dir.exists():
+        for old in headshot_dir.glob(f"{user_id}.*"):
+            old.unlink(missing_ok=True)
+    users = _load_users()
+    for u in users["users_by_google_sub"].values():
+        if u["id"] == user_id:
+            u.pop("headshot_filename", None)
+            u.pop("headshot_updated_at", None)
+            _save_users(users)
+            break
+    return profile_for(user_id)
+
+
+def build_email_signature_html(user: dict, *, base_url: Optional[str] = None) -> str:
+    """Render the agent's signature for outgoing emails (Open House
+    Report, future follow-ups). Uses every available profile field;
+    missing fields are silently skipped so a minimally-configured agent
+    still gets a passable signature.
+
+    `base_url` is prepended to the relative headshot URL so the image
+    renders inside Gmail / Apple Mail. Defaults to BACKEND_BASE."""
+    import html as _html
+
+    def _esc(s: Optional[str]) -> str:
+        return _html.escape(s or "")
+
+    name = (user.get("name") or "").strip()
+    title = (user.get("title") or "").strip()
+    brokerage = (user.get("brokerage") or "").strip()
+    license_num = (user.get("license_number") or "").strip()
+    phone = (user.get("phone") or "").strip()
+    email = (user.get("email") or "").strip()
+    tagline = (user.get("tagline") or "").strip()
+    headshot_name = user.get("headshot_filename")
+
+    base = (base_url or BACKEND_BASE).rstrip("/")
+    headshot_html = ""
+    if headshot_name:
+        # Public-ish URL — the report-send endpoint signs the image
+        # request via a one-off token in a future iteration; for now the
+        # headshot endpoint allows unauthenticated reads since the URL
+        # ends up in emails sent to homeowners (who don't have JWTs).
+        cache_buster = user.get("headshot_updated_at") or ""
+        cb_qs = f"?v={cache_buster}" if cache_buster else ""
+        headshot_html = (
+            f'<td style="vertical-align:top;padding-right:14px;">'
+            f'<img src="{base}/me/profile/headshot/{_esc(user.get("id") or "")}{cb_qs}" '
+            f'width="64" height="64" alt="" '
+            f'style="border-radius:50%;display:block;object-fit:cover;'
+            f'background:#eee;">'
+            f'</td>'
+        )
+
+    # Top line — name, optional title.
+    title_span = (
+        f'<span style="color:#888;font-weight:400;">  ·  {_esc(title)}</span>'
+        if title else ""
+    )
+    top_line = (
+        f'<div style="font-weight:600;font-size:14px;color:#1a1a1a;">'
+        f'{_esc(name)}{title_span}'
+        f'</div>'
+    )
+
+    # Brokerage + license, on one line when both present.
+    broker_bits: list[str] = []
+    if brokerage: broker_bits.append(_esc(brokerage))
+    if license_num: broker_bits.append(f'License # {_esc(license_num)}')
+    broker_line = (
+        f'<div style="font-size:12px;color:#555;margin-top:2px;">'
+        f'{" · ".join(broker_bits)}</div>'
+        if broker_bits else ""
+    )
+
+    # Contact line — phone + email, clickable.
+    contact_bits: list[str] = []
+    if phone:
+        # Normalize the phone for the tel: link (digits only) but keep
+        # the human-formatted version in the visible text.
+        digits = "".join(c for c in phone if c.isdigit() or c == "+")
+        contact_bits.append(
+            f'<a href="tel:{_esc(digits)}" '
+            f'style="color:#555;text-decoration:none;">{_esc(phone)}</a>'
+        )
+    if email:
+        contact_bits.append(
+            f'<a href="mailto:{_esc(email)}" '
+            f'style="color:#555;text-decoration:none;">{_esc(email)}</a>'
+        )
+    contact_line = (
+        f'<div style="font-size:12px;color:#555;margin-top:2px;">'
+        f'{" · ".join(contact_bits)}</div>'
+        if contact_bits else ""
+    )
+
+    tagline_line = (
+        f'<div style="font-size:11px;color:#888;font-style:italic;'
+        f'margin-top:6px;">{_esc(tagline)}</div>'
+        if tagline else ""
+    )
+
+    text_block = (
+        f'<td style="vertical-align:top;">'
+        f'{top_line}{broker_line}{contact_line}{tagline_line}'
+        f'</td>'
+    )
+
+    return (
+        f'<table cellpadding="0" cellspacing="0" border="0" '
+        f'style="border-collapse:collapse;">'
+        f'<tr>{headshot_html}{text_block}</tr>'
+        f'</table>'
+    )
+
+
+# --------------------------------------------------------------------------
 # Follow-up templates (per user)
 # --------------------------------------------------------------------------
 # Stored on the user record as `templates: [{id, name, match_hints, subject,

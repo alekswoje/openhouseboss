@@ -176,13 +176,87 @@ def google_callback(code: str, state: str):
 @app.get("/auth/me")
 def auth_me(user: dict = Depends(auth_lib.get_current_user)):
     """Used by web + iOS to check that the saved token/cookie is still
-    valid and to render "signed in as X". Returns a slim user profile."""
+    valid and to render "signed in as X". Returns the Google identity
+    plus the agent profile fields used by the Open House Report's email
+    signature."""
+    profile = auth_lib.profile_for(user["id"])
     return {
         "id": user["id"],
         "email": user.get("email"),
         "name": user.get("name"),
         "picture": user.get("picture"),
+        # Agent profile — empty strings (not nil) so the iOS form binds
+        # cleanly. headshot_url is a relative URL the client expands
+        # against Config.backendURL.
+        "profile": profile,
     }
+
+
+@app.get("/me/profile")
+def get_my_profile(user: dict = Depends(auth_lib.get_current_user)):
+    """Just the profile bits — separate from /auth/me for clarity and to
+    avoid clients re-fetching identity when they only need the brokerage
+    block."""
+    return auth_lib.profile_for(user["id"])
+
+
+@app.patch("/me/profile")
+def patch_my_profile(
+    payload: dict,
+    user: dict = Depends(auth_lib.get_current_user),
+):
+    """Update editable profile fields (brokerage, license_number, phone,
+    title, tagline). See auth.PROFILE_FIELDS for the whitelist — keys
+    outside it are silently ignored."""
+    return auth_lib.update_profile(user["id"], payload)
+
+
+@app.post("/me/profile/headshot")
+async def upload_my_headshot(
+    file: UploadFile = File(...),
+    user: dict = Depends(auth_lib.get_current_user),
+):
+    """Upload the agent's headshot — written into the email signature on
+    every outgoing report. JPEG/PNG/HEIC/WebP supported; the iOS picker
+    normally hands us a JPEG."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Headshot must be under 8 MB")
+    content_type = (file.content_type or "image/jpeg").lower()
+    profile = auth_lib.save_headshot(user["id"], data, content_type)
+    return profile
+
+
+@app.delete("/me/profile/headshot")
+def delete_my_headshot(user: dict = Depends(auth_lib.get_current_user)):
+    return auth_lib.clear_headshot(user["id"])
+
+
+@app.get("/me/profile/headshot")
+def get_my_headshot(user: dict = Depends(auth_lib.get_current_user)):
+    """Authenticated: own headshot for the iOS profile editor."""
+    p = auth_lib.headshot_path_for(user["id"])
+    if not p:
+        raise HTTPException(404, "No headshot uploaded")
+    media = "image/jpeg" if p.suffix.lower() == ".jpg" else f"image/{p.suffix.lstrip('.')}"
+    return FileResponse(p, media_type=media)
+
+
+@app.get("/me/profile/headshot/{user_id}")
+def get_public_headshot(user_id: str):
+    """Unauthenticated: serves any agent's headshot by id so the image
+    can be referenced from emails the agent sends to homeowners (who
+    don't have JWTs). The path-segment id requirement makes URL
+    enumeration noticeably harder than a numeric counter would; if this
+    ever needs to be locked down further we can add a signed token
+    cache-buster."""
+    p = auth_lib.headshot_path_for(user_id)
+    if not p:
+        raise HTTPException(404, "No headshot")
+    media = "image/jpeg" if p.suffix.lower() == ".jpg" else f"image/{p.suffix.lstrip('.')}"
+    return FileResponse(p, media_type=media)
 
 
 @app.post("/auth/logout")
@@ -941,6 +1015,7 @@ async def create_session(
     visitors: Optional[UploadFile] = File(None),
     mock_transcript: Optional[UploadFile] = File(None),
     address: Optional[str] = Form(None),
+    name: Optional[str] = Form(None),
     speakers_expected: Optional[int] = Form(None),
     script_id: Optional[str] = Form(None),
     homeowner_email: Optional[str] = Form(None),
@@ -976,6 +1051,10 @@ async def create_session(
         "id": session_id,
         "status": "processing",
         "address": (address or "").strip() or None,
+        # Agent-supplied nickname for the session ("Yellow craftsman on Elm").
+        # Display fallback chain everywhere is `name -> address -> date`.
+        # Editable later via PATCH /sessions/{id}.
+        "name": (name or "").strip() or None,
         "script_id": script_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": None,
@@ -2279,20 +2358,28 @@ def _stamp_report_metadata(report: SessionReport, session: dict) -> SessionRepor
 
 
 def _agent_signature_html(user: dict) -> str:
-    """Build the email-signature HTML from the agent's user profile.
-    Falls back to bare name when phone/brokerage aren't captured."""
-    name = (user.get("name") or "").strip()
-    email = (user.get("email") or "").strip()
-    bits: list[str] = []
-    if name:
-        bits.append(f'<div style="font-weight:600;color:#1a1a1a;">{name}</div>')
-    if email:
-        bits.append(
-            f'<div style="font-size:11px;color:#888;">'
-            f'<a href="mailto:{email}" style="color:#888;text-decoration:none;">'
-            f'{email}</a></div>'
-        )
-    return "".join(bits)
+    """Render the agent's branded signature for the Open House Report.
+    Delegates to auth.build_email_signature_html so the same signature
+    works for follow-up emails later — single source of branded chrome."""
+    return auth_lib.build_email_signature_html(user)
+
+
+@app.patch("/sessions/{session_id}")
+def update_session_metadata(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Update mutable session metadata. Currently only `name` — agent-set
+    nickname for the session. Pass empty string to clear it back to nil so
+    the display falls through to `address`."""
+    session = _load_session_or_404(session_id, current_user)
+    with _sessions_lock:
+        if "name" in payload:
+            v = (payload.get("name") or "").strip()
+            session["name"] = v or None
+        _persist(session_id)
+        return {"id": session_id, "name": session.get("name")}
 
 
 @app.post("/sessions/{session_id}/homeowner")
@@ -2541,6 +2628,9 @@ def _summarize(s: dict) -> dict:
         "id": s["id"],
         "status": s["status"],
         "address": s.get("address"),
+        # Agent-set nickname. iOS display fallback chain is name -> address
+        # -> date, so older sessions without a name still show their address.
+        "name": s.get("name"),
         "created_at": s["created_at"],
         "completed_at": s.get("completed_at"),
         "visitor_count": len(visitors),
