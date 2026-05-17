@@ -78,7 +78,7 @@ def upsert_user_from_google(payload: dict) -> dict:
     Returns the local user record."""
     sub = payload["sub"]
     email = payload.get("email") or ""
-    name = payload.get("name") or email.split("@")[0] or "Foyer agent"
+    name = payload.get("name") or email.split("@")[0] or "Open House Copilot agent"
     picture = payload.get("picture")
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -141,56 +141,6 @@ def decode_session_jwt(token: str) -> dict:
         return jwt.decode(token, BACKEND_JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError as e:
         raise HTTPException(401, f"Invalid session: {e}")
-
-
-# --------------------------------------------------------------------------
-# Live-companion JWT — scoped to ONE session, expires in hours
-# --------------------------------------------------------------------------
-#
-# Issued by /live/redeem after a pairing code is exchanged. Lets a second
-# device (laptop, iPad) read a single in-flight session and request coaching
-# check-ins, WITHOUT handing it the agent's full account token. The scope
-# claim is checked in `get_live_companion` so a stolen companion JWT can't
-# be used against /sessions, /leads, Gmail send, etc.
-
-LIVE_COMPANION_TTL = timedelta(hours=4)
-
-
-def mint_live_companion_jwt(session_id: str, user_id: str) -> tuple[str, datetime]:
-    """Returns (jwt, expires_at). The token's `sub` is the OWNING user so
-    audit logs still attribute reads to the agent; the `scope` + `session_id`
-    claims are what gate access."""
-    now = datetime.now(timezone.utc)
-    exp = now + LIVE_COMPANION_TTL
-    payload = {
-        "sub": user_id,
-        "scope": "live_companion",
-        "session_id": session_id,
-        "iat": int(now.timestamp()),
-        "exp": int(exp.timestamp()),
-    }
-    return jwt.encode(payload, BACKEND_JWT_SECRET, algorithm="HS256"), exp
-
-
-def get_live_companion(
-    session_id: str,
-    authorization: Optional[str] = Header(default=None),
-) -> dict:
-    """FastAPI dependency for the /live/sessions/{session_id}/* endpoints.
-    Requires a bearer token with scope=live_companion whose session_id claim
-    matches the URL path. Returns {user_id, session_id}."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, "Missing live-companion token")
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        payload = jwt.decode(token, BACKEND_JWT_SECRET, algorithms=["HS256"])
-    except jwt.PyJWTError as e:
-        raise HTTPException(401, f"Invalid live-companion token: {e}")
-    if payload.get("scope") != "live_companion":
-        raise HTTPException(403, "Token is not a live-companion token")
-    if payload.get("session_id") != session_id:
-        raise HTTPException(403, "Token is not valid for this session")
-    return {"user_id": payload.get("sub", ""), "session_id": session_id}
 
 
 # --------------------------------------------------------------------------

@@ -15,11 +15,6 @@ struct LiveView: View {
     @State private var sessionName: String = ""
     @State private var showEndNamePrompt = false
     @State private var endNamePromptText: String = ""
-    // "Show coach code" sheet — mints a 6-digit pairing code on open so a
-    // second device can subscribe to live coaching. The mint is lazy
-    // because most sessions won't use a companion; no point burning a
-    // backend call up front.
-    @State private var showCoachCodeSheet = false
 
     var body: some View {
         ZStack(alignment: .bottom) {

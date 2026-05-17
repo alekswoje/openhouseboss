@@ -350,6 +350,7 @@
   <script type="text/babel" src="offers.jsx"></script>
   <script type="text/babel" src="listings.jsx"></script>
   <script type="text/babel" src="profile.jsx"></script>
+  <script type="text/babel" src="live.jsx"></script>
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect } = React;
@@ -379,6 +380,9 @@
       // Settings — Gmail connect + account info. Cross-device: the same
       // refresh token works from the iPad once the agent signs in there.
       { hash: '#/profile',    label: 'Profile',  El: () => <ProfilePage /> },
+      // Live coaching surface for a second device (laptop / iPad) on the
+      // same Google account. marketing=true so it sits outside AppShell.
+      { hash: '#/live',       label: 'Live coach', El: () => <LiveCoach />, marketing: true },
     ];
 
     function useHashRoute() {
