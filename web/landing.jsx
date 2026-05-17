@@ -605,9 +605,14 @@ const Landing = () => {
           MADE IN NEW YORK · © MMXXVI
         </div>
         <div style={{ display: 'flex', gap: 32, fontSize: 12, color: 'var(--text-dim)' }}>
-          <a onClick={() => window.foyerToast('Privacy policy · v 2.1')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Privacy</a>
-          <a onClick={() => window.foyerToast('SOC 2 II · end-to-end encrypted')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
-          <a onClick={() => window.foyerToast('Press kit · press@openhousecopilot.com')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Press</a>
+          {/* Privacy + Security both scroll to the #security pillars —
+              there's no separate policy page yet, and the pillars are the
+              honest, current statement of how we handle data. A
+              dedicated /privacy page can replace this when legal is
+              ready to sign off on language. */}
+          <a onClick={() => document.getElementById('security')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Privacy</a>
+          <a onClick={() => document.getElementById('security')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
+          <a href="mailto:press@openhousecopilot.com" style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Press</a>
         </div>
       </footer>
     </div>
