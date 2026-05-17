@@ -164,15 +164,16 @@ struct IPadAgentApp: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 14)
                 }
-                // Floating Ask pill on every iPad surface except Home (Home
-                // shows the bigger hero card). Sits at the trailing edge so
-                // it doesn't compete with the centered LiveSessionBar.
+                // Floating Ask pill on iPad. shouldShowCopilotFAB already
+                // excludes Home, Record, Kiosk, and live-session contexts —
+                // so this only renders on browsing surfaces (Leads, Insights,
+                // Scripts, Offers, Listings, Profile, session detail).
                 if shouldShowCopilotFAB {
                     HStack {
                         Spacer()
                         CopilotFloatingPill(onTap: { showCopilot = true })
                             .padding(.trailing, 24)
-                            .padding(.bottom, hasLiveContext ? 88 : 22)
+                            .padding(.bottom, 22)
                     }
                 }
             }
@@ -279,12 +280,19 @@ struct IPadAgentApp: View {
         }
     }
 
-    // Show the floating Ask pill on every screen except Home (which has the
-    // bigger hero card built into the page). Hidden under the WelcomeOverlay
-    // so it doesn't poke out during the cold-start animation, and hidden in
-    // kiosk-locked mode where guests are using the iPad.
+    // Show the floating Ask pill only in browsing contexts — never during
+    // focused work (Record / Kiosk), never while there's a live session bar
+    // pinned to the bottom (too crowded), never on Home (the hero card lives
+    // inline there), and never during the welcome / kiosk-locked overlays.
+    // Viewing a past session counts as browsing, so the pill stays up there
+    // even though we're technically on the Home tab.
     private var shouldShowCopilotFAB: Bool {
-        !kioskLocked && !showWelcome && (tab != .home || viewingPastSession != nil)
+        guard !kioskLocked, !showWelcome, !hasLiveContext else { return false }
+        if viewingPastSession != nil { return true }
+        switch tab {
+        case .home, .record, .kiosk: return false
+        default: return true
+        }
     }
 
     // Route a Copilot navigation action — the model called open_screen and
@@ -417,15 +425,15 @@ struct IPadAgentApp: View {
         ZStack(alignment: .bottom) {
             mainPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Reserve room at the bottom so the floating tab bar — plus
-                // the optional live bar and floating Ask pill — never cover
-                // pane content. Heights add up to the actual stack height in
-                // `compactShell`'s bottom VStack.
+                // Reserve room at the bottom for the floating tab bar plus
+                // whichever optional row is visible above it (LiveSessionBar
+                // or the Ask pill — never both, since shouldShowCopilotFAB
+                // excludes live contexts). Heights match the bottom VStack
+                // in `compactShell`.
                 .safeAreaInset(edge: .bottom) {
                     let base: CGFloat = 72
-                    let liveBar: CGFloat = hasLiveContext ? 60 : 0
-                    let fab: CGFloat = shouldShowCopilotFAB ? 50 : 0
-                    Color.clear.frame(height: base + liveBar + fab)
+                    let above: CGFloat = hasLiveContext ? 60 : (shouldShowCopilotFAB ? 50 : 0)
+                    Color.clear.frame(height: base + above)
                 }
             VStack(spacing: 8) {
                 // Floating Ask pill on every iPhone surface except Home
@@ -8492,11 +8500,10 @@ private struct IPadRecord: View {
     // session is still on the store.
     @State private var openedSessionId: String?
     // Optional nickname for the session. Filled in on the recording screen
-    // and synced to SessionStore.pendingName; skips the End-Session prompt
-    // when non-empty.
+    // and synced to SessionStore.pendingName. When left blank, the backend
+    // auto-coins a label from the transcript on the final pass — so we
+    // never force the agent through a "Name this session" prompt at end.
     @State private var sessionName: String = ""
-    @State private var showEndNamePrompt = false
-    @State private var endNamePromptText: String = ""
 
     var body: some View {
         ZStack {
@@ -8534,22 +8541,6 @@ private struct IPadRecord: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Enable microphone access in Settings to record audio.")
-        }
-        .alert("Name this session", isPresented: $showEndNamePrompt) {
-            TextField("Yellow craftsman on Elm", text: $endNamePromptText)
-                .textInputAutocapitalization(.sentences)
-            Button("Save") {
-                store.pendingName = endNamePromptText
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nonEmpty
-                finishEndSession()
-            }
-            Button("Skip", role: .cancel) {
-                store.pendingName = nil
-                finishEndSession()
-            }
-        } message: {
-            Text("Optional — helps you find this session later.")
         }
     }
 
@@ -8935,7 +8926,9 @@ private struct IPadRecord: View {
     }
 
     // Optional nickname so the session is findable in the past-sessions
-    // list. Filling this in skips the End-Session "Name this session" prompt.
+    // list. Leaving it blank is fine — the backend auto-coins a label
+    // from the transcript when no name/address is set, and the agent
+    // can still rename later from the session header.
     private var sessionNameField: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("SESSION NAME · OPTIONAL")
@@ -9157,15 +9150,11 @@ private struct IPadRecord: View {
     }
 
     private func endSession() {
-        // If the agent already named the session on the recording screen,
-        // skip straight to End. Otherwise prompt — they can still Skip to
-        // leave it anonymous (display falls back to address / date).
-        if let n = store.pendingName, !n.isEmpty {
-            finishEndSession()
-        } else {
-            endNamePromptText = store.pendingAddress ?? ""
-            showEndNamePrompt = true
-        }
+        // No naming prompt — the backend auto-coins a label from the
+        // transcript when both `name` and `address` are empty. The agent
+        // can still pre-set the name on the recording screen, and rename
+        // anytime later from SummaryView / the session detail header.
+        finishEndSession()
     }
 
     private func finishEndSession() {
