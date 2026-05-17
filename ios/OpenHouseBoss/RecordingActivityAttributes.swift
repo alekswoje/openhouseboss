@@ -17,6 +17,13 @@ struct RecordingActivityAttributes: ActivityAttributes {
         // widget's Mute/Unmute button label; the in-app surfaces read the
         // same flag via AudioRecorder.isPaused so the two stay in sync.
         var isMuted: Bool = false
+        // Recorder is supposed to be capturing but isn't — either iOS sent
+        // an AVAudioSession interruption (incoming call, Siri, another app
+        // grabbing the mic like Spotify) or the bytes-written watchdog saw
+        // the active chunk stop growing despite not being muted. Drives the
+        // widget's orange "INTERRUPTED" treatment so the agent notices
+        // without unlocking the phone.
+        var isStalled: Bool = false
 
         enum Phase: String, Codable {
             case recording

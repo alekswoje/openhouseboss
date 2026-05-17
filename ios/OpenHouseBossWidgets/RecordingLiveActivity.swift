@@ -18,9 +18,9 @@ struct RecordingLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(context.state.isMuted ? Color.white.opacity(0.4) : Color.red)
+                            .fill(statusColor(state: context.state))
                             .frame(width: 9, height: 9)
-                        Text(label(for: context.state.phase, muted: context.state.isMuted))
+                        Text(label(for: context.state))
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
                     }
@@ -73,7 +73,7 @@ struct RecordingLiveActivity: Widget {
                 }
             } compactLeading: {
                 Image(systemName: compactLeadingIcon(for: context.state))
-                    .foregroundStyle(context.state.isMuted ? .white : .red)
+                    .foregroundStyle(statusColor(state: context.state))
             } compactTrailing: {
                 if context.state.phase == .recording {
                     Text(timerInterval(from: context.state.startedAt), style: .timer)
@@ -85,8 +85,8 @@ struct RecordingLiveActivity: Widget {
                         .foregroundStyle(.white)
                 }
             } minimal: {
-                Image(systemName: context.state.isMuted ? "mic.slash.fill" : "waveform")
-                    .foregroundStyle(context.state.isMuted ? .white : .red)
+                Image(systemName: minimalIcon(for: context.state))
+                    .foregroundStyle(statusColor(state: context.state))
             }
         }
     }
@@ -97,24 +97,32 @@ struct RecordingLiveActivity: Widget {
     @ViewBuilder
     private func lockScreenView(context: ActivityViewContext<RecordingActivityAttributes>) -> some View {
         let muted = context.state.isMuted
+        let stalled = context.state.isStalled
+        let accent = statusColor(state: context.state)
         HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(muted ? Color.white.opacity(0.12) : Color.red.opacity(0.2))
+                    .fill(accent.opacity(0.2))
                     .frame(width: 38, height: 38)
                 Circle()
-                    .fill(muted ? Color.white.opacity(0.6) : Color.red)
+                    .fill(accent)
                     .frame(width: 10, height: 10)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(label(for: context.state.phase, muted: muted))
+                Text(label(for: context.state))
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(muted ? Color.white.opacity(0.7) : Color.red)
+                    .foregroundStyle(accent)
                 Text(context.attributes.address.isEmpty ? "Open house" : context.attributes.address)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                timerLine(for: context.state.startedAt, phase: context.state.phase, muted: muted)
+                if stalled {
+                    Text("Audio capture stopped — open the app")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.75))
+                } else {
+                    timerLine(for: context.state.startedAt, phase: context.state.phase, muted: muted)
+                }
             }
             Spacer()
             if context.state.phase == .recording {
@@ -151,13 +159,26 @@ struct RecordingLiveActivity: Widget {
         .padding(.horizontal, 16).padding(.vertical, 12)
     }
 
-    private func label(for phase: RecordingActivityAttributes.ContentState.Phase, muted: Bool = false) -> String {
-        if phase != .recording { return "PROCESSING" }
-        return muted ? "MUTED" : "LIVE"
+    private func label(for state: RecordingActivityAttributes.ContentState) -> String {
+        if state.phase != .recording { return "PROCESSING" }
+        if state.isStalled { return "INTERRUPTED" }
+        return state.isMuted ? "MUTED" : "LIVE"
+    }
+
+    private func statusColor(state: RecordingActivityAttributes.ContentState) -> Color {
+        if state.phase != .recording { return .white }
+        if state.isStalled { return Color.orange }
+        return state.isMuted ? Color.white.opacity(0.6) : Color.red
     }
 
     private func compactLeadingIcon(for state: RecordingActivityAttributes.ContentState) -> String {
         if state.phase != .recording { return "hourglass" }
+        if state.isStalled { return "exclamationmark.triangle.fill" }
+        return state.isMuted ? "mic.slash.fill" : "waveform"
+    }
+
+    private func minimalIcon(for state: RecordingActivityAttributes.ContentState) -> String {
+        if state.isStalled { return "exclamationmark.triangle.fill" }
         return state.isMuted ? "mic.slash.fill" : "waveform"
     }
 

@@ -8317,6 +8317,11 @@ private struct IPadRecord: View {
     private var recordingPane: some View {
         VStack(spacing: 0) {
             recordingHeader
+            if recorder.isStalled {
+                stalledBanner
+                    .padding(.horizontal, isCompact ? 20 : 56)
+                    .padding(.top, 8)
+            }
             Spacer(minLength: 0)
             voiceVisualizer
                 .padding(.horizontal, isCompact ? 20 : 56)
@@ -8326,6 +8331,43 @@ private struct IPadRecord: View {
                 .padding(.bottom, isCompact ? 18 : 36)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // Loud in-app banner shown whenever AudioRecorder thinks mic capture
+    // has died — either the interruption observer fired or the bytes-
+    // written watchdog saw the active chunk stop growing. Tapping Resume
+    // tries to re-grab the audio session and poke the recorder; if another
+    // app still holds the session, the user has to close it first.
+    private var stalledBanner: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recording paused")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                Text(recorder.stallReason ?? "Another app or call took the mic.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button { recorder.attemptUnstall() } label: {
+                Text("Resume")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Color.orange, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.orange.opacity(0.45), lineWidth: 0.5)
+        )
     }
 
     private var recordingHeader: some View {
@@ -8921,88 +8963,113 @@ private struct IPadSessionDetail: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 14) {
-            Button(action: onBack) {
+        // On compact width (iPhone) the 5 actions don't fit on one line — labels
+        // collapse character-by-character. Keep Back pinned on the left and
+        // horizontally scroll the action chips on the right. On regular width
+        // (iPad) keep the original spread-out layout.
+        HStack(spacing: 12) {
+            backButton
+            if isCompact {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) { actionButtons }
+                        .padding(.trailing, 4)
+                }
+            } else {
+                Spacer(minLength: 12)
+                HStack(spacing: 14) { actionButtons }
+            }
+        }
+    }
+
+    private var backButton: some View {
+        Button(action: onBack) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Back")
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Color.white.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let session, session.status == "ready" {
+            // Pick capture back up against this same session id —
+            // SessionStore.continueRecording handles either reusing the
+            // local chunks dir (same device) or seeding chunk_000.m4a
+            // from /sessions/{id}/audio when chunks are gone.
+            Button { continueRecordingTapped() } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Continue recording")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("Back")
-                        .font(.system(size: 14, weight: .medium))
                 }
                 .foregroundStyle(FoyerTheme.creamDim)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Color.white.opacity(0.06), in: Capsule())
             }
             .buttonStyle(.plain)
-            Spacer()
-            if let session, session.status == "ready" {
-                // Pick capture back up against this same session id —
-                // SessionStore.continueRecording handles either reusing the
-                // local chunks dir (same device) or seeding chunk_000.m4a
-                // from /sessions/{id}/audio when chunks are gone.
-                Button { continueRecordingTapped() } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Continue recording")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.white.opacity(0.06), in: Capsule())
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        if let session, session.status == "ready" {
+            Button { onOpenLeads(session.id) } label: {
+                HStack(spacing: 6) {
+                    Text("Open in Leads")
+                        .font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(FoyerTheme.gold, in: Capsule())
             }
-            if let session, session.status == "ready" {
-                Button { onOpenLeads(session.id) } label: {
-                    HStack(spacing: 6) {
-                        Text("Open in Leads")
-                            .font(.system(size: 13, weight: .semibold))
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(FoyerTheme.gold, in: Capsule())
+            .buttonStyle(.plain)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        if let session {
+            Button {
+                renameText = session.name ?? ""
+                showRenamePrompt = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Rename")
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(FoyerTheme.creamDim)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.white.opacity(0.06), in: Capsule())
             }
-            if let session {
-                Button {
-                    renameText = session.name ?? ""
-                    showRenamePrompt = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Rename")
-                            .font(.system(size: 13, weight: .semibold))
+            .buttonStyle(.plain)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        if session != nil {
+            Button { showDeleteConfirm = true } label: {
+                HStack(spacing: 6) {
+                    if deleting {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.terracotta)
+                    } else {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.white.opacity(0.06), in: Capsule())
+                    Text("Delete")
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(FoyerTheme.terracotta)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
             }
-            if session != nil {
-                Button { showDeleteConfirm = true } label: {
-                    HStack(spacing: 6) {
-                        if deleting {
-                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.terracotta)
-                        } else {
-                            Image(systemName: "trash")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        Text("Delete")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.terracotta)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(deleting)
-            }
+            .buttonStyle(.plain)
+            .disabled(deleting)
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 

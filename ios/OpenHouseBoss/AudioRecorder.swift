@@ -3,6 +3,7 @@ import AVFoundation
 import Foundation
 import Observation
 import UIKit
+import UserNotifications
 
 @MainActor
 @Observable
@@ -46,6 +47,29 @@ final class AudioRecorder {
     private var pauseStart: Date?
     // Rolling window of normalized 0..1 amplitudes for the live waveform.
     var levels: [Float] = Array(repeating: 0, count: 52)
+
+    // Set to true when AVAudioSession sends an interruption (incoming call,
+    // Siri, another audio app like Spotify grabbing the mic) OR when the
+    // bytes-written watchdog detects the active chunk has stopped growing
+    // despite us thinking we're recording. Drives the orange "INTERRUPTED"
+    // treatment in the Live Activity and the in-app banner. Cleared on
+    // successful auto-resume (or on the next tick where bytes flow again).
+    var isStalled: Bool = false
+    // One-line reason for the stall, shown inline in the in-app banner so
+    // the agent knows what to do (e.g. "Spotify took the mic — close Spotify
+    // and tap Resume").
+    var stallReason: String?
+
+    // Bytes-written watchdog. Every tick we record the active chunk's size +
+    // when we saw it; if `stallTimeout` elapses without growth (while not
+    // explicitly paused), we flag the recording as stalled and fire a local
+    // notification + Live Activity warning so the agent finds out before
+    // the entire open house is over.
+    private var lastObservedBytes: UInt64 = 0
+    private var lastBytesChangedAt: Date?
+    private let stallTimeout: TimeInterval = 60
+    // Cached interruption observer so we can remove it cleanly on stop.
+    private var interruptionObserver: NSObjectProtocol?
 
     // Documents/Recordings — persists across launches, visible in the Files
     // app + via Finder (with UIFileSharingEnabled). Lets us pull .m4a files
@@ -112,6 +136,10 @@ final class AudioRecorder {
         startTime = Date()
         elapsed = 0
         levels = Array(repeating: 0, count: levels.count)
+        isStalled = false
+        stallReason = nil
+        lastObservedBytes = 0
+        lastBytesChangedAt = Date()
 
         // Begin a background task to defer suspension when the user
         // backgrounds the app — the audio entitlement does the heavy lifting
@@ -128,7 +156,19 @@ final class AudioRecorder {
         pauseStart = nil
         isPaused = false
 
-        // Drive the elapsed counter + waveform meter from a single 6 Hz tick.
+        // Listen for AVAudioSession interruptions (incoming call, Siri,
+        // Spotify/another app grabbing the mic). Without this, AVAudioRecorder
+        // gets paused by iOS on .began and never auto-resumes on .ended,
+        // leaving us with a "recording" that captures no audio for hours.
+        // This is the exact failure mode that lost a 3hr open house once.
+        installInterruptionObserver()
+        // Ask up-front so the stalled-recording notification can actually
+        // break through if it fires later. No-op if already authorized.
+        requestNotificationAuthorization()
+
+        // Drive the elapsed counter + waveform meter + bytes watchdog from a
+        // single 6 Hz tick. The watchdog only runs once per second internally
+        // to avoid hammering the filesystem at 6 Hz.
         let t = Timer.scheduledTimer(withTimeInterval: 0.16, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.startTime else { return }
@@ -138,6 +178,7 @@ final class AudioRecorder {
                 self.elapsed = wall - self.pausedAccumulated
                     - (self.pauseStart.map { Date().timeIntervalSince($0) } ?? 0)
                 self.sampleMeter()
+                self.tickBytesWatchdog()
             }
         }
         // Allow the timer to fire while the app is in a tracking run-loop
@@ -220,28 +261,281 @@ final class AudioRecorder {
 
     func resume() {
         guard isRecording, isPaused else { return }
+        // Reactivate the session in case it was interrupted while we were
+        // paused (e.g. user muted, Spotify took over, user closed Spotify
+        // and tapped Unmute). Without this, record() returns false because
+        // the session isn't ours anymore.
+        try? AVAudioSession.sharedInstance().setActive(true)
         recorder?.record()
         if let start = pauseStart {
             pausedAccumulated += Date().timeIntervalSince(start)
         }
         pauseStart = nil
         isPaused = false
+        isStalled = false
+        stallReason = nil
+        lastObservedBytes = currentChunkBytes() ?? 0
+        lastBytesChangedAt = Date()
         updateLiveActivityMute(false)
+        cancelStalledNotification()
+    }
+
+    // Explicit "Resume mic" — called from the in-app stalled banner when
+    // the recorder hasn't actually been muted by the user but iOS killed
+    // mic capture out from under us (an interruption that didn't send
+    // `.shouldResume`, or a watchdog-detected stall). Re-grabs the audio
+    // session and pokes the recorder. Idempotent if we're already healthy.
+    func attemptUnstall() {
+        guard isRecording else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            stallReason = "Couldn't reclaim the mic. Close any other audio app, then try again."
+            return
+        }
+        // If the user was muted, don't unmute on their behalf — they
+        // chose mute deliberately.
+        if isPaused {
+            isStalled = false
+            stallReason = nil
+            pushLiveActivityState(isMuted: true, isStalled: false)
+            cancelStalledNotification()
+            return
+        }
+        _ = recorder?.record()
+        isStalled = false
+        stallReason = nil
+        lastObservedBytes = currentChunkBytes() ?? 0
+        lastBytesChangedAt = Date()
+        pushLiveActivityState(isMuted: false, isStalled: false)
+        cancelStalledNotification()
     }
 
     // Push the current mute state into the Live Activity so the widget's
     // Mute / Unmute button label tracks reality. Phase stays .recording —
     // muting doesn't end the session, just stops mic capture.
     private func updateLiveActivityMute(_ muted: Bool) {
+        pushLiveActivityState(isMuted: muted, isStalled: isStalled)
+    }
+
+    // Generalized Live Activity state push — used by the mute toggle, the
+    // interruption observer, and the bytes-written watchdog so the widget
+    // always sees a coherent snapshot. The phase is preserved (only the
+    // recording → processing transition uses endLiveActivity).
+    private func pushLiveActivityState(isMuted: Bool, isStalled: Bool) {
         guard #available(iOS 16.2, *), let activity = liveActivity else { return }
         let newState = RecordingActivityAttributes.ContentState(
             startedAt: activity.content.state.startedAt,
             phase: activity.content.state.phase,
-            isMuted: muted
+            isMuted: isMuted,
+            isStalled: isStalled
         )
         Task {
             await activity.update(ActivityContent(state: newState, staleDate: nil))
         }
+    }
+
+    // ============================================================
+    // Audio-session interruption handling
+    // ============================================================
+    //
+    // iOS suspends mic capture whenever something else needs the audio
+    // session: incoming call, Siri activation, another app starting
+    // playback (Spotify, music app, AirPods auto-pause/swap, even briefly
+    // pulling up Control Center on some configurations). The default
+    // AVAudioRecorder behavior is "pause but don't resume" — without this
+    // handler, the recorder dies the first time the user fires up Spotify
+    // and never comes back, even after the interruption ends.
+    //
+    // On .began: mark the recording as stalled, push the warning state to
+    // the Live Activity, fire a local notification so the agent finds out
+    // before the open house is over.
+    // On .ended with `.shouldResume`: re-activate the audio session and
+    // call recorder.record() to pick up where we left off.
+
+    private func installInterruptionObserver() {
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in self?.handleInterruption(note) }
+        }
+    }
+
+    private func removeInterruptionObserver() {
+        if let obs = interruptionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            interruptionObserver = nil
+        }
+    }
+
+    private func handleInterruption(_ note: Notification) {
+        guard
+            let info = note.userInfo,
+            let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: typeRaw)
+        else { return }
+        switch type {
+        case .began:
+            Log.warn("audio interrupted — another app/system took the session (Spotify, Siri, call, etc.)")
+            isStalled = true
+            stallReason = "Another app or call took the mic. Recording is paused."
+            pushLiveActivityState(isMuted: isPaused, isStalled: true)
+            scheduleStalledNotification(
+                title: "Recording interrupted",
+                body: "Another app took the mic (Spotify, a phone call, or Siri). Open the app to resume capture."
+            )
+        case .ended:
+            let options: AVAudioSession.InterruptionOptions
+            if let raw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+                options = AVAudioSession.InterruptionOptions(rawValue: raw)
+            } else {
+                options = []
+            }
+            let shouldResume = options.contains(.shouldResume)
+            Log.net("audio interruption ended (shouldResume=\(shouldResume))")
+            if shouldResume {
+                attemptResumeAfterInterruption()
+            } else {
+                // The interrupter (e.g. Spotify) is still active — we'll
+                // stay flagged as stalled until the user manually taps
+                // Resume in the app, which clears the other app's hold.
+                stallReason = "Recording is paused. Close the other audio app, then tap Resume."
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func attemptResumeAfterInterruption() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            Log.warn("setActive after interruption failed: \(error.localizedDescription)")
+            stallReason = "Couldn't reactivate the mic. Open the app and tap Resume."
+            return
+        }
+        // If the user explicitly muted before the interruption, respect that
+        // and don't auto-record over their choice — they have to tap Resume.
+        if isPaused {
+            isStalled = false
+            stallReason = nil
+            pushLiveActivityState(isMuted: true, isStalled: false)
+            cancelStalledNotification()
+            return
+        }
+        if recorder?.record() == true {
+            isStalled = false
+            stallReason = nil
+            lastObservedBytes = currentChunkBytes() ?? 0
+            lastBytesChangedAt = Date()
+            pushLiveActivityState(isMuted: false, isStalled: false)
+            cancelStalledNotification()
+            Log.net("auto-resumed recording after interruption")
+        } else {
+            Log.warn("recorder.record() returned false after interruption")
+            stallReason = "Couldn't auto-resume the mic. Open the app and tap Resume."
+        }
+    }
+
+    // ============================================================
+    // Bytes-written watchdog
+    // ============================================================
+    //
+    // The interruption observer catches the common case (Spotify, calls,
+    // Siri), but iOS doesn't always send a notification — e.g. a dropped
+    // Bluetooth headset, an audio route change, or an interruption from
+    // another app that doesn't actually deactivate our session. Belt-and-
+    // suspenders: every second while not paused, check that the active
+    // chunk's file size is still growing. If it hasn't grown in 60s, the
+    // recorder is dead even though it doesn't know it.
+
+    private func tickBytesWatchdog() {
+        guard isRecording, !isPaused else {
+            // Reset the baseline whenever we're explicitly paused — coming
+            // back from pause shouldn't immediately trip the watchdog.
+            if isPaused {
+                lastObservedBytes = currentChunkBytes() ?? 0
+                lastBytesChangedAt = Date()
+            }
+            return
+        }
+        // Cheap once-per-second rate limiter; the parent timer fires at 6Hz.
+        if let last = lastBytesChangedAt, Date().timeIntervalSince(last) < 1 { return }
+        let now = Date()
+        guard let bytes = currentChunkBytes() else { return }
+        if bytes != lastObservedBytes {
+            lastObservedBytes = bytes
+            lastBytesChangedAt = now
+            // First growth after a stall confirms the resume actually
+            // worked — clear the flag.
+            if isStalled {
+                isStalled = false
+                stallReason = nil
+                pushLiveActivityState(isMuted: isPaused, isStalled: false)
+                cancelStalledNotification()
+            }
+            return
+        }
+        // No growth — has it been long enough to declare a stall?
+        guard let lastChange = lastBytesChangedAt else {
+            lastBytesChangedAt = now
+            return
+        }
+        if isStalled { return } // already flagged
+        if now.timeIntervalSince(lastChange) >= stallTimeout {
+            Log.warn("bytes-written watchdog: chunk hasn't grown in \(Int(stallTimeout))s — recorder is silently stalled")
+            isStalled = true
+            stallReason = "Microphone stopped capturing audio. Open the app to check."
+            pushLiveActivityState(isMuted: isPaused, isStalled: true)
+            scheduleStalledNotification(
+                title: "Recording stopped",
+                body: "The mic stopped capturing audio. Open the app to check."
+            )
+        }
+    }
+
+    private func currentChunkBytes() -> UInt64? {
+        guard let url = recorder?.url else { return nil }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attrs?[.size] as? UInt64
+    }
+
+    // ============================================================
+    // Local notifications for silent-failure visibility
+    // ============================================================
+
+    private static let stalledNotificationId = "openhousecopilot.recording.stalled"
+
+    private func requestNotificationAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    private func scheduleStalledNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let req = UNNotificationRequest(
+            identifier: Self.stalledNotificationId, content: content, trigger: trigger
+        )
+        UNUserNotificationCenter.current().add(req) { err in
+            if let err {
+                Log.warn("stalled notification add failed: \(err.localizedDescription)")
+            }
+        }
+    }
+
+    private func cancelStalledNotification() {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: [Self.stalledNotificationId]
+        )
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+            withIdentifiers: [Self.stalledNotificationId]
+        )
     }
 
     func stopRecording() -> URL? {
@@ -254,11 +548,15 @@ final class AudioRecorder {
         timer?.invalidate()
         timer = nil
         isRecording = false
+        isStalled = false
+        stallReason = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         if bgTask != .invalid {
             UIApplication.shared.endBackgroundTask(bgTask)
             bgTask = .invalid
         }
+        removeInterruptionObserver()
+        cancelStalledNotification()
         endLiveActivity()
         LiveActivityBridge.clearStopSignal()
         return recordingURL
