@@ -162,17 +162,18 @@ function VoiceWave({ width = 280, height = 140, orbSize = 64, animated = true })
 // ENDING → TRANSCRIBING (spinner) → READY (5 speakers cascade in
 // best-intent-first with score rings filling around each avatar).
 const HDIPhone = () => {
-  // Master 60ms tick.
-  const tickFast = useCount(0, 60, 0);
+  // Master 80ms tick — slightly slower than the 60ms version so the
+  // beats land instead of blurring past.
+  const tickFast = useCount(0, 80, 0);
 
-  // Phase plan @ 60ms/tick — total ~5.5s:
-  //   RECORDING  ticks  0..37  (2.28s) — wave + 3 quote bubbles drift up
-  //   ENDING     ticks 38..42  (0.30s) — "STOPPING…" banner
-  //   TRANSCRIBE ticks 43..58  (0.96s) — spinner overlay
-  //   READY      ticks 59..91  (~2.0s) — 5 speakers cascade, score rings fill
-  const T_REC_END    = 38;
-  const T_ENDING_END = 43;
-  const T_TRANS_END  = 59;
+  // Phase plan @ 80ms/tick — total ~7.4s:
+  //   RECORDING  ticks  0..38  (3.04s) — wave + 4 quote bubbles drift up
+  //   ENDING     ticks 39..44  (0.40s) — "STOPPING…" banner
+  //   TRANSCRIBE ticks 45..63  (1.52s) — spinner overlay
+  //   READY      ticks 64..93  (~2.4s) — 5 speakers cascade, score rings fill
+  const T_REC_END    = 39;
+  const T_ENDING_END = 45;
+  const T_TRANS_END  = 64;
   const t = tickFast;
   const recording    = t < T_REC_END;
   const ending       = t >= T_REC_END && t < T_ENDING_END;
@@ -186,18 +187,18 @@ const HDIPhone = () => {
 
   // Quote bubbles that float up over the wave during recording — these
   // are the things the agent would have to remember and write down by
-  // hand. Each appears, drifts up, and fades over ~12 ticks (720ms).
-  // No live speaker naming — the real app explicitly defers that.
+  // hand. Each appears, drifts up, and fades over ~13 ticks (1.04s at
+  // 80ms/tick). No live speaker naming — the real app defers that.
   const quoteBubbles = [
-    { text: "pre-approved $1.4M", appearAt:  6, kind: 'buyer'  },
+    { text: "pre-approved $1.4M", appearAt:  5, kind: 'buyer'  },
     { text: "60-day close",        appearAt: 14, kind: 'buyer'  },
-    { text: "loves the kitchen",   appearAt: 22, kind: 'buyer'  },
-    { text: "HOA?",                appearAt: 30, kind: 'browser' },
+    { text: "loves the kitchen",   appearAt: 23, kind: 'buyer'  },
+    { text: "HOA?",                appearAt: 32, kind: 'browser' },
   ];
 
   // Brief "WORKS OFFLINE · 0 BARS" flash on the SAVED pill so agents
   // catch that this thing keeps recording in basements.
-  const showOfflineFlash = recording && t >= 18 && t < 28;
+  const showOfflineFlash = recording && t >= 19 && t < 30;
 
   // Transcript lines for the READY reveal. Ordered by buyer-intent
   // score descending — the TikTok "best leads first" payoff.
@@ -208,9 +209,10 @@ const HDIPhone = () => {
     { first: 'Elena',    name: 'Elena Morales',  kind: 'browser', score: 41, line: "What's the HOA like?" },
     { first: 'Jennifer', name: 'Jennifer Park',  kind: 'browser', score: 38, line: "Just curious — lease runs through 2027." },
   ];
-  // 5 ticks (~300ms) between each card appearing.
+  // 5 ticks (~400ms at 80ms/tick) between each card appearing — gives
+  // each name + score ring time to land before the next slides in.
   const readyTicks = ready ? t - T_TRANS_END : -1;
-  const linesShown = readyTicks < 0 ? 0 : Math.min(5, Math.floor(readyTicks / 4) + 1);
+  const linesShown = readyTicks < 0 ? 0 : Math.min(5, Math.floor(readyTicks / 5) + 1);
 
   // Cloud "Saved" pulse — runs during recording.
   const savedPulse = recording ? Math.max(1, Math.floor(t / 14)) : Math.floor(T_REC_END / 14);
@@ -559,70 +561,77 @@ function SpeakerLeadRow({ ln, index }) {
 
 // iPad LANDSCAPE — KIOSK in fullscreen guest mode. Side rail is hidden
 // (locked kiosk), big listing photo on the left, sign-in form on the
-// right. THREE guests sign in back-to-back so visitors see the
-// throughput, not just one slow form-fill. Fields fill via a gold
-// scan-line sweep (no letter-by-letter typing — TikTok pace).
+// right. Two guests sign in back-to-back so visitors see throughput.
+// Fields type in letter-by-letter (with a blinking caret on the
+// active field) so the form-fill reads as a real person at the kiosk.
 const HDIPad = () => {
-  // Three guests cycled through, in order. Counter ticks 6 → 9 across
+  // Two guests cycled through, in order. Counter ticks 6 → 8 across
   // the cycle so the listing photo's "N SIGNED IN" badge climbs.
   const guests = [
     { name: 'Sarah Chen',     email: 'sarah.chen@example.com', phone: '(212) 555-0101', hasAgent: 'no'  },
     { name: 'Mike Rodriguez', email: 'mike.r@example.com',     phone: '(212) 555-0142', hasAgent: 'yes' },
-    { name: 'Jennifer Park',  email: 'jpark.nyc@example.com',  phone: '(212) 555-0173', hasAgent: 'yes' },
   ];
 
-  // 60ms tick. Per-guest phase plan (27 ticks ≈ 1.62s):
-  //   NAME   ticks 0..4  (0.30s)  — scan-line wipe + field fills
-  //   EMAIL  ticks 5..9  (0.30s)
-  //   PHONE  ticks 10..14 (0.30s)
-  //   CHIP   ticks 15..16 (0.12s)  — agent chip clicks
-  //   PRESS  ticks 17..18 (0.12s)  — submit button glows
-  //   SUCCESS ticks 19..26 (0.48s) — overlay holds
-  // After 3 guests (81 ticks) we hold for an additional ~10 ticks so
-  // the final success card lingers for the carousel handoff.
-  const PER_GUEST = 27;
-  const TOTAL = PER_GUEST * 3;
+  // 60ms tick. Per-guest phase plan (61 ticks ≈ 3.66s):
+  //   NAME    ticks 0..10  (0.66s) — letter-by-letter typing
+  //   PAUSE   ticks 10..12 (0.12s) — beat between fields
+  //   EMAIL   ticks 12..30 (1.08s) — longer string, more chars
+  //   PAUSE   ticks 30..32 (0.12s)
+  //   PHONE   ticks 32..46 (0.84s)
+  //   PAUSE   ticks 46..48 (0.12s)
+  //   CHIP    ticks 48..52 (0.24s) — agent chip clicks
+  //   PRESS   ticks 52..55 (0.18s) — submit button glows + presses
+  //   SUCCESS ticks 55..61 (0.36s) — overlay holds
+  const T_NAME = 10, T_PAUSE_1 = 2, T_EMAIL = 18, T_PAUSE_2 = 2;
+  const T_PHONE = 14, T_PAUSE_3 = 2, T_CHIP = 4, T_PRESS = 3;
+  const T_SUCCESS = 6;
+  const PER_GUEST = T_NAME + T_PAUSE_1 + T_EMAIL + T_PAUSE_2 + T_PHONE
+                  + T_PAUSE_3 + T_CHIP + T_PRESS + T_SUCCESS;
+  const TOTAL = PER_GUEST * guests.length;
   const tickFast = useCount(0, 60, 0);
-  const t = Math.min(tickFast, TOTAL + 10);
+  const t = Math.min(tickFast, TOTAL + 14);
 
   const guestIdx = Math.min(guests.length - 1, Math.floor(t / PER_GUEST));
   const guest = guests[guestIdx];
   const localT = t - guestIdx * PER_GUEST;
 
-  const NAME_END   = 5;
-  const EMAIL_END  = 10;
-  const PHONE_END  = 15;
-  const CHIP_END   = 17;
-  const PRESS_END  = 19;
-  const SUCCESS_END = PER_GUEST;
+  // Per-field start ticks (relative to the current guest cycle).
+  const NAME_START  = 0;
+  const NAME_END    = NAME_START + T_NAME;
+  const EMAIL_START = NAME_END + T_PAUSE_1;
+  const EMAIL_END   = EMAIL_START + T_EMAIL;
+  const PHONE_START = EMAIL_END + T_PAUSE_2;
+  const PHONE_END   = PHONE_START + T_PHONE;
+  const CHIP_START  = PHONE_END + T_PAUSE_3;
+  const CHIP_END    = CHIP_START + T_CHIP;
+  const PRESS_END   = CHIP_END + T_PRESS;
 
-  const nameActive  = localT < NAME_END;
-  const emailActive = localT >= NAME_END  && localT < EMAIL_END;
-  const phoneActive = localT >= EMAIL_END && localT < PHONE_END;
-  const chipSet     = localT >= PHONE_END;
+  const nameActive  = localT >= NAME_START  && localT < NAME_END;
+  const emailActive = localT >= EMAIL_START && localT < EMAIL_END;
+  const phoneActive = localT >= PHONE_START && localT < PHONE_END;
+  const chipSet     = localT >= CHIP_START;
   const pressing    = localT >= CHIP_END && localT < PRESS_END;
   const showSuccess = localT >= PRESS_END;
 
-  // Scan-line progress for the currently-active field (0..1).
-  const scanProgress = (start, end) => {
-    if (localT < start) return 0;
-    if (localT >= end)  return 1;
-    return (localT - start) / (end - start);
+  // Return a typed substring of `target` that fills proportionally
+  // through the [startTick, startTick + duration) window. Before the
+  // window: empty. After: full string.
+  const typedSubstring = (target, startTick, duration) => {
+    if (localT < startTick) return '';
+    if (localT >= startTick + duration) return target;
+    const elapsed = localT - startTick;
+    return target.slice(0, Math.ceil((elapsed + 1) / duration * target.length));
   };
 
   // Listing badge counter — climbs each time a guest hits success.
-  // Starts at 6 + offset for visual believability.
   let guestsIn = 6;
   for (let i = 0; i < guests.length; i++) {
     if (t >= i * PER_GUEST + PRESS_END) guestsIn += 1;
   }
 
-  // Field value: empty until that field's scan-line has covered any of
-  // it, then full once it's started (no per-char animation — the gold
-  // sweep over the empty field implies "auto-filling from prior visit").
-  const nameTyped  = (localT >= NAME_END  - 1) ? guest.name  : '';
-  const emailTyped = (localT >= EMAIL_END - 1) ? guest.email : '';
-  const phoneTyped = (localT >= PHONE_END - 1) ? guest.phone : '';
+  const nameTyped  = typedSubstring(guest.name,  NAME_START,  T_NAME);
+  const emailTyped = typedSubstring(guest.email, EMAIL_START, T_EMAIL);
+  const phoneTyped = typedSubstring(guest.phone, PHONE_START, T_PHONE);
   const agentSet   = chipSet;
   const termsOK    = chipSet;
 
@@ -731,14 +740,12 @@ const HDIPad = () => {
             </div>
           </div>
 
-          {/* Form fields — a gold scan-line wipes left→right across the
-              active field, leaving the filled value behind it. */}
-          <KioskField label="NAME"  value={nameTyped}  active={nameActive}
-            progress={scanProgress(0, NAME_END)} />
-          <KioskField label="EMAIL" value={emailTyped} active={emailActive}
-            progress={scanProgress(NAME_END, EMAIL_END)} />
-          <KioskField label="PHONE" value={phoneTyped} active={phoneActive}
-            progress={scanProgress(EMAIL_END, PHONE_END)} />
+          {/* Form fields — each types its target string letter by
+              letter during the field's active window. A blinking gold
+              caret sits at the cursor on the currently-typing field. */}
+          <HeroKioskField label="NAME"  value={nameTyped}  active={nameActive}  />
+          <HeroKioskField label="EMAIL" value={emailTyped} active={emailActive} />
+          <HeroKioskField label="PHONE" value={phoneTyped} active={phoneActive} />
 
           {/* Agent chip — clicks at PHONE_END. Briefly bumps when set. */}
           <div style={{ marginTop: 6, opacity: agentSet ? 1 : 0.3, transition: 'opacity .2s ease' }}>
@@ -820,52 +827,32 @@ const HDIPad = () => {
   );
 };
 
-// One labeled field in the kiosk form. While the parent says this row
-// is "active", a gold scan-line sweeps left→right based on `progress`
-// (0..1) and the filled value is revealed behind it. No human typing.
-function KioskField({ label, value, active, progress = 0 }) {
-  const showValue = value && value.length > 0;
+// One labeled field in the kiosk form. Renders the value as it types
+// in (parent passes a typed substring) with a blinking gold caret on
+// the currently-active row.
+function HeroKioskField({ label, value, active }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>
         {label}
       </div>
       <div style={{
-        position: 'relative', overflow: 'hidden',
         marginTop: 5, padding: '9px 12px',
         background: 'rgba(255,255,255,0.04)',
         border: '1px solid ' + (active ? 'var(--gold)' : 'var(--hairline)'),
         boxShadow: active ? '0 0 0 3px rgba(196, 162, 82, 0.14)' : 'none',
         borderRadius: 8,
-        fontSize: 12, color: showValue ? 'var(--cream)' : 'var(--text-muted)',
+        fontSize: 12, color: value ? 'var(--cream)' : 'var(--text-muted)',
         fontFamily: 'var(--sans)', minHeight: 16,
-        transition: 'border-color .15s ease, box-shadow .15s ease',
+        transition: 'border-color .25s ease, box-shadow .25s ease',
       }}>
-        <span style={{
-          opacity: showValue ? 1 : 0.4,
-          transition: 'opacity .15s ease',
-        }}>
-          {showValue ? value : '…'}
-        </span>
+        {value || (active ? '' : <span style={{ color: 'var(--text-muted)' }}>…</span>)}
         {active && (
-          <>
-            {/* Gold scan-line bar — wipes across the field. */}
-            <span style={{
-              position: 'absolute', top: 0, bottom: 0,
-              left: `${Math.max(0, Math.min(100, progress * 100))}%`,
-              width: 3, marginLeft: -1,
-              background: 'linear-gradient(to bottom, transparent, var(--gold), transparent)',
-              boxShadow: '0 0 12px 3px rgba(196,162,82,0.55)',
-              pointerEvents: 'none',
-            }} />
-            {/* Soft gold trail behind the line. */}
-            <span style={{
-              position: 'absolute', top: 0, bottom: 0, left: 0,
-              width: `${Math.max(0, Math.min(100, progress * 100))}%`,
-              background: 'linear-gradient(90deg, transparent, rgba(196,162,82,0.10))',
-              pointerEvents: 'none',
-            }} />
-          </>
+          <span style={{
+            display: 'inline-block', width: 1.5, height: 12, marginLeft: 1,
+            background: 'var(--gold)', verticalAlign: '-1px',
+            animation: 'hdBlink 0.9s steps(2) infinite',
+          }} />
         )}
       </div>
     </div>
@@ -900,30 +887,33 @@ const HDLaptop = () => {
     { n: 'Carlos Diaz',    k: 'buyer',   score: 89 },
   ];
 
-  // 50ms tick — fine-grained enough that the cascade reads as smooth
-  // motion rather than a stepped animation.
-  const tickFast = useCount(0, 50, 0);
+  // 65ms tick — slower than 50ms so the cascade reads as deliberate
+  // rather than rushed.
+  const tickFast = useCount(0, 65, 0);
 
-  // Phase plan @ 50ms/tick — total 6.0s:
-  //   PROMPT     ticks  0..7   (0.4s)  prompt fades in + cursor types
-  //   BUILD      ticks  8..15  (0.4s)  "Building plan…" spinner
-  //   CASCADE    ticks 16..63  (2.4s)  14 tiles cascade through states
-  //   INSPECTOR  ticks 30..90  (3.0s)  personalization modal slides in
-  //   STAT BAND  ticks 75..120 (2.25s) sage stat band slides up
+  // Phase plan @ 65ms/tick — total 7.8s:
+  //   PROMPT     ticks  0..9   (0.59s)  prompt fades in + cursor types
+  //   BUILD      ticks 10..18  (0.59s)  "Building plan…" spinner
+  //   CASCADE    ticks 19..74  (3.6s)   14 tiles cascade through states
+  //   INSPECTOR  ticks 38..96  (3.8s)   personalization modal slides in
+  //   STAT BAND  ticks 96..120 (1.56s)  sage stat band slides up
   //   HOLD       remainder
-  const T_PROMPT  = 8;
-  const T_BUILD   = 8;
-  const T_STAGGER = 3;    // ~150ms between tile starts
-  const T_DRAFT   = 6;    // ~300ms drafting per tile
-  const T_SEND    = 3;    // ~150ms sending per tile
+  const T_PROMPT  = 9;
+  const T_BUILD   = 9;
+  const T_STAGGER = 3;    // ~195ms between tile starts
+  const T_DRAFT   = 7;    // ~455ms drafting per tile
+  const T_SEND    = 3;    // ~195ms sending per tile
 
   const PROMPT_START    = 0;
   const BUILD_START     = T_PROMPT;
   const PLAN_START      = BUILD_START + T_BUILD;
   const ALL_SENT_AT     = PLAN_START + (queue.length - 1) * T_STAGGER + T_DRAFT + T_SEND;
-  const INSPECTOR_OPEN  = 30;
-  const INSPECTOR_CLOSE = 90;
-  const STAT_BAND_START = 75;
+  const INSPECTOR_OPEN  = 38;
+  const INSPECTOR_CLOSE = 96;
+  // Stat band waits for the inspector to slide back out, so the two
+  // never share the screen and the progress bar can fade cleanly
+  // before the band slides up.
+  const STAT_BAND_START = INSPECTOR_CLOSE;
   const TOTAL_TICKS     = 120;
 
   const t = Math.min(tickFast, TOTAL_TICKS + 6);
@@ -964,8 +954,9 @@ const HDLaptop = () => {
   const allSent = sentCount === queue.length;
 
   // The completion time — frozen once everything sends so the
-  // "X sent in 4.2s" stat doesn't keep climbing.
-  const completedAt = ALL_SENT_AT * 0.05;  // seconds
+  // "X sent in 4.4s" stat doesn't keep climbing. Multiplier matches
+  // the master tick rate (65ms) so the number lines up with real time.
+  const completedAt = ALL_SENT_AT * 0.065;  // seconds
 
   const navItems = [
     { i: 'home',  l: 'Home' },
@@ -1148,11 +1139,12 @@ const HDLaptop = () => {
                 ))}
               </div>
 
-              {/* Bottom: progress bar */}
+              {/* Bottom: progress bar. Fades out the moment the stat
+                  band starts to slide up so the two never overlap. */}
               <div style={{
                 padding: '10px 0 12px',
-                opacity: showPlan ? 1 : 0,
-                transition: 'opacity .25s ease',
+                opacity: showStatBand ? 0 : (showPlan ? 1 : 0),
+                transition: 'opacity .3s ease',
               }}>
                 <div style={{
                   height: 4, borderRadius: 2,
@@ -1442,10 +1434,12 @@ const HeroDevices = () => {
   const tRef = useHDRef(null);
 
   // Per-device dwell times — tuned to each device's full animation
-  // length plus a small carry-over for the climax hold. Quick cuts
-  // inside each device do the heavy lifting; the dwell just frames
-  // the beats so the carousel doesn't cut off the payoff moment.
-  const dwellMs = [5500, 5400, 6200];
+  // length plus a beat for the climax hold. Slowed from the original
+  // TikTok-pace tuning so each phase lands instead of blurring past.
+  //   phone : 80ms × 94 ticks ≈ 7.5s
+  //   ipad  : 60ms × 122 ticks (2 guests) ≈ 7.3s
+  //   laptop: 65ms × 120 ticks ≈ 7.8s
+  const dwellMs = [7500, 7500, 8000];
 
   useHDEf(() => {
     function advance() {
