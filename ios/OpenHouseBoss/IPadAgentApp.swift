@@ -9678,6 +9678,140 @@ private struct IPadSessionDetail: View {
 // real open-house audio. The current production path is AssemblyAI; this
 // sheet is the evidence-gathering tool before swapping it out.
 
+// Picker shown when the agent taps "Recover from on-device chunks" on a
+// failed session. Lists every Documents/Recordings/<folder> that has at
+// least one finalized chunk_NNN.m4a so the agent can attach the right one.
+// Picking re-runs a full-depth snapshot tick against the session id —
+// effectively a one-tap retry that bypasses whatever broke the live loop.
+private struct RecoverFromChunksSheet: View {
+    let sessionId: String
+    let store: SessionStore
+    let onRecovered: () -> Void
+    let onError: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [SessionStore.LocalRecordingInfo] = []
+    @State private var selectedId: String?
+
+    private var sizeFormatter: ByteCountFormatter {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useMB, .useGB]
+        f.countStyle = .file
+        return f
+    }
+
+    private var dateFormatter: DateFormatter {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, h:mm a"
+        return f
+    }
+
+    private func displayTitle(_ info: SessionStore.LocalRecordingInfo) -> String {
+        // Folder names look like `OpenHouse_2026-05-16_14-30-00.m4a`.
+        // Parse the timestamp out for a friendlier label; fall back to the
+        // raw folder name if the format is unrecognized.
+        let raw = info.id
+        let trimmed = raw
+            .replacingOccurrences(of: ".m4a", with: "")
+            .replacingOccurrences(of: "OpenHouse_", with: "")
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        if let d = parser.date(from: trimmed) {
+            return dateFormatter.string(from: d)
+        }
+        return raw
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Pick the on-device recording folder that matches this session. Each chunk is a finalized AAC file written every time the snapshot loop rotated — they survive crashes and app kills.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 8)
+
+                    if entries.isEmpty {
+                        Text("No on-device recordings found in Documents/Recordings.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 40)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(entries) { entry in
+                                Button {
+                                    selectedId = entry.id
+                                    store.recoverFromLocalChunks(sessionId: sessionId, dirURL: entry.url)
+                                    onRecovered()
+                                } label: {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Image(systemName: "waveform")
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(FoyerTheme.gold)
+                                            .frame(width: 24)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(displayTitle(entry))
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(FoyerTheme.cream)
+                                            HStack(spacing: 10) {
+                                                Text("\(entry.chunkCount) chunk\(entry.chunkCount == 1 ? "" : "s")")
+                                                Text("·")
+                                                Text(sizeFormatter.string(fromByteCount: entry.totalBytes))
+                                            }
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(FoyerTheme.textMuted)
+                                            Text(entry.id)
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundStyle(FoyerTheme.textMuted.opacity(0.7))
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(FoyerTheme.textMuted)
+                                    }
+                                    .padding(14)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(FoyerTheme.border, lineWidth: 0.5)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                    }
+
+                    Spacer().frame(height: 24)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .navigationTitle("Recover from on-device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+            }
+            .task {
+                entries = store.listLocalRecordings()
+                if entries.isEmpty {
+                    onError("No recording folders on disk — chunks may have been deleted via Files app or Offload App.")
+                }
+            }
+        }
+    }
+}
+
 private struct DiarizationAbTestSheet: View {
     let sessionId: String
 

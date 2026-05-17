@@ -321,20 +321,42 @@ final class AudioRecorder {
         guard let track = composition.addMutableTrack(
             withMediaType: .audio,
             preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else { return nil }
+        ) else {
+            Log.warn("concatenatedURL: addMutableTrack returned nil for \(chunks.count) chunks")
+            return nil
+        }
         var cursor = CMTime.zero
+        var insertedCount = 0
         for url in chunks {
             let asset = AVURLAsset(url: url)
-            guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first
-            else { continue }
+            let assetTrack: AVAssetTrack?
+            do {
+                assetTrack = try await asset.loadTracks(withMediaType: .audio).first
+            } catch {
+                Log.warn("concatenatedURL: loadTracks failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                continue
+            }
+            guard let assetTrack else {
+                Log.warn("concatenatedURL: no audio track in \(url.lastPathComponent)")
+                continue
+            }
             let duration = (try? await asset.load(.duration)) ?? .zero
+            guard duration.isValid, duration.value > 0 else {
+                Log.warn("concatenatedURL: zero/invalid duration for \(url.lastPathComponent) — skipped")
+                continue
+            }
             let range = CMTimeRange(start: .zero, duration: duration)
             do {
                 try track.insertTimeRange(range, of: assetTrack, at: cursor)
                 cursor = CMTimeAdd(cursor, duration)
+                insertedCount += 1
             } catch {
-                Log.warn("concatenatedURL insert failed: \(error.localizedDescription)")
+                Log.warn("concatenatedURL: insertTimeRange failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
+        }
+        guard insertedCount > 0 else {
+            Log.warn("concatenatedURL: no usable chunks out of \(chunks.count) — every chunk had no audio track or zero duration")
+            return nil
         }
 
         let out = FileManager.default.temporaryDirectory
@@ -343,7 +365,10 @@ final class AudioRecorder {
         guard let export = AVAssetExportSession(
             asset: composition,
             presetName: AVAssetExportPresetAppleM4A
-        ) else { return nil }
+        ) else {
+            Log.warn("concatenatedURL: AVAssetExportSession init returned nil")
+            return nil
+        }
         export.outputURL = out
         export.outputFileType = .m4a
         // AVFoundation 18 (iOS 18+) added an async export API. We're targeting
@@ -354,7 +379,8 @@ final class AudioRecorder {
                 if export.status == .completed {
                     cont.resume(returning: out)
                 } else {
-                    Log.warn("concatenatedURL export failed: \(export.error?.localizedDescription ?? "unknown")")
+                    let nsErr = export.error as NSError?
+                    Log.warn("concatenatedURL: export \(export.status.rawValue) — \(nsErr?.localizedDescription ?? "no error") (domain=\(nsErr?.domain ?? "?"), code=\(nsErr?.code ?? -1), chunks=\(insertedCount)/\(chunks.count))")
                     cont.resume(returning: nil)
                 }
             }

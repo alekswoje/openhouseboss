@@ -138,12 +138,9 @@ final class SessionStore {
     var liveLastSnapshotAt: Date?
     var liveSnapshotError: String?
 
-    // Live-companion pairing state. Populated when the agent taps "Show
-    // live code" in LiveView; cleared on session end. The polling task
-    // watches session.pendingCheckInId and kicks a snapshot when the
-    // companion device requests one.
-    var liveCode: LiveCode?
-    var liveCodeError: String?
+    // Live-companion check-in poller. Started by snapshotTick once the
+    // session id exists; watches session.pendingCheckInId and kicks a
+    // snapshot tagged with that id when the companion device requests one.
     private var liveCheckInPollTask: Task<Void, Never>?
     private var lastHandledCheckInId: String?
     // Snapshot of the setup args captured when the loop starts — the periodic
@@ -356,34 +353,6 @@ final class SessionStore {
     // Live companion — second-device coaching view
     // ============================================================
 
-    // Tap "Show live code" on LiveView → mint a 6-digit code + start the
-    // polling loop that watches for companion-device check-in requests.
-    // Idempotent: re-calling while a code is already minted is fine; the
-    // backend will return the same code (or a fresh one if expired).
-    func triggerLiveCodeMint() {
-        guard let id = session?.id else {
-            // No backend session yet — happens if the agent opens the
-            // code sheet within the first ~5 minutes before the first
-            // snapshot tick has created a session. The UI shows a hint;
-            // we retry implicitly on the next call.
-            liveCodeError = "Waiting for the first snapshot to create the session…"
-            return
-        }
-        liveCodeError = nil
-        Task { [weak self] in
-            do {
-                let lc = try await APIClient.shared.mintLiveCode(sessionId: id)
-                await MainActor.run {
-                    self?.liveCode = lc
-                    self?.startLiveCheckInPolling(sessionId: id)
-                }
-            } catch {
-                await MainActor.run {
-                    self?.liveCodeError = error.localizedDescription
-                }
-            }
-        }
-    }
 
     // Polls GET /sessions/{id} every 3s. When session.pendingCheckInId is
     // non-nil and differs from the last id we acted on, kick a snapshot
@@ -446,8 +415,6 @@ final class SessionStore {
     private func stopLiveCheckInPolling() {
         liveCheckInPollTask?.cancel()
         liveCheckInPollTask = nil
-        liveCode = nil
-        liveCodeError = nil
         lastHandledCheckInId = nil
     }
 
@@ -813,7 +780,8 @@ final class SessionStore {
                 createdAt: nil, completedAt: nil, error: nil, result: nil,
                 isLive: nil, lastSnapshotAt: nil,
                 pendingCheckInId: nil, lastCheckInId: nil,
-                homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil
+                homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil,
+                latitude: nil, longitude: nil, weather: nil
             )
         } else {
             session = nil
@@ -838,6 +806,93 @@ final class SessionStore {
     func dismissUnfinishedRecording() {
         unfinishedRecording = nil
         Self.clearInFlight()
+    }
+
+    // ============================================================
+    // Recover-from-on-device-chunks (failed-session affordance)
+    // ============================================================
+    //
+    // Used by the session-detail screen when the live snapshot loop
+    // permanently errored out — typically because concatenatedURL() failed
+    // mid-session and the final tick never produced a usable upload. We let
+    // the agent pick the on-disk recording folder that corresponds to the
+    // failing session and re-run one full-depth snapshot from it. Mirrors
+    // recoverUnfinishedRecording but doesn't require an InFlightRecording —
+    // the agent points us at the folder directly.
+
+    struct LocalRecordingInfo: Identifiable, Hashable {
+        let id: String      // directory name — unique
+        let url: URL
+        let chunkCount: Int
+        let totalBytes: Int64
+        let modifiedAt: Date?
+    }
+
+    // Scan Documents/Recordings/ and return every folder that contains at
+    // least one chunk_NNN.m4a. Sorted newest-first by directory mtime so the
+    // most-recent (likely matching) recording surfaces at the top of the
+    // picker. Cheap enough to call on sheet presentation.
+    func listLocalRecordings() -> [LocalRecordingInfo] {
+        let fm = FileManager.default
+        let root = AudioRecorder.recordingsDirectory
+        let entries = (try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey]
+        )) ?? []
+        var out: [LocalRecordingInfo] = []
+        for url in entries {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let chunks = AudioRecorder.scanChunks(in: url)
+            guard !chunks.isEmpty else { continue }
+            let totalBytes: Int64 = chunks.reduce(0) { acc, u in
+                let size = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return acc + Int64(size)
+            }
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                .flatMap { $0 }
+            out.append(LocalRecordingInfo(
+                id: url.lastPathComponent, url: url,
+                chunkCount: chunks.count, totalBytes: totalBytes, modifiedAt: mtime
+            ))
+        }
+        return out.sorted { (a, b) in
+            (a.modifiedAt ?? .distantPast) > (b.modifiedAt ?? .distantPast)
+        }
+    }
+
+    // Re-attach `dirURL`'s chunks to AudioRecorder, then fire one full-depth
+    // final snapshot tick against the existing backend session. After the
+    // tick returns the session re-renders with the real audio + analysis.
+    // Idempotent against being called twice — guarded by liveSnapshotInFlight.
+    func recoverFromLocalChunks(sessionId: String, dirURL: URL) {
+        guard !liveSnapshotInFlight else { return }
+        let chunks = AudioRecorder.scanChunks(in: dirURL)
+        guard !chunks.isEmpty else {
+            liveSnapshotError = "No chunk files found in \(dirURL.lastPathComponent)."
+            return
+        }
+        AudioRecorder.shared.adoptExistingChunks(dir: dirURL, urls: chunks)
+
+        // Stub the session so snapshotTick routes to /snapshot (replace)
+        // rather than POST /sessions (create new). Filled in properly when
+        // the tick returns.
+        session = Session(
+            id: sessionId, status: "processing", address: nil, name: nil,
+            createdAt: nil, completedAt: nil, error: nil, result: nil,
+            isLive: nil, lastSnapshotAt: nil,
+            pendingCheckInId: nil, lastCheckInId: nil,
+            homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil,
+            latitude: nil, longitude: nil, weather: nil
+        )
+        phase = .processing
+        liveSnapshotError = nil
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            await self?.snapshotTick(
+                address: nil, name: nil, expected: nil,
+                scriptId: nil, guests: [], depth: .full, isFinal: true
+            )
+        }
     }
 
     // Tapping "Continue recording" on a past session. Resumes capture into
@@ -887,7 +942,8 @@ final class SessionStore {
             createdAt: nil, completedAt: nil, error: nil, result: nil,
             isLive: nil, lastSnapshotAt: nil,
             pendingCheckInId: nil, lastCheckInId: nil,
-            homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil
+            homeownerEmail: nil, homeownerName: nil, report: nil, reportMeta: nil,
+            latitude: nil, longitude: nil, weather: nil
         )
         phase = .idle
 
