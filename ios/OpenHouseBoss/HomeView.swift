@@ -60,7 +60,7 @@ struct HomeShell: View {
                     )
                 }
             )
-            .background(HorizontalDominanceGate())
+            .background(HorizontalDominanceGate(nudge: router.path.count))
         }
         .coordinateSpace(name: "hscroll")
         .scrollTargetBehavior(.paging)
@@ -181,20 +181,47 @@ extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
 // gesture as it would for any other touch. All other delegate methods
 // pass through to the scroll view's own implementation.
 private struct HorizontalDominanceGate: UIViewRepresentable {
+    // Bumped whenever the navigation stack changes. The actual value is
+    // unused — its only job is to force SwiftUI to invoke updateUIView,
+    // which re-asserts our pan delegate after a push/pop that may have
+    // knocked it off.
+    var nudge: Int = 0
+
     func makeUIView(context: Context) -> UIView {
         let v = ProbeView()
         v.isUserInteractionEnabled = false
         return v
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? ProbeView)?.reassertSoon()
+    }
 
     final class ProbeView: UIView {
         private let proxy = PanDelegateProxy()
+        private var lifecycleObservers: [NSObjectProtocol] = []
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            if window != nil {
+                installLifecycleObservers()
+            } else {
+                removeLifecycleObservers()
+            }
             DispatchQueue.main.async { [weak self] in self?.ensureInstalled() }
+        }
+
+        // Called from updateUIView when the navigation stack changes, and
+        // from app/scene lifecycle notifications. The pop or foreground
+        // animation may still be running, so we re-check on the next
+        // runloop and again after a short delay to catch the post-animation
+        // state where the scroll view has settled and a stale delegate
+        // would otherwise win.
+        func reassertSoon() {
+            DispatchQueue.main.async { [weak self] in self?.ensureInstalled() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.ensureInstalled()
+            }
         }
 
         // Re-verify on every layout pass. UIKit/SwiftUI can reset the
@@ -207,11 +234,49 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
             ensureInstalled()
         }
 
+        private func installLifecycleObservers() {
+            guard lifecycleObservers.isEmpty else { return }
+            // Catch app-foreground / scene-activation. After the app is
+            // backgrounded and reopened, SwiftUI sometimes rebuilds parts
+            // of the hierarchy or otherwise nils out the pan delegate
+            // before our usual hooks have a chance to fire.
+            let names: [NSNotification.Name] = [
+                UIApplication.didBecomeActiveNotification,
+                UIScene.willEnterForegroundNotification,
+                UIScene.didActivateNotification,
+            ]
+            for name in names {
+                let obs = NotificationCenter.default.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reassertSoon()
+                }
+                lifecycleObservers.append(obs)
+            }
+        }
+
+        private func removeLifecycleObservers() {
+            for obs in lifecycleObservers {
+                NotificationCenter.default.removeObserver(obs)
+            }
+            lifecycleObservers.removeAll()
+        }
+
+        deinit { removeLifecycleObservers() }
+
         private func ensureInstalled() {
             guard window != nil, let scroll = findScroll() else { return }
             let pan = scroll.panGestureRecognizer
             guard pan.delegate !== proxy else { return }
-            proxy.fallback = pan.delegate
+            // Always set the scroll view as the proxy's fallback. UIKit's
+            // canonical setup is pan.delegate === scrollView; if the
+            // delegate has been reset to nil or to a stale (dealloc'd
+            // sibling) proxy during a lifecycle transition, deferring to
+            // the scroll view itself is still the correct behavior and
+            // preserves built-in nested-scroll handling.
+            proxy.fallback = scroll as? UIGestureRecognizerDelegate
             pan.delegate = proxy
         }
 
@@ -231,10 +296,19 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
             if let pan = g as? UIPanGestureRecognizer {
                 let v = pan.velocity(in: pan.view)
-                // Reject pans that are more vertical than horizontal.
-                // The 1.2x bias keeps deliberate horizontal swipes
-                // responsive while protecting near-vertical scrolls.
-                if abs(v.y) > abs(v.x) * 1.2 {
+                let t = pan.translation(in: pan.view)
+                // Use translation when available (more stable than velocity
+                // at the moment shouldBegin fires for slow drags), but fall
+                // back to velocity for fast flicks where translation is
+                // still small.
+                let dx = max(abs(v.x), abs(t.x) * 6)
+                let dy = max(abs(v.y), abs(t.y) * 6)
+                // Only let the pager claim a gesture that is clearly
+                // horizontal-dominant. Requiring dx > 1.5 * dy limits tab
+                // swipes to roughly within 34° of horizontal — anything
+                // steeper (including ordinary diagonal scroll drift) falls
+                // through so the inner vertical scroll takes the gesture.
+                if dx <= dy * 1.5 {
                     return false
                 }
             }
