@@ -24,9 +24,15 @@ const Landing = () => {
         <nav style={{ display: 'flex', gap: 36, fontSize: 13, color: 'var(--text-dim)' }}>
           {/* Anchor scrolling done via onClick because index.html uses hash
               routing — `href="#pricing"` would otherwise be treated as a
-              route hash and bounce back to home. */}
-          <a onClick={() => document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Pricing</a>
-          <a onClick={() => document.getElementById('security')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
+              route hash and bounce back to home.
+
+              We target #pricing-tiers and #security-pillars (the actual
+              card grids) instead of the section roots so the user lands
+              on the cards, not on a screenful of section heading +
+              top padding. Visitors who scroll there organically still
+              see the headline first. */}
+          <a onClick={() => document.getElementById('pricing-tiers')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Pricing</a>
+          <a onClick={() => document.getElementById('security-pillars')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
         </nav>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
           {/* Sign-in is intentionally hidden on the marketing site —
@@ -464,7 +470,7 @@ const Landing = () => {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
+          <div id="pricing-tiers" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24, scrollMarginTop: 64 }}>
             <PricingTier
               tier="TRIAL"
               price="$0"
@@ -546,7 +552,7 @@ const Landing = () => {
               live product (kiosk disclosure, LIVE indicator on iOS,
               DELETE /sessions/{id}, DELETE /me, HSTS middleware,
               post-transcription AAI delete). No aspirational claims. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, background: 'var(--hairline)' }}>
+          <div id="security-pillars" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, background: 'var(--hairline)', scrollMarginTop: 64 }}>
             {[
               { title: 'Consent on every sign-in',
                 body: 'Every kiosk shows a recording notice above the form and a consent line above the submit button. Required for two-party-consent states; safe everywhere.' },
