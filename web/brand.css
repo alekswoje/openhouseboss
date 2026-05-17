@@ -78,11 +78,11 @@
 
 /* 02 — Linear / AI startup — flat dark, electric accent, sans only */
 .style-ai {
-  --bg-deep: #2a2a2e;
-  --bg: #313135;
-  --bg-card: #3a3a3f;
-  --bg-elev: #43434a;
-  --bg-elev-2: #4c4c54;
+  --bg-deep: #212124;
+  --bg: #28282b;
+  --bg-card: #313135;
+  --bg-elev: #3a3a40;
+  --bg-elev-2: #43434a;
   --border: rgba(255,255,255,0.06);
   --border-strong: rgba(255,255,255,0.14);
   --hairline: rgba(255,255,255,0.06);
