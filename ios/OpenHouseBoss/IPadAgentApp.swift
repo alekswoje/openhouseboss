@@ -6393,7 +6393,7 @@ private struct IPadScripts: View {
                     }
                 }
             )
-            .presentationDetents([.height(360), .medium])
+            .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
     }
@@ -6415,7 +6415,6 @@ private struct IPadScripts: View {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 12, weight: .semibold))
-                        .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
                     Text("New with AI")
                         .font(.system(size: 13, weight: .semibold))
                 }
@@ -6537,7 +6536,13 @@ private struct AgentScriptPromptSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color(white: 0.06).ignoresSafeArea())
-        .onAppear { fieldFocused = true }
+        // Defer focus until the sheet finishes its slide-in animation;
+        // focusing during the animation makes the keyboard race the sheet
+        // and the screen feels janky for ~500ms on cold-keyboard launches.
+        .task {
+            try? await Task.sleep(for: .milliseconds(350))
+            fieldFocused = true
+        }
     }
 
     private var header: some View {
@@ -6547,7 +6552,6 @@ private struct AgentScriptPromptSheet: View {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(FoyerTheme.gold)
-                        .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
                     Text(target.id == "__create__" ? "CREATE WITH AI" : "EDIT WITH AI")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .tracking(1.4)
@@ -6656,8 +6660,7 @@ private struct AgentScriptPromptSheet: View {
                     } else {
                         Image(systemName: "sparkles")
                             .font(.system(size: 13, weight: .semibold))
-                            .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
-                    }
+                        }
                     Text(sending ? "Working…" : "Ask AI")
                         .font(.system(size: 14, weight: .semibold))
                 }
@@ -6807,8 +6810,7 @@ private struct ScriptDetailSheet: View {
                         HStack(spacing: 4) {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 12, weight: .semibold))
-                                .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
-                            Text("Ask AI")
+                                    Text("Ask AI")
                                 .font(.system(size: 14, weight: .semibold))
                         }
                         .foregroundStyle(FoyerTheme.gold)
@@ -7282,7 +7284,7 @@ private struct IPadProfile: View {
                     Task { await store.refreshScripts() }
                 }
             )
-            .presentationDetents([.height(360), .medium])
+            .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
         .alert("Sign out?", isPresented: $showSignOutConfirm) {
@@ -7454,8 +7456,7 @@ private struct IPadProfile: View {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 11, weight: .semibold))
-                            .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
-                        Text("New with AI")
+                            Text("New with AI")
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundStyle(FoyerTheme.inkOnGold)
@@ -7507,7 +7508,6 @@ private struct IPadProfile: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(FoyerTheme.gold)
-                    .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
             .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))

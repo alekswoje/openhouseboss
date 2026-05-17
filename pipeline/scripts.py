@@ -32,15 +32,18 @@ class Script(BaseModel):
     steps: list[ScriptStep]
 
 
-# ─────────── Aleks's buyer + seller flow ───────────
+# ─────────── Aleks's buyer + seller flows ───────────
 # Transcribed from the agent's PDF; phrasing matches verbatim so coverage
-# grading can use the literal quote as the strongest signal.
-ALEKS_SCRIPT = Script(
-    id="aleks_buyer_seller_v1",
-    name="Aleks — Buyer + Seller Flow",
-    description="Lead qualification flow with the $2,500 buyer rebate close.",
+# grading can use the literal quote as the strongest signal. The original
+# bundled `aleks_buyer_seller_v1` has been split into two standalone
+# scripts so the agent picks the right one for the visitor in front of them
+# without dragging the irrelevant half into coverage scoring.
+
+ALEKS_BUYER_SCRIPT = Script(
+    id="aleks_buyer_v1",
+    name="Aleks — Buyer Flow",
+    description="Buyer qualification flow with the $2,500 rebate close.",
     steps=[
-        # Buyer flow
         ScriptStep(
             id="opener",
             section="Buyer",
@@ -155,11 +158,19 @@ ALEKS_SCRIPT = Script(
                 "gimmick. Creates urgency: today only, this open house only."
             ),
         ),
-        # Seller flow
+    ],
+)
+
+
+ALEKS_SELLER_SCRIPT = Script(
+    id="aleks_seller_v1",
+    name="Aleks — Seller Flow",
+    description="Neighbor-to-seller pivot ending with a free comp analysis offer.",
+    steps=[
         ScriptStep(
             id="seller_pricing",
             section="Seller",
-            label="Seller Step 1 — Spot the Signal & Pivot",
+            label="Step 1 — Spot the Signal & Pivot",
             quote=(
                 "Oh perfect — so you probably know this area better than "
                 "anyone. Honestly, what do you think of the house? Do you "
@@ -173,7 +184,7 @@ ALEKS_SCRIPT = Script(
         ScriptStep(
             id="seller_curiosity",
             section="Seller",
-            label="Seller Step 2 — Test the Seller Curiosity",
+            label="Step 2 — Test the Seller Curiosity",
             quote=(
                 "Have you thought about what your place might be worth in "
                 "this market?"
@@ -186,7 +197,7 @@ ALEKS_SCRIPT = Script(
         ScriptStep(
             id="seller_marketing",
             section="Seller",
-            label="Seller Step 3 — Pitch the Unfair Advantage",
+            label="Step 3 — Pitch the Unfair Advantage",
             quote=(
                 "If you're ever thinking about listing, I do full drone video "
                 "and professional photography as part of my marketing package "
@@ -201,7 +212,7 @@ ALEKS_SCRIPT = Script(
         ScriptStep(
             id="seller_comp",
             section="Seller",
-            label="Seller Step 4 — Free Comp Analysis Offer",
+            label="Step 4 — Free Comp Analysis Offer",
             quote=(
                 "Tell you what — I'll do a free comp analysis for your "
                 "address and put together what a full marketing plan would "
@@ -217,7 +228,7 @@ ALEKS_SCRIPT = Script(
 )
 
 
-PRESETS: list[Script] = [ALEKS_SCRIPT]
+PRESETS: list[Script] = [ALEKS_BUYER_SCRIPT, ALEKS_SELLER_SCRIPT]
 
 # User-created scripts live in this directory; one JSON file per script.
 USER_SCRIPTS_DIR = Path("scripts_data")

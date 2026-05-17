@@ -191,26 +191,37 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
 
     final class ProbeView: UIView {
         private let proxy = PanDelegateProxy()
-        private var installed = false
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            DispatchQueue.main.async { [weak self] in self?.install() }
+            DispatchQueue.main.async { [weak self] in self?.ensureInstalled() }
         }
 
-        private func install() {
-            guard !installed, window != nil else { return }
+        // Re-verify on every layout pass. UIKit/SwiftUI can reset the
+        // scroll view's pan-gesture delegate during navigation transitions
+        // (e.g. pushing/popping a session detail), which would silently
+        // drop our directional filter. Re-asserting on layout keeps it
+        // attached without needing notifications or display links.
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            ensureInstalled()
+        }
+
+        private func ensureInstalled() {
+            guard window != nil, let scroll = findScroll() else { return }
+            let pan = scroll.panGestureRecognizer
+            guard pan.delegate !== proxy else { return }
+            proxy.fallback = pan.delegate
+            pan.delegate = proxy
+        }
+
+        private func findScroll() -> UIScrollView? {
             var view: UIView? = superview
             while let cur = view {
-                if let scroll = cur as? UIScrollView {
-                    let pan = scroll.panGestureRecognizer
-                    proxy.fallback = pan.delegate
-                    pan.delegate = proxy
-                    installed = true
-                    return
-                }
+                if let scroll = cur as? UIScrollView { return scroll }
                 view = cur.superview
             }
+            return nil
         }
     }
 

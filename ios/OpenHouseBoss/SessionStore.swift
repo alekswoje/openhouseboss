@@ -91,8 +91,8 @@ final class SessionStore {
     // Address typed in SetupView, used by uploadAndProcess.
     var pendingAddress: String?
     // Agent-set nickname for the in-flight session. Wired to the name field
-    // on the recording surface; if non-empty at End Session, we skip the
-    // "Name this session" prompt and submit straight to upload.
+    // on the recording surface. Optional — if left blank, the backend
+    // auto-coins a label from the transcript at end of session.
     var pendingName: String?
     // Unfinished recording detected at app launch — drives the Home-tab
     // "Recover unfinished recording" banner. nil = no leftover record or
