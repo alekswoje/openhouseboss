@@ -33,6 +33,7 @@ from pipeline.script_coverage import grade_against_script
 from pipeline.scripts import get_script, list_scripts_summary, save_user_script, update_user_script, delete_user_script
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
+from pipeline.weather import enrich_session_with_weather
 
 SESSIONS_DIR = Path("sessions")
 SESSIONS_DIR.mkdir(exist_ok=True)
@@ -63,7 +64,7 @@ def healthz():
 # Newsletter — pre-launch waitlist
 # --------------------------------------------------------------------------
 #
-# Foyer is invite-only for now; no one can self-serve a real agent
+# Open House Copilot is invite-only for now; no one can self-serve a real agent
 # account from the marketing site. The "Request access" CTA collects an
 # email here instead, so we can ping the list when we're ready to onboard
 # the next cohort. The same endpoint backs any future "subscribe to
@@ -819,68 +820,6 @@ _sessions: dict[str, dict] = {}
 # "request timed out" on iOS. RLock counts ownership per thread.
 _sessions_lock = threading.RLock()
 
-# Live-companion pairing codes. Keyed by 6-digit numeric string; value is
-# {session_id, user_id, expires_at (datetime), redeemed (bool)}. In-memory
-# only — codes expire in 4h and there's no reason to survive a redeploy
-# (the companion just re-pairs by asking the agent for a fresh code).
-_live_codes: dict[str, dict] = {}
-_live_codes_lock = threading.Lock()
-LIVE_CODE_TTL = timedelta(hours=4)
-
-
-def _evict_expired_live_codes() -> None:
-    """Drop codes whose TTL has expired. Called lazily on mint + redeem so
-    we don't need a background sweeper for what's typically a tiny dict."""
-    now = datetime.now(timezone.utc)
-    with _live_codes_lock:
-        stale = [c for c, v in _live_codes.items() if v["expires_at"] <= now]
-        for c in stale:
-            del _live_codes[c]
-
-
-def _mint_live_code(session_id: str, user_id: str) -> dict:
-    """Generates a fresh 6-digit code bound to (session_id, user_id) and
-    returns {code, expires_at}. Collisions are vanishingly rare at 6 digits
-    plus 4h TTL plus a tiny live-session count, but we still retry on
-    collision to be safe."""
-    _evict_expired_live_codes()
-    expires_at = datetime.now(timezone.utc) + LIVE_CODE_TTL
-    with _live_codes_lock:
-        # Drop any prior code bound to this session — re-minting always
-        # invalidates the old one so a lost device can't keep peeking.
-        for c in [c for c, v in _live_codes.items() if v["session_id"] == session_id]:
-            del _live_codes[c]
-        for _ in range(20):
-            code = f"{secrets.randbelow(1_000_000):06d}"
-            if code not in _live_codes:
-                _live_codes[code] = {
-                    "session_id": session_id,
-                    "user_id": user_id,
-                    "expires_at": expires_at,
-                    "redeemed": False,
-                }
-                return {"code": code, "expires_at": expires_at.isoformat()}
-        raise HTTPException(500, "Failed to mint a unique live code")
-
-
-def _redeem_live_code(code: str) -> dict:
-    """Looks up a code; marks it redeemed (single-use — the companion gets
-    a JWT, the code is then dead). Returns the bound (session_id, user_id)
-    so the caller can mint a scoped JWT."""
-    _evict_expired_live_codes()
-    with _live_codes_lock:
-        entry = _live_codes.get(code)
-        if entry is None:
-            raise HTTPException(404, "Invalid or expired code")
-        if entry["redeemed"]:
-            raise HTTPException(409, "Code has already been used")
-        entry["redeemed"] = True
-        return {
-            "session_id": entry["session_id"],
-            "user_id": entry["user_id"],
-            "expires_at": entry["expires_at"],
-        }
-
 
 def _persist(session_id: str) -> None:
     path = SESSIONS_DIR / session_id / "session.json"
@@ -919,12 +858,24 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
-            identification = identify_agent_and_visitors(transcript, visitors_path)
         else:
             assert audio_path is not None
             transcript = transcribe_with_speakers(audio_path, speakers_expected=speakers_expected)
-            identification = identify_agent_and_visitors(transcript, visitors_path)
 
+        # Bail out before the Claude pipeline if AssemblyAI couldn't pick out
+        # any speech — feeding an empty utterances list to identify/analyze
+        # builds a user message with empty content, which Anthropic rejects
+        # with a 400 and leaks to the agent's UI as a raw API error. Surface
+        # the canned "silent recording" message via _friendly_error instead.
+        if not (transcript.utterances or []):
+            raise Exception(
+                "The recording was silent — no speech detected. "
+                "Check the mic / unmute and try again."
+            )
+
+        identification = identify_agent_and_visitors(transcript, visitors_path)
+
+        if not mock_path:
             # Auto-correct diarization undercount. AssemblyAI without a
             # `speakers_expected` hint tends to collapse close-mic'd voices —
             # e.g. an agent + two friends all sitting near the phone get
@@ -1075,6 +1026,24 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         if check_in_id:
             updates["last_check_in_id"] = check_in_id
             updates["pending_check_in_id"] = None
+
+        # Weather enrichment — only on the FINAL "full" pass (not the
+        # mid-session "light" snapshots that fire every few minutes,
+        # which would burn Open-Meteo for no UX gain). Pulled here so
+        # the weather block lands in the same persist that flips status
+        # to "ready". Fail-soft: a missing lat/lon or Open-Meteo glitch
+        # never blocks the session from going ready.
+        if analysis_depth != "light":
+            with _sessions_lock:
+                projected = dict(_sessions.get(session_id) or {})
+                projected.update(updates)
+            try:
+                weather = enrich_session_with_weather(projected)
+                if weather is not None:
+                    updates["weather"] = weather
+            except Exception as wexc:  # noqa: BLE001
+                print(f"[weather] enrich failed for {session_id}: {wexc}", flush=True)
+
         _update(session_id, **updates)
     except Exception as e:
         err_updates: dict = dict(
@@ -1125,6 +1094,12 @@ async def create_session(
     script_id: Optional[str] = Form(None),
     homeowner_email: Optional[str] = Form(None),
     homeowner_name: Optional[str] = Form(None),
+    # Geocoded property point — iOS resolves the address via CLGeocoder
+    # before upload and passes lat/lon here. Drives Open-Meteo weather
+    # enrichment when the session reaches "ready". Optional: mock flows
+    # and addresses we can't geocode still create sessions cleanly.
+    latitude: Optional[float] = Form(None),
+    longitude: Optional[float] = Form(None),
     current_user: dict = Depends(auth_lib.get_current_user),
 ):
     if not audio and not mock_transcript:
@@ -1170,6 +1145,11 @@ async def create_session(
         # session-create time; can be filled in later via PATCH /homeowner.
         "homeowner_email": (homeowner_email or "").strip() or None,
         "homeowner_name": (homeowner_name or "").strip() or None,
+        # Geocoded property point — drives Open-Meteo weather enrichment
+        # at status="ready". nil → no weather (we never fall back to
+        # city-level by design).
+        "latitude": latitude,
+        "longitude": longitude,
     }
     with _sessions_lock:
         _sessions[session_id] = session
@@ -1251,19 +1231,22 @@ async def snapshot_session(
 # Live companion — second-device coaching view
 # --------------------------------------------------------------------------
 #
+# The agent opens openhousecopilot.com/#/live on their laptop / iPad
+# while their phone records. Same Google account = same auth cookie, so
+# no pairing dance: the page just asks "what session is live right now?"
+# and renders the coaching UI for it.
+#
 # Flow:
-#   1. iOS POSTs /live/codes (agent auth) → 6-digit code, expires in 4h
-#   2. Companion device opens openhousecopilot.com/#/live, types code
-#   3. Companion POSTs /live/redeem (no auth) → scoped JWT for this session
-#   4. Companion polls GET /live/sessions/{id} every 3s — sees slim view
-#      with current script_coverage (Phase 1) / coaching (Phase 2)
-#   5. Companion taps "Check in" → POST /live/sessions/{id}/check_in →
-#      backend stamps session.pending_check_in_id = <new uuid>
-#   6. iPhone's polling loop sees pending_check_in_id != last_handled →
-#      triggers a snapshot with that check_in_id; _process stamps
-#      last_check_in_id when complete
-#   7. Companion's polling loop sees last_check_in_id == requested →
-#      pulls fresh coaching/coverage and shows it
+#   1. Companion device (laptop) loads #/live; auth via existing cookie.
+#   2. GET /live/sessions/current → most recent is_live=true session.
+#   3. Polls GET /live/sessions/{id} every 3s for the slim view.
+#   4. Tapping "Check in" → POST /live/sessions/{id}/check_in → backend
+#      stamps session.pending_check_in_id.
+#   5. iPhone's polling loop sees pending_check_in_id != last_handled →
+#      triggers a snapshot tagged with that id; _process stamps
+#      last_check_in_id when complete.
+#   6. Companion's polling loop sees last_check_in_id == requested →
+#      shows the fresh coverage.
 
 def _live_session_view(session: dict) -> dict:
     """Slim, companion-safe projection of a session. Strips lead PII
@@ -1286,69 +1269,50 @@ def _live_session_view(session: dict) -> dict:
     }
 
 
-@app.post("/live/codes")
-def create_live_code(
-    payload: dict,
+@app.get("/live/sessions/current")
+def get_current_live_session(
     current_user: dict = Depends(auth_lib.get_current_user),
 ):
-    """Mint a 6-digit pairing code bound to one of the agent's in-flight
-    sessions. Returns {code, expires_at}. Re-minting for the same session
-    invalidates any prior code."""
-    session_id = (payload or {}).get("session_id") or ""
-    if not session_id:
-        raise HTTPException(400, "session_id is required")
-    session = _load_session(session_id)
-    _require_owner(session, current_user, session_id)
-    return _mint_live_code(session_id, current_user["id"])
-
-
-@app.post("/live/redeem")
-def redeem_live_code(payload: dict):
-    """Exchange a 6-digit code for a scoped JWT. No auth required — the code
-    is the credential. Single-use: the same code can't be redeemed twice
-    (so the agent can tell whether someone else is already paired)."""
-    code = (payload or {}).get("code") or ""
-    code = code.strip().replace("-", "").replace(" ", "")
-    if not code or not code.isdigit() or len(code) != 6:
-        raise HTTPException(400, "Code must be 6 digits")
-    bound = _redeem_live_code(code)
-    token, exp = auth_lib.mint_live_companion_jwt(
-        bound["session_id"], bound["user_id"]
+    """Returns the agent's most-recently-snapshotted in-flight session, or
+    {session: null} if none are live. The companion page polls this on
+    load to find what to render."""
+    _hydrate_sessions_from_disk()
+    with _sessions_lock:
+        candidates = [
+            s for s in _sessions.values()
+            if s.get("user_id") == current_user["id"] and s.get("is_live")
+        ]
+    if not candidates:
+        return {"session": None}
+    candidates.sort(
+        key=lambda s: s.get("last_snapshot_at") or s.get("created_at") or "",
+        reverse=True,
     )
-    return {
-        "token": token,
-        "session_id": bound["session_id"],
-        "expires_at": exp.isoformat(),
-    }
+    return {"session": _live_session_view(candidates[0])}
 
 
 @app.get("/live/sessions/{session_id}")
 def get_live_session(
     session_id: str,
-    companion: dict = Depends(auth_lib.get_live_companion),
+    current_user: dict = Depends(auth_lib.get_current_user),
 ):
-    """Companion-facing read of the in-flight session. Returns a slim
-    projection (no lead PII) — see `_live_session_view`."""
+    """Slim companion read of one session. Same-account auth (cookie for
+    web, bearer for iOS) — owner check via `_require_owner`."""
     session = _load_session(session_id)
-    if session is None:
-        raise HTTPException(404, f"Session {session_id} not found")
-    # `_require_owner` is wrong for companion access; the JWT itself binds
-    # the caller to this exact session_id, so just verify the session
-    # still belongs to the user who minted the code.
-    if session.get("user_id") and session["user_id"] != companion["user_id"]:
-        raise HTTPException(404, f"Session {session_id} not found")
+    _require_owner(session, current_user, session_id)
     return _live_session_view(session)
 
 
 @app.post("/live/sessions/{session_id}/check_in")
 def request_live_check_in(
     session_id: str,
-    companion: dict = Depends(auth_lib.get_live_companion),
+    current_user: dict = Depends(auth_lib.get_current_user),
 ):
-    """Companion taps "Check in" → stamp a new pending_check_in_id onto the
-    session. The iPhone's polling loop sees it and kicks a snapshot. If a
-    check-in is already pending, return that one instead of stacking — the
-    UI shows "Listening…" either way and there's no value in queueing.
+    """Companion taps "Check in" → stamp a new pending_check_in_id onto
+    the session. The iPhone's polling loop sees it and kicks a snapshot.
+    If a check-in is already pending, return that one instead of stacking
+    — the UI shows "Listening…" either way and there's no value in
+    queueing.
     """
     with _sessions_lock:
         session = _sessions.get(session_id)
@@ -1357,10 +1321,7 @@ def request_live_check_in(
             if path.exists():
                 session = json.loads(path.read_text())
                 _sessions[session_id] = session
-        if session is None:
-            raise HTTPException(404, f"Session {session_id} not found")
-        if session.get("user_id") and session["user_id"] != companion["user_id"]:
-            raise HTTPException(404, f"Session {session_id} not found")
+        _require_owner(session, current_user, session_id)
         pending = session.get("pending_check_in_id")
         if pending:
             return {"check_in_id": pending, "queued": False}
@@ -1404,9 +1365,10 @@ async def create_script(payload: dict):
 
 @app.patch("/scripts/{script_id}")
 async def edit_script(script_id: str, payload: dict):
-    """Update an existing user-created script. Body shape matches
-    `POST /scripts`: { name, description, steps[] }. Presets are not editable
-    — this returns 400 if the agent tries to edit one."""
+    """Update a script. Body shape matches `POST /scripts`:
+    { name, description, steps[] }. Works for both user-created scripts and
+    presets — editing a preset writes an override file so the agent's tweaks
+    win on subsequent reads; DELETE the same id later to reset to factory."""
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "name is required")
@@ -1416,14 +1378,17 @@ async def edit_script(script_id: str, payload: dict):
         raise HTTPException(400, "at least one step is required")
     updated = update_user_script(script_id, name=name, description=description, steps=steps)
     if updated is None:
-        raise HTTPException(400, "Cannot edit that script (preset or unknown)")
+        raise HTTPException(404, f"Script {script_id} not found")
     return updated.model_dump()
 
 
 @app.delete("/scripts/{script_id}")
 def remove_script(script_id: str):
+    # User scripts: delete the file. Presets: drop any override file, which
+    # resets the script to the factory version bundled in pipeline/scripts.py.
+    # 404 only when the id is neither a known preset nor on disk.
     if not delete_user_script(script_id):
-        raise HTTPException(400, "Cannot delete that script (preset or unknown)")
+        raise HTTPException(404, f"Script {script_id} not found")
     return {"deleted": script_id}
 
 
@@ -2589,6 +2554,23 @@ def _stamp_report_metadata(report: SessionReport, session: dict) -> SessionRepor
     # Heuristic: open house visitors typically arrive in pairs (couples).
     report.group_count_estimate = max(0, (len(visitors) + 1) // 2)
     report.generated_at = datetime.now(timezone.utc).isoformat()
+
+    # Weather — Phase 4. Pulled from session["weather"] which Open-Meteo
+    # populated when the session completed (or when /coordinate fired
+    # later). Sessions without a geocode or recorded before Phase 4 have
+    # no weather block — the report just renders without the chip.
+    weather = session.get("weather") or {}
+    temp = weather.get("temp_f")
+    condition = (weather.get("condition_label") or "").strip()
+    if temp is not None or condition:
+        report.weather_temp_f = float(temp) if temp is not None else None
+        report.weather_condition = condition
+        bits = []
+        if condition:
+            bits.append(condition)
+        if temp is not None:
+            bits.append(f"{int(round(temp))}°F")
+        report.weather_label = ", ".join(bits)
     return report
 
 
@@ -2615,6 +2597,51 @@ def update_session_metadata(
             session["name"] = v or None
         _persist(session_id)
         return {"id": session_id, "name": session.get("name")}
+
+
+@app.post("/sessions/{session_id}/coordinate")
+def set_session_coordinate(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Stamp lat/lon on a session and immediately try to pull weather
+    from Open-Meteo. iOS calls this from the Report tab when the agent
+    taps Generate — by the time the report renders, the weather chip is
+    in place. Idempotent: re-posting with the same coords just re-fetches
+    weather (useful when Open-Meteo's coverage gap clears).
+
+    Body: {latitude: float, longitude: float}. We intentionally do NOT
+    accept "city" or address strings — Phase 4 was explicit that weather
+    must be point-resolution or omitted entirely."""
+    try:
+        lat = float(payload.get("latitude"))
+        lon = float(payload.get("longitude"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "latitude and longitude are required floats")
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        raise HTTPException(400, "latitude/longitude out of valid range")
+
+    session = _load_session_or_404(session_id, current_user)
+    with _sessions_lock:
+        session["latitude"] = lat
+        session["longitude"] = lon
+        _persist(session_id)
+
+    # Weather call lives OUTSIDE the lock — Open-Meteo takes ~1s and we
+    # don't want to hold the sessions mutex on a network call. Best-
+    # effort: a failure just means the chip won't appear in the report.
+    try:
+        weather = enrich_session_with_weather(session)
+        if weather is not None:
+            with _sessions_lock:
+                cur = _sessions.get(session_id) or session
+                cur["weather"] = weather
+                _persist(session_id)
+            return {"latitude": lat, "longitude": lon, "weather": weather}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[weather] coordinate enrich failed for {session_id}: {exc}", flush=True)
+    return {"latitude": lat, "longitude": lon, "weather": None}
 
 
 @app.post("/sessions/{session_id}/homeowner")

@@ -240,16 +240,19 @@ def _load_user_scripts() -> list[Script]:
 def get_script(script_id: Optional[str]) -> Optional[Script]:
     if not script_id:
         return None
-    for s in PRESETS:
-        if s.id == script_id:
-            return s
-    # User script: load directly by id (= filename stem).
+    # User override takes precedence over the bundled preset. That's how
+    # editing a preset works: we drop a file at scripts_data/{preset_id}.json
+    # and subsequent reads return the agent's edited version. Deleting the
+    # override file resets the preset to factory.
     user_file = USER_SCRIPTS_DIR / f"{script_id}.json"
     if user_file.exists():
         try:
             return Script(**json.loads(user_file.read_text()))
         except Exception:
-            return None
+            pass  # fall through to preset if file is malformed
+    for s in PRESETS:
+        if s.id == script_id:
+            return s
     return None
 
 
@@ -276,12 +279,13 @@ def save_user_script(name: str, description: str, steps: list[dict]) -> Script:
 
 
 def update_user_script(script_id: str, name: str, description: str, steps: list[dict]) -> Optional[Script]:
-    """Overwrite a user-created script in place. Returns None if the id
-    points at a preset or doesn't exist. Steps mirror save_user_script."""
-    if script_id in {s.id for s in PRESETS}:
-        return None
+    """Overwrite a script in place. Works for both user-created scripts and
+    presets — editing a preset writes an override file at the preset's id, and
+    subsequent reads return the edited version. Returns None only if the id
+    is neither a known preset nor an existing user script."""
+    preset_ids = {s.id for s in PRESETS}
     user_file = USER_SCRIPTS_DIR / f"{script_id}.json"
-    if not user_file.exists():
+    if script_id not in preset_ids and not user_file.exists():
         return None
     parsed_steps = []
     for i, s in enumerate(steps):
@@ -300,26 +304,46 @@ def update_user_script(script_id: str, name: str, description: str, steps: list[
 
 
 def delete_user_script(script_id: str) -> bool:
-    """Remove a user-created script. Returns False if not found or if the
-    caller tries to delete a preset."""
-    if script_id in {s.id for s in PRESETS}:
-        return False
+    """Remove a user-created script, or reset a preset to factory by deleting
+    its override file. Returns False only if there's nothing on disk to remove
+    AND the id isn't a known preset."""
+    preset_ids = {s.id for s in PRESETS}
     f = USER_SCRIPTS_DIR / f"{script_id}.json"
     if f.exists():
         f.unlink()
         return True
-    return False
+    # Deleting a preset with no override is a no-op success — the agent is
+    # asking to "reset" something that's already at factory.
+    return script_id in preset_ids
 
 
 def list_scripts_summary() -> list[dict]:
-    """Compact list for the iOS Scripts tab — presets + user scripts."""
+    """Compact list for the iOS Scripts tab — presets + user scripts. Each
+    preset id is deduped: if the agent has saved an override, the override
+    wins and `is_preset` stays true so the UI keeps the badge and DELETE
+    resets it to factory."""
+    preset_ids = {s.id for s in PRESETS}
+    user_scripts = _load_user_scripts()
+    user_ids = {s.id for s in user_scripts}
     items = []
-    for s in PRESETS + _load_user_scripts():
+    # Presets that haven't been overridden show first; overridden ones come
+    # through the user-scripts loop below with is_preset still true.
+    for s in PRESETS:
+        if s.id in user_ids:
+            continue
         items.append({
             "id": s.id,
             "name": s.name,
             "description": s.description,
             "step_count": len(s.steps),
-            "is_preset": s.id in {p.id for p in PRESETS},
+            "is_preset": True,
+        })
+    for s in user_scripts:
+        items.append({
+            "id": s.id,
+            "name": s.name,
+            "description": s.description,
+            "step_count": len(s.steps),
+            "is_preset": s.id in preset_ids,
         })
     return items

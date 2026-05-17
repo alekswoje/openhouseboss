@@ -707,7 +707,7 @@ private struct IPadSideRail: View {
         } else {
             HStack(spacing: 10) {
                 FoyerBrandMark(size: 36, cornerRadius: 8)
-                Text("Foyer")
+                Text("Open House Copilot")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .tracking(-0.3)
@@ -1994,7 +1994,7 @@ private struct IPadKiosk: View {
                 .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("I agree to Foyer's Terms & Privacy Policy.")
+                    Text("I agree to Open House Copilot's Terms & Privacy Policy.")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(FoyerTheme.cream)
                         .multilineTextAlignment(.leading)
@@ -3186,7 +3186,7 @@ private struct IPadLeads: View {
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.6)
                 .foregroundStyle(FoyerTheme.textDim)
-            Text("Foyer's AI rates each lead 0–100 by analyzing what they said during the open house: budget mentions, timeline, pre-approval, motivation, and engagement depth. Higher means more buying or selling intent.")
+            Text("Open House Copilot's AI rates each lead 0–100 by analyzing what they said during the open house: budget mentions, timeline, pre-approval, motivation, and engagement depth. Higher means more buying or selling intent.")
                 .font(.system(size: 12))
                 .foregroundStyle(FoyerTheme.creamDim)
                 .lineSpacing(3)
@@ -4267,6 +4267,14 @@ private struct ScriptEditorSheet: View {
     @State private var errorMessage: String?
     @State private var showDeleteConfirm: Bool = false
 
+    // True when editing a script id that's also a preset — drives the copy
+    // for the destructive button (Reset vs Delete) since DELETE on a preset
+    // id wipes the override file and restores the factory version.
+    private var isEditingPreset: Bool {
+        guard let id = existingId else { return false }
+        return SessionStore.shared.availableScripts.first(where: { $0.id == id })?.isPreset == true
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -4289,9 +4297,9 @@ private struct ScriptEditorSheet: View {
                                 showDeleteConfirm = true
                             } label: {
                                 HStack(spacing: 8) {
-                                    Image(systemName: "trash")
+                                    Image(systemName: isEditingPreset ? "arrow.uturn.backward" : "trash")
                                         .font(.system(size: 12, weight: .semibold))
-                                    Text("Delete script")
+                                    Text(isEditingPreset ? "Reset to preset" : "Delete script")
                                         .font(.system(size: 14, weight: .semibold))
                                 }
                                 .foregroundStyle(FoyerTheme.terracotta)
@@ -4319,11 +4327,16 @@ private struct ScriptEditorSheet: View {
                         .disabled(!canSave || saving || deleting)
                 }
             }
-            .alert("Delete this script?", isPresented: $showDeleteConfirm) {
+            .alert(isEditingPreset ? "Reset to factory?" : "Delete this script?",
+                   isPresented: $showDeleteConfirm) {
                 Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) { Task { await delete() } }
+                Button(isEditingPreset ? "Reset" : "Delete", role: .destructive) {
+                    Task { await delete() }
+                }
             } message: {
-                Text("This can't be undone. Past sessions graded against this script keep their coverage results, but new sessions won't have it as an option.")
+                Text(isEditingPreset
+                     ? "Your edits to this preset will be discarded and the original factory version will come back."
+                     : "This can't be undone. Past sessions graded against this script keep their coverage results, but new sessions won't have it as an option.")
             }
         }
         .task { await load() }
@@ -6420,11 +6433,9 @@ private struct ScriptDetailSheet: View {
                     Button("Close") { onClose() }
                         .tint(FoyerTheme.gold)
                 }
-                if let s = summary, !s.isPreset {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Edit") { onEdit(scriptId) }
-                            .tint(FoyerTheme.gold)
-                    }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit") { onEdit(scriptId) }
+                        .tint(FoyerTheme.gold)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -7032,9 +7043,8 @@ private struct IPadProfile: View {
 
     private func scriptRow(_ s: ScriptSummary) -> some View {
         let isDefault = store.defaultScriptId == s.id
-        let editable = !s.isPreset
         return Button {
-            if editable { editingScriptId = s.id }
+            editingScriptId = s.id
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -7061,7 +7071,7 @@ private struct IPadProfile: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                Image(systemName: editable ? "chevron.right" : "lock.fill")
+                Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(FoyerTheme.creamDim)
             }
@@ -7069,7 +7079,6 @@ private struct IPadProfile: View {
             .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
-        .disabled(!editable)
     }
 
     private var currentScriptLabel: String {
@@ -8736,6 +8745,12 @@ private struct IPadSessionDetail: View {
     // Open House Report — presented as a full-screen sheet from this
     // detail screen so the agent stays in their session context.
     @State private var showReport = false
+    // "Recover from on-device chunks" sheet — only useful when the session
+    // errored out because the iOS snapshot loop never managed to ship a
+    // usable concat to the backend. Lists Documents/Recordings/ folders so
+    // the agent can pick the matching one and we re-upload the local audio.
+    @State private var showRecoverSheet = false
+    @State private var recoverError: String?
 
     private var audioURL: URL {
         Config.backendURL
@@ -8822,6 +8837,28 @@ private struct IPadSessionDetail: View {
                 ReportView(sessionId: sessionId)
                     .environment(AppRouter())
             }
+        }
+        .sheet(isPresented: $showRecoverSheet) {
+            RecoverFromChunksSheet(
+                sessionId: sessionId,
+                store: store,
+                onRecovered: {
+                    showRecoverSheet = false
+                    // The store now owns a .processing phase + a session
+                    // stub for sessionId; re-pull from the backend once the
+                    // snapshot tick lands so this detail view re-renders
+                    // with the recovered analysis instead of stale state.
+                    Task {
+                        // Small wait so the snapshot upload kicks off before
+                        // we start polling. snapshotTick handles its own
+                        // pollUntilDone, but `load()` here gives the user
+                        // immediate UI feedback that something is happening.
+                        try? await Task.sleep(for: .seconds(1))
+                        await load()
+                    }
+                },
+                onError: { msg in recoverError = msg }
+            )
         }
     }
 
@@ -9479,6 +9516,11 @@ private struct IPadSessionDetail: View {
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.terracotta)
             }
+            if let extra = recoverError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
             Button { Task { await reanalyze() } } label: {
                 HStack(spacing: 8) {
                     if reanalyzing {
@@ -9496,7 +9538,30 @@ private struct IPadSessionDetail: View {
             }
             .buttonStyle(.plain)
             .disabled(reanalyzing)
+
+            recoverFromChunksButton
         }
+    }
+
+    // Secondary action for errored sessions where the local snapshot loop
+    // never managed to ship a usable concat (e.g. the AVAssetExportSession
+    // failed mid-session, leaving the backend with stale / silent audio).
+    // The chunks are still on disk in Documents/Recordings/<folder>/ — this
+    // button opens a picker so the agent can re-attach them and re-upload.
+    private var recoverFromChunksButton: some View {
+        Button { showRecoverSheet = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Recover from on-device chunks")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(Color.white.opacity(0.06), in: Capsule())
+            .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
     }
 
     @MainActor
@@ -9526,6 +9591,11 @@ private struct IPadSessionDetail: View {
     private var reanalyzeFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let extra = reanalyzeError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+            }
+            if let extra = recoverError {
                 Text(extra)
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.terracotta)
@@ -9564,6 +9634,12 @@ private struct IPadSessionDetail: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(reanalyzing)
+            }
+            // Surfaced only when the session is in an error state — for a
+            // ready session the audio on the backend is the source of truth
+            // and re-uploading from local chunks would just overwrite it.
+            if session?.status == "error" {
+                recoverFromChunksButton
             }
         }
         .padding(.top, 8)
