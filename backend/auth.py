@@ -120,6 +120,84 @@ def first_user_id() -> Optional[str]:
     return _load_users().get("first_user_id")
 
 
+def delete_user(user_id: str, sessions_dir: Path) -> dict:
+    """Permanently delete an account and every byte it owns.
+
+    Wipes, in order:
+      1. Every session directory whose session.json names this user.
+      2. The headshot file under sessions/_auth/headshots/.
+      3. The user record itself out of users.json.
+
+    Idempotent — if the user is already gone we return a count of zero
+    and don't raise. The caller is responsible for clearing the
+    requester's session cookie / JWT after this returns.
+
+    Returns a summary `{sessions_deleted, headshot_deleted, user_existed}`
+    so the API can surface what actually got wiped.
+    """
+    import shutil as _shutil
+
+    summary = {"sessions_deleted": 0, "headshot_deleted": False, "user_existed": False}
+
+    # 1. Session directories. Walk the top-level once and rmtree any
+    # whose session.json names this user. We open/parse JSON instead of
+    # trusting the directory name — session ids are random UUIDs and
+    # tell us nothing about ownership.
+    if sessions_dir.exists():
+        for entry in sessions_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith("_"):
+                continue  # _auth, _stats, etc. — never owned by a single user
+            session_json = entry / "session.json"
+            if not session_json.exists():
+                continue
+            try:
+                data = json.loads(session_json.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("user_id") != user_id:
+                continue
+            try:
+                _shutil.rmtree(entry)
+                summary["sessions_deleted"] += 1
+            except OSError:
+                # Disk error — keep going. The user record gets removed
+                # below either way so this session becomes orphaned
+                # data, which the operator can clean up manually.
+                pass
+
+    # 2. Headshot file. Glob for any extension so we don't leave an
+    # orphan from a content-type-coerced upload.
+    headshot_dir = USERS_DIR / "headshots"
+    if headshot_dir.exists():
+        for old in headshot_dir.glob(f"{user_id}.*"):
+            try:
+                old.unlink()
+                summary["headshot_deleted"] = True
+            except OSError:
+                pass
+
+    # 3. The user record. This also blows away any Gmail refresh token,
+    # offers, templates, agent profile fields — every per-user field
+    # lives inside the user dict.
+    users = _load_users()
+    new_by_sub = {}
+    for sub, u in users["users_by_google_sub"].items():
+        if u["id"] == user_id:
+            summary["user_existed"] = True
+            continue
+        new_by_sub[sub] = u
+    users["users_by_google_sub"] = new_by_sub
+    if users.get("first_user_id") == user_id:
+        # The first-user record we used to inherit pre-auth sessions is
+        # gone — clear the pointer so a future signup can take its place.
+        users["first_user_id"] = None
+    _save_users(users)
+
+    return summary
+
+
 # --------------------------------------------------------------------------
 # Backend session JWT
 # --------------------------------------------------------------------------

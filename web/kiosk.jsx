@@ -206,6 +206,35 @@ const KioskLive = () => {
         {signedInCount > 0 ? `${signedInCount} SIGNED IN TODAY` : 'OPEN HOUSE · GUEST SIGN-IN'}
       </div>
 
+      {/* Recording disclosure ribbon — surfaced before any contact-info
+          fields so guests have a clear notice that the open house is
+          being recorded. Required for two-party-consent states; safe
+          everywhere. */}
+      <div style={{
+        position: 'absolute', top: 92, left: '50%', transform: 'translateX(-50%)',
+        display: 'inline-flex', alignItems: 'center', gap: 10,
+        padding: '8px 16px', borderRadius: 999,
+        background: 'rgba(196, 162, 82, 0.08)',
+        border: '1px solid var(--gold-soft)',
+        fontSize: 11, letterSpacing: '0.14em', fontFamily: 'var(--mono)',
+        color: 'var(--gold)', textTransform: 'uppercase',
+        zIndex: 2,
+      }}>
+        <span aria-hidden="true" style={{
+          width: 8, height: 8, borderRadius: '50%',
+          background: 'var(--terracotta)',
+          boxShadow: '0 0 10px var(--terracotta)',
+          animation: 'kioskRecPulse 1.6s ease-in-out infinite',
+        }} />
+        This open house is being recorded
+      </div>
+      <style>{`
+        @keyframes kioskRecPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
+        }
+      `}</style>
+
       <form onSubmit={submit} style={{
         position: 'relative',
         width: 'min(560px, 90vw)',
@@ -263,6 +292,14 @@ const KioskLive = () => {
                   }}>
             {submitting ? 'Signing in…' : 'Sign in →'}
           </button>
+          <div style={{
+            marginTop: 14, fontSize: 11, lineHeight: 1.55,
+            color: 'var(--text-muted)', textAlign: 'center',
+          }}>
+            By signing in, you acknowledge that this open house is being recorded so the
+            agent can take notes and follow up. Your audio is processed for transcription
+            and deleted from our vendors immediately after.
+          </div>
         </div>
       </form>
 
@@ -294,7 +331,7 @@ const KioskLive = () => {
       )}
 
       <div style={{ position: 'absolute', bottom: 28, fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--mono)', letterSpacing: '0.16em' }}>
-        OPEN HOUSE COPILOT · NEVER SHARED · NEVER SPAMMED
+        OPEN HOUSE COPILOT · RECORDED FOR THE AGENT'S NOTES · NEVER SOLD
       </div>
     </div>
   );

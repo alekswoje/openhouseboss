@@ -78,6 +78,19 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
             transcript = refine_diarization(transcript)
         except Exception as e:
             print(f"[diarization-refine] failed, keeping raw AAI output: {e}", flush=True)
+        # Privacy: once we have the refined transcript in memory, there's
+        # no reason for the source audio to keep living on AssemblyAI's
+        # servers. Fire-and-forget delete (redacts the transcript record
+        # and removes the uploaded audio). Best-effort — the local
+        # transcript object is fully hydrated by this point, so a delete
+        # failure doesn't affect the pipeline output.
+        try:
+            transcript_id = getattr(transcript, "id", None)
+            if transcript_id:
+                aai.Transcript.delete_by_id(transcript_id)
+                print(f"[aai] deleted transcript {transcript_id} from AssemblyAI", flush=True)
+        except Exception as e:
+            print(f"[aai] post-transcription delete failed: {e}", flush=True)
         return transcript
     finally:
         if tmp_wav is not None:

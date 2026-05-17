@@ -22,10 +22,11 @@ const Landing = () => {
       }}>
         <a href="#/" style={{ textDecoration: 'none', color: 'inherit' }}><Crest /></a>
         <nav style={{ display: 'flex', gap: 36, fontSize: 13, color: 'var(--text-dim)' }}>
-          <a href="#method" style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>The Method</a>
-          <a onClick={() => window.foyerToast('For agents · drop in your brokerage email and we’ll be in touch')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>For Agents</a>
-          <a onClick={() => window.foyerToast('Pricing · $0 for your first three open houses')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Pricing</a>
-          <a onClick={() => window.foyerToast({ message: 'Journal · field notes coming soon', kind: 'info' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Journal</a>
+          {/* Anchor scrolling done via onClick because index.html uses hash
+              routing — `href="#pricing"` would otherwise be treated as a
+              route hash and bounce back to home. */}
+          <a onClick={() => document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Pricing</a>
+          <a onClick={() => document.getElementById('security')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
         </nav>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
           {/* Sign-in is intentionally hidden on the marketing site —
@@ -446,9 +447,132 @@ const Landing = () => {
         </div>
       </section>
 
+      {/* PRICING */}
+      <section id="pricing" style={{ padding: '140px 56px', scrollMarginTop: 24 }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 72 }}>
+            <div>
+              <Eyebrow num="05">Pricing</Eyebrow>
+              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+                Start free.<br/>
+                <span className="serif-it" style={{ color: 'var(--gold)' }}>Pay when it earns its keep.</span>
+              </h2>
+            </div>
+            <div style={{ maxWidth: 380, color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.7 }}>
+              Three open houses on the house. If Open House Copilot doesn't draft a
+              follow-up worth sending, you'll never see a charge.
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
+            <PricingTier
+              tier="TRIAL"
+              price="$0"
+              cadence="for first 3 open houses"
+              blurb="Full product. No card on file. See your first three Monday-morning recaps before you decide anything."
+              features={[
+                'Up to 3 sessions',
+                'Per-visitor summaries',
+                'Drafted follow-ups',
+                'iPhone + iPad + web',
+              ]}
+              cta={{ label: 'Start free', onClick: openWaitlist('pricing-trial') }}
+            />
+            <PricingTier
+              tier="SOLO AGENT"
+              price="$99"
+              cadence="per month, unlimited"
+              blurb="Every open house, every guest, every follow-up. One agent, all three devices, no per-session metering."
+              features={[
+                'Unlimited sessions',
+                'AI follow-up rewrites',
+                'Offers library + scheduling',
+                'Connected Gmail + CRM exports',
+                'Priority transcription',
+              ]}
+              cta={{ label: 'Join the waitlist', onClick: openWaitlist('pricing-solo') }}
+              highlight
+            />
+            <PricingTier
+              tier="BROKERAGE"
+              price="Talk to us"
+              cadence="for teams of 3+"
+              blurb="Seats for the whole office, shared listings library, brokerage-level analytics, and a named onboarding contact."
+              features={[
+                'Multi-agent seats',
+                'Shared offers + listings',
+                'Brokerage-level analytics',
+                'SSO + per-seat permissions',
+                'Named onboarding contact',
+              ]}
+              cta={{ label: 'Get in touch', onClick: openWaitlist('pricing-brokerage') }}
+            />
+          </div>
+
+          <div style={{ marginTop: 32, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', fontStyle: 'italic' }}>
+            Introductory pricing while we onboard our first cohort. Locked in for the life of your subscription.
+          </div>
+        </div>
+      </section>
+
+      <Hairline />
+
+      {/* SECURITY */}
+      <section id="security" style={{ padding: '140px 56px', scrollMarginTop: 24, background: 'var(--bg)' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 80, alignItems: 'start', marginBottom: 64 }}>
+            <div>
+              <Eyebrow num="06">Security</Eyebrow>
+              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+                Quietly.<br/>
+                <span className="serif-it" style={{ color: 'var(--gold)' }}>And on the record.</span>
+              </h2>
+            </div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 15, lineHeight: 1.7 }}>
+              <p style={{ margin: 0 }}>
+                Recording in someone's home is sensitive by default. Open House Copilot
+                is built to keep you on the right side of consent law — and your
+                clients' data on the right side of the door.
+              </p>
+              <p style={{ marginTop: 18 }}>
+                The posture below is verified against the running product. If a
+                guarantee isn't on this page, we don't make it. SOC 2 is on the
+                roadmap, not on the wall.
+              </p>
+            </div>
+          </div>
+
+          {/* Security pillars — every one of these maps to code on the
+              live product (kiosk disclosure, LIVE indicator on iOS,
+              DELETE /sessions/{id}, DELETE /me, HSTS middleware,
+              post-transcription AAI delete). No aspirational claims. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, background: 'var(--hairline)' }}>
+            {[
+              { title: 'Consent on every sign-in',
+                body: 'Every kiosk shows a recording notice above the form and a consent line above the submit button. Required for two-party-consent states; safe everywhere.' },
+              { title: 'No silent recording',
+                body: 'Whenever the iPhone is capturing audio, a red LIVE indicator runs on the lock screen and Dynamic Island. There is no hidden mode and no background-only state.' },
+              { title: 'One-tap session delete',
+                body: 'Delete any open house from your dashboard. Audio, transcript, and drafted follow-ups are removed from our storage immediately — no soft-delete graveyard.' },
+              { title: 'Walk away at any time',
+                body: 'A single button in your profile wipes every session, transcript, headshot, and the Google connection. The user record itself is gone, not flagged.' },
+              { title: 'Encrypted in transit',
+                body: 'TLS 1.3 between every device. HSTS pinned for a year on every response. Session cookies are HttpOnly + Secure + SameSite. No password to phish — sign-in is Google-only.' },
+              { title: 'Vendors process briefly and forget',
+                body: 'AssemblyAI handles transcription; we call their delete API the moment a transcript is in our hands, so the audio leaves their servers right away. Anthropic\'s API processes the transcript under its default zero-retention policy — no training, no caching.' },
+            ].map(item => (
+              <div key={item.title} style={{ background: 'var(--bg-deep)', padding: '32px 36px 40px' }}>
+                <div className="serif" style={{ fontSize: 22, color: 'var(--cream)', lineHeight: 1.25, letterSpacing: '-0.01em' }}>{item.title}</div>
+                <p style={{ marginTop: 14, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-dim)' }}>{item.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* CTA */}
-      <section style={{ padding: '140px 56px', textAlign: 'center' }}>
-        <Eyebrow num="04">An invitation</Eyebrow>
+      <section style={{ padding: '140px 56px', textAlign: 'center', borderTop: '1px solid var(--hairline)' }}>
+        <Eyebrow num="07">An invitation</Eyebrow>
         <h2 className="serif" style={{ fontSize: 88, lineHeight: 1, margin: '32px 0 0', color: 'var(--cream)' }}>
           The next cohort opens <span className="serif-it" style={{ color: 'var(--gold)' }}>soon.</span>
         </h2>
@@ -483,7 +607,7 @@ const Landing = () => {
         <div style={{ display: 'flex', gap: 32, fontSize: 12, color: 'var(--text-dim)' }}>
           <a onClick={() => window.foyerToast('Privacy policy · v 2.1')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Privacy</a>
           <a onClick={() => window.foyerToast('SOC 2 II · end-to-end encrypted')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Security</a>
-          <a onClick={() => window.foyerToast('Press kit · press@foyer.house')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Press</a>
+          <a onClick={() => window.foyerToast('Press kit · press@openhousecopilot.com')} style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>Press</a>
         </div>
       </footer>
     </div>
@@ -839,6 +963,67 @@ function FeatureCard({ eyebrow, title, body, mock }) {
       <div style={{ marginTop: 4 }}>
         {mock}
       </div>
+    </div>
+  );
+}
+
+// One column in the Pricing section. The `highlight` tier gets a gold
+// border + soft glow so the Solo plan visually anchors the row.
+function PricingTier({ tier, price, cadence, blurb, features, cta, highlight }) {
+  return (
+    <div style={{
+      background: 'var(--bg-card)',
+      border: '1px solid ' + (highlight ? 'var(--gold)' : 'var(--hairline)'),
+      borderRadius: 14,
+      padding: '32px 30px 30px',
+      display: 'flex', flexDirection: 'column',
+      boxShadow: highlight ? '0 30px 80px -40px rgba(196,162,82,0.55)' : 'none',
+      position: 'relative',
+    }}>
+      {highlight && (
+        <div className="mono" style={{
+          position: 'absolute', top: -10, left: 22,
+          background: 'var(--gold)', color: '#1a1610',
+          fontSize: 9, letterSpacing: '0.16em',
+          padding: '4px 9px', borderRadius: 999,
+        }}>MOST AGENTS</div>
+      )}
+      <div className="mono" style={{
+        fontSize: 11, letterSpacing: '0.18em',
+        color: highlight ? 'var(--gold)' : 'var(--text-muted)',
+      }}>
+        {tier}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 18 }}>
+        <div className="serif" style={{ fontSize: 56, lineHeight: 1, color: 'var(--cream)', letterSpacing: '-0.02em' }}>
+          {price}
+        </div>
+      </div>
+      <div className="eyebrow" style={{ marginTop: 10 }}>{cadence}</div>
+      <p style={{ marginTop: 22, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-dim)', minHeight: 76 }}>
+        {blurb}
+      </p>
+      <ul style={{
+        listStyle: 'none', margin: '20px 0 28px', padding: 0,
+        display: 'flex', flexDirection: 'column', gap: 10,
+      }}>
+        {features.map(f => (
+          <li key={f} style={{ display: 'grid', gridTemplateColumns: '18px 1fr', gap: 10, alignItems: 'start' }}>
+            <span style={{ color: 'var(--gold)', fontSize: 12, marginTop: 1, lineHeight: 1.4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span style={{ fontSize: 13, color: 'var(--cream-dim)', lineHeight: 1.5 }}>{f}</span>
+          </li>
+        ))}
+      </ul>
+      <button
+        className={'btn ' + (highlight ? 'btn-primary' : '')}
+        onClick={cta.onClick}
+        style={{ marginTop: 'auto', padding: '12px 18px', fontSize: 13 }}>
+        {cta.label}
+      </button>
     </div>
   );
 }

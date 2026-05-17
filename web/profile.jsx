@@ -384,8 +384,112 @@ function ProfilePage() {
             }}><Icon name="logout" size={12} />Log out</button>
           </div>
         </div>
+
+        {/* Danger zone — account deletion. Hits DELETE /me which wipes
+            every session, transcript, headshot, and user record on the
+            server. Confirmation is a typed string, not a button, so a
+            misclick can't trigger it. */}
+        <DangerZone />
       </div>
     </AppShell>
+  );
+}
+
+function DangerZone() {
+  const [open, setOpen] = React.useState(false);
+  const [typed, setTyped] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+
+  const canConfirm = typed.trim().toUpperCase() === 'DELETE' && !submitting;
+
+  const confirmDelete = async () => {
+    if (!canConfirm) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const result = await foyerApi.del('/me');
+      const wiped = result.sessions_deleted || 0;
+      window.foyerToast?.({
+        message: `Account deleted · ${wiped} session${wiped === 1 ? '' : 's'} wiped`,
+        kind: 'success',
+      });
+      // Forget any client-side cache + bounce to the marketing page.
+      try { window.foyerCache = null; } catch {}
+      setTimeout(() => { window.location.href = '/#/'; window.location.reload(); }, 600);
+    } catch (e) {
+      setErr(e.message || String(e));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div>
+      <SectionEyebrow title="Danger zone" />
+      <div style={{
+        background: PC.card2, borderRadius: 14, padding: 24,
+        border: '1px solid rgba(202,80,71,0.25)',
+      }}>
+        {!open ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500, color: PC.cream }}>Delete my account</div>
+              <div style={{ fontSize: 13, color: PC.textDim, marginTop: 4, lineHeight: 1.55 }}>
+                Permanently wipe every session, transcript, follow-up draft, headshot,
+                and the Google connection. This can't be undone.
+              </div>
+            </div>
+            <button onClick={() => setOpen(true)} style={{
+              padding: '10px 16px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 500,
+              background: 'rgba(202,80,71,0.1)', color: PC.terracotta,
+              border: '1px solid rgba(202,80,71,0.4)', borderRadius: 999, cursor: 'pointer',
+            }}>Delete account…</button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 500, color: PC.cream }}>This is permanent.</div>
+            <div style={{ fontSize: 13, color: PC.textDim, marginTop: 6, lineHeight: 1.6 }}>
+              Every recorded open house, transcript, drafted follow-up, and your agent
+              profile will be removed from our servers. Audio already uploaded to
+              AssemblyAI is wiped from their servers immediately after each transcription
+              — there's nothing to delete from third parties separately. Type
+              {' '}<code style={{ fontFamily: 'var(--mono)', color: PC.terracotta }}>DELETE</code>{' '}
+              below to confirm.
+            </div>
+            <input
+              autoFocus
+              value={typed}
+              onChange={e => setTyped(e.target.value)}
+              placeholder="Type DELETE"
+              style={{
+                marginTop: 16, width: '100%', boxSizing: 'border-box',
+                padding: '12px 14px',
+                background: 'var(--bg-deep)', border: '1px solid var(--hairline)',
+                borderRadius: 10, color: PC.cream, fontSize: 14,
+                fontFamily: 'var(--sans)', outline: 'none',
+                letterSpacing: '0.06em',
+              }}
+            />
+            {err && (
+              <div style={{ marginTop: 12, fontSize: 12, color: PC.terracotta }}>{err}</div>
+            )}
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setOpen(false); setTyped(''); setErr(null); }} disabled={submitting} style={{
+                padding: '10px 16px', fontFamily: 'var(--sans)', fontSize: 13,
+                background: 'transparent', color: PC.creamDim,
+                border: '1px solid var(--hairline)', borderRadius: 999, cursor: 'pointer',
+              }}>Cancel</button>
+              <button onClick={confirmDelete} disabled={!canConfirm} style={{
+                padding: '10px 16px', fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 500,
+                background: canConfirm ? PC.terracotta : 'rgba(202,80,71,0.25)',
+                color: canConfirm ? '#fff' : 'rgba(255,255,255,0.5)',
+                border: 0, borderRadius: 999, cursor: canConfirm ? 'pointer' : 'not-allowed',
+              }}>{submitting ? 'Deleting…' : 'Delete forever'}</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

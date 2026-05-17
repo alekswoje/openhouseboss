@@ -338,19 +338,24 @@
 <body>
   <div id="root"></div>
 
-  <script type="text/babel" src="shared.jsx"></script>
-  <script type="text/babel" src="hero-devices.jsx"></script>
-  <script type="text/babel" src="landing.jsx"></script>
-  <script type="text/babel" src="login.jsx"></script>
-  <script type="text/babel" src="dashboard.jsx"></script>
-  <script type="text/babel" src="sessions-list.jsx"></script>
-  <script type="text/babel" src="kiosk.jsx"></script>
-  <script type="text/babel" src="session-detail.jsx"></script>
-  <script type="text/babel" src="leads.jsx"></script>
-  <script type="text/babel" src="offers.jsx"></script>
-  <script type="text/babel" src="listings.jsx"></script>
-  <script type="text/babel" src="profile.jsx"></script>
-  <script type="text/babel" src="live.jsx"></script>
+  <!-- Cache-bust each .jsx with a version query string. Bumping `v` here
+       on every meaningful change forces the browser to refetch the
+       scripts instead of serving a stale in-memory copy that babel-standalone
+       has already compiled. Render's static-site CDN respects the query
+       too, so the same change ships fresh to every visitor. -->
+  <script type="text/babel" src="shared.jsx?v=20260517a"></script>
+  <script type="text/babel" src="hero-devices.jsx?v=20260517a"></script>
+  <script type="text/babel" src="landing.jsx?v=20260517a"></script>
+  <script type="text/babel" src="login.jsx?v=20260517a"></script>
+  <script type="text/babel" src="dashboard.jsx?v=20260517a"></script>
+  <script type="text/babel" src="sessions-list.jsx?v=20260517a"></script>
+  <script type="text/babel" src="kiosk.jsx?v=20260517a"></script>
+  <script type="text/babel" src="session-detail.jsx?v=20260517a"></script>
+  <script type="text/babel" src="leads.jsx?v=20260517a"></script>
+  <script type="text/babel" src="offers.jsx?v=20260517a"></script>
+  <script type="text/babel" src="listings.jsx?v=20260517a"></script>
+  <script type="text/babel" src="profile.jsx?v=20260517a"></script>
+  <script type="text/babel" src="live.jsx?v=20260517a"></script>
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect } = React;

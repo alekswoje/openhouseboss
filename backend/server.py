@@ -13,7 +13,7 @@ load_dotenv(override=True)
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import auth as auth_lib
@@ -45,14 +45,66 @@ NEWSLETTER_LOG = SESSIONS_DIR / "newsletter.jsonl"
 
 app = FastAPI(title="OpenHouseBoss API")
 
-# Open CORS for the demo — the iOS app and the static web frontend hit this
-# from anywhere. Tighten allow_origins in prod if you start handling real PII.
+# CORS — locked to known web origins. The iOS app is native and ignores
+# CORS entirely; the only browsers hitting us are the marketing site
+# (openhousecopilot.com) and Render preview URLs. Anything else is a
+# third-party page trying to read our cookies and gets denied.
+#
+# Add an origin without a redeploy by setting EXTRA_CORS_ORIGINS=
+# "https://foo.com,https://bar.com" on Render.
+_EXTRA_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("EXTRA_CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
+_PROD_ORIGINS = [
+    "https://openhousecopilot.com",
+    "https://www.openhousecopilot.com",
+    "https://openhouseboss-web.onrender.com",
+    "https://openhouseboss-api.onrender.com",
+] + _EXTRA_ORIGINS
+
+# Regex covers (a) any *.onrender.com preview URL during deploys, and (b)
+# localhost on any port for the dev server (Python http.server, vite, etc).
+_CORS_ORIGIN_REGEX = (
+    r"^(https://[a-z0-9-]+\.onrender\.com|"
+    r"https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_PROD_ORIGINS,
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_credentials=True,
+    max_age=600,
 )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Per-response security headers.
+
+    - HSTS: tells browsers to only ever talk to this host over HTTPS,
+      even if the user types http://. Render terminates TLS at the edge
+      so the server itself sees plain HTTP, but the header is forwarded
+      to the browser unchanged.
+    - X-Content-Type-Options: prevents browsers from MIME-sniffing a
+      response into a different content type (e.g. interpreting a
+      user-uploaded headshot as JS).
+    - Referrer-Policy: don't leak query strings to third-party hosts.
+    - X-Frame-Options: forbid embedding the app in another page's
+      iframe so a phishing site can't UI-redress us.
+    """
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 @app.get("/healthz")
@@ -274,6 +326,38 @@ def get_public_headshot(user_id: str):
         raise HTTPException(404, "No headshot")
     media = "image/jpeg" if p.suffix.lower() == ".jpg" else f"image/{p.suffix.lstrip('.')}"
     return FileResponse(p, media_type=media)
+
+
+@app.delete("/me")
+def delete_my_account(user: dict = Depends(auth_lib.get_current_user)):
+    """Permanently delete the signed-in user and every byte of theirs we
+    hold — recorded sessions, transcripts, follow-up drafts, headshot,
+    Gmail refresh token, agent profile, the lot.
+
+    Returns a summary of what was wiped + clears the session cookie. The
+    iOS app and the web frontend both surface this behind a typed
+    confirmation so it can't be triggered by a single misclick.
+
+    Once this returns, the JWT in the requester's cookie is no longer
+    valid (decoding still succeeds, but `get_current_user` will 401
+    because the user record is gone), so they're effectively logged out
+    on every device immediately."""
+    summary = auth_lib.delete_user(user["id"], SESSIONS_DIR)
+    # Stats live in a separate sqlite/Postgres-style store; nuke this
+    # user's rows too if the helper is available. Best-effort — the
+    # stats DB only holds aggregates so a stale row here is not a
+    # privacy issue, but cleaning up keeps the table honest.
+    try:
+        if hasattr(stats_lib, "delete_user_stats"):
+            stats_lib.delete_user_stats(user["id"])  # type: ignore[attr-defined]
+    except Exception as e:
+        print(f"[delete_user] stats cleanup failed: {e}", flush=True)
+
+    resp = JSONResponse({"ok": True, **summary})
+    # Drop the web session cookie — iOS clients ignore this and discard
+    # their stored JWT in the response handler instead.
+    resp.delete_cookie("fb_session", path="/")
+    return resp
 
 
 @app.post("/auth/logout")
