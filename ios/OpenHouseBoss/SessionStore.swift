@@ -460,6 +460,16 @@ final class SessionStore {
         isFinal: Bool = false,
         checkInId: String? = nil
     ) async {
+        // Skip the periodic cadence tick while the user has muted the
+        // mic — the audio hasn't changed, so re-running the pipeline
+        // would just burn AssemblyAI + Claude calls on the same content.
+        // Companion check-ins (checkInId != nil) and the final End-Session
+        // tick (isFinal=true) still go through: both are explicit user
+        // requests and should produce a fresh result either way.
+        if !isFinal, checkInId == nil,
+           await MainActor.run(body: { AudioRecorder.shared.isPaused }) {
+            return
+        }
         await MainActor.run { self.liveSnapshotInFlight = true }
         defer { Task { @MainActor in self.liveSnapshotInFlight = false } }
         // Rotate to a new chunk so the previous one becomes a fully-formed

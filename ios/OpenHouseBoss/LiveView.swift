@@ -25,9 +25,9 @@ struct LiveView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     BackBar(crumbs: ["Sessions", currentAddress], onBack: { router.pop() }) {
                         StatusPill(
-                            text: recorder.isRecording ? "LIVE \(timeString)" : "STARTING",
-                            tone: .live,
-                            pulsing: recorder.isRecording
+                            text: statusPillText,
+                            tone: paused ? .glass : .live,
+                            pulsing: recorder.isRecording && !paused
                         )
                     }
                     title
@@ -227,6 +227,18 @@ struct LiveView: View {
         let total = Int(recorder.elapsed)
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return String(format: "%02d:%02d:%02d", h, m, s)
+    }
+
+    // What the status pill reads. Three states:
+    //   - STARTING: mic permission granted but the recorder hasn't started yet.
+    //   - MUTED: user tapped Mute. AVAudioRecorder is paused, no audio is
+    //     being written, and the snapshot loop is skipping ticks — so the
+    //     pill stays static (no pulse) instead of looking like a stalled
+    //     live recording.
+    //   - LIVE 00:01:23: actively capturing.
+    private var statusPillText: String {
+        if !recorder.isRecording { return "STARTING" }
+        return paused ? "MUTED" : "LIVE \(timeString)"
     }
 }
 
