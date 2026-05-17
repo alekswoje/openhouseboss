@@ -1055,6 +1055,52 @@ actor APIClient {
         return req
     }
 
+    // Mint (or re-return) a public share link for the report. Idempotent
+    // — calling twice without a revoke in between returns the same
+    // token + URL. The homeowner opens the URL with no auth required.
+    func createReportShare(sessionId: String) async throws -> ReportShare {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report/share"
+        ))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ReportShare.self, from: data)
+    }
+
+    // Returns the active share (with view_count) or nil if there isn't
+    // one. Used by ReportView on load so it can render "Shared · 5 views"
+    // alongside the action bar.
+    func getReportShare(sessionId: String) async throws -> ReportShare? {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report/share"
+        ))
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+            return nil
+        }
+        try validate(response: response, data: data)
+        return try? JSONDecoder().decode(ReportShare.self, from: data)
+    }
+
+    // Kill the share link. Idempotent — already-revoked just returns
+    // {revoked: false}. After this, the public URL renders the
+    // "link expired" page.
+    func revokeReportShare(sessionId: String) async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report/share"
+        ))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 10
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+    }
+
     // Update the homeowner's email/name on a session. Pass empty string to
     // clear a field; pass nil to leave it untouched.
     func setHomeowner(

@@ -34,6 +34,7 @@ from pipeline.scripts import get_script, list_scripts_summary, save_user_script,
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
 from pipeline.weather import enrich_session_with_weather
+from backend import share as share_lib
 
 SESSIONS_DIR = Path("sessions")
 SESSIONS_DIR.mkdir(exist_ok=True)
@@ -2844,6 +2845,104 @@ def get_report_html(
     html_body = render_report_html(
         report,
         agent_signature_html=_agent_signature_html(current_user),
+    )
+    return HTMLResponse(content=html_body)
+
+
+@app.post("/sessions/{session_id}/report/share")
+def create_report_share(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Mint (or re-return) a public share token + URL for this report.
+    Idempotent — calling twice without revoking returns the same token.
+    The recipient opens the URL with no auth required."""
+    session = _load_session_or_404(session_id, current_user)
+    if not session.get("report"):
+        raise HTTPException(409, "Report not generated yet")
+    share = share_lib.create_share(
+        session_id=session_id, user_id=current_user["id"]
+    )
+    # Mirror the share state onto the session so iOS sees it on the
+    # next /sessions/{id} fetch without a separate /share call.
+    with _sessions_lock:
+        cur = _sessions.get(session_id) or session
+        cur["share"] = {
+            "token": share["token"],
+            "url": share["url"],
+            "created_at": share["created_at"],
+            "view_count": share["view_count"],
+        }
+        _persist(session_id)
+    return share
+
+
+@app.get("/sessions/{session_id}/report/share")
+def get_report_share(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Returns the active share state ({token, url, created_at,
+    view_count, last_viewed_at}) or 404 if no share exists. Lets the
+    iOS Report tab show "Shared · viewed N times" without minting a
+    new token on view."""
+    _load_session_or_404(session_id, current_user)
+    state = share_lib.get_share_state(session_id=session_id)
+    if not state:
+        raise HTTPException(404, "Report not shared")
+    return state
+
+
+@app.delete("/sessions/{session_id}/report/share")
+def revoke_report_share(
+    session_id: str,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Revoke any active share token for this report. Idempotent —
+    returns {revoked: bool} so iOS knows whether anything changed."""
+    session = _load_session_or_404(session_id, current_user)
+    revoked = share_lib.revoke_share(
+        session_id=session_id, user_id=current_user["id"]
+    )
+    with _sessions_lock:
+        cur = _sessions.get(session_id) or session
+        cur.pop("share", None)
+        _persist(session_id)
+    return {"revoked": revoked}
+
+
+@app.get("/r/{token}", response_class=HTMLResponse)
+def public_report(token: str):
+    """Public, no-auth route the homeowner opens from the share link.
+    Renders a polished stand-alone HTML page (with OG meta tags so
+    iMessage / Slack / Gmail link previews look right). Unknown or
+    revoked tokens get a friendly "link expired" page rather than a
+    bare 404 — the link might've come from an old email thread."""
+    entry = share_lib.lookup_token(token)
+    if entry is None:
+        return HTMLResponse(
+            content=share_lib.render_revoked_html(),
+            status_code=404,
+        )
+    session_id = entry.get("session_id")
+    user_id = entry.get("user_id")
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+    if not session or not session.get("report"):
+        return HTMLResponse(
+            content=share_lib.render_revoked_html(),
+            status_code=404,
+        )
+    agent = auth_lib.get_user_by_id(user_id) or {}
+    html_body = share_lib.render_report_public_html(
+        report=session["report"],
+        agent=agent,
+        weather=session.get("weather"),
     )
     return HTMLResponse(content=html_body)
 

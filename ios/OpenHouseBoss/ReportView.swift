@@ -42,6 +42,15 @@ struct ReportView: View {
     @State private var showShare = false
     @State private var exportingPdf = false
 
+    // Public share link — minted on first tap of "Share link", revoked
+    // via the trash button in the share sheet. Drives the badge that
+    // appears in the action bar once a link exists.
+    @State private var share: ReportShare?
+    @State private var creatingShare = false
+    @State private var shareError: String?
+    @State private var showShareLink = false
+    @State private var showRevokeConfirm = false
+
     private var effectiveSessionId: String? {
         sessionId ?? store.session?.id
     }
@@ -75,7 +84,12 @@ struct ReportView: View {
             }
 
             if report != nil && !editing {
-                actionBar
+                VStack(spacing: 6) {
+                    if let share {
+                        shareBadge(share)
+                    }
+                    actionBar
+                }
             } else if editing {
                 editActionBar
             }
@@ -121,6 +135,22 @@ struct ReportView: View {
                     filename: pdfFilename
                 )])
             }
+        }
+        .sheet(isPresented: $showShareLink) {
+            if let share {
+                ShareSheet(items: [
+                    URL(string: share.url) ?? share.url as Any,
+                    "Open house report — \(report?.address ?? effectiveAddress ?? "")",
+                ])
+            }
+        }
+        .alert("Revoke share link?", isPresented: $showRevokeConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Revoke", role: .destructive) {
+                Task { await revokeShareLink() }
+            }
+        } message: {
+            Text("The current public link will stop working immediately. You can mint a new one later.")
         }
         .alert("Regenerate report?", isPresented: $showRegenerateConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -699,6 +729,44 @@ struct ReportView: View {
             .buttonStyle(.plain)
             .disabled(exportingPdf)
 
+            // Share link — mints (or re-opens) the public share URL.
+            // Tap once to share; long-press the badge in the bar above
+            // to revoke. The label flips from "Link" → "Shared" once a
+            // token exists so the agent knows there's a live URL out
+            // there before they tap it again.
+            Button {
+                Task { await tapShareLink() }
+            } label: {
+                HStack(spacing: 6) {
+                    if creatingShare {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
+                    } else {
+                        Image(systemName: share == nil ? "link" : "link.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    Text(share == nil ? "Link" : "Shared")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .foregroundStyle(share == nil ? FoyerTheme.cream : FoyerTheme.inkOnGold)
+                .background(
+                    share == nil ? FoyerTheme.bgElev : FoyerTheme.gold.opacity(0.85),
+                    in: Capsule()
+                )
+                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .disabled(creatingShare)
+            .contextMenu {
+                if share != nil {
+                    Button("Copy link") { copyShareURL() }
+                    Button("Open link") { openShareURL() }
+                    Button("Revoke link", role: .destructive) {
+                        showRevokeConfirm = true
+                    }
+                }
+            }
+
             Spacer()
 
             Button { showSendSheet = true } label: {
@@ -764,6 +832,46 @@ struct ReportView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 28)
+    }
+
+    // Floating badge above the action bar — "SHARED · viewed 5 times"
+    // with a tap target that opens the share sheet (so re-sharing or
+    // copying the link is one tap, not two). Long-press → context menu
+    // for revoke / copy / open.
+    private func shareBadge(_ s: ReportShare) -> some View {
+        Button {
+            showShareLink = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(badgeLabel(for: s))
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.2)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .foregroundStyle(FoyerTheme.creamDim)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Copy link") { copyShareURL() }
+            Button("Open link") { openShareURL() }
+            Button("Revoke link", role: .destructive) {
+                showRevokeConfirm = true
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func badgeLabel(for s: ReportShare) -> String {
+        switch s.viewCount {
+        case 0:  return "SHARED · NOT YET VIEWED"
+        case 1:  return "SHARED · VIEWED ONCE"
+        default: return "SHARED · VIEWED \(s.viewCount) TIMES"
+        }
     }
 
     // MARK: – Shared cards
@@ -850,9 +958,50 @@ struct ReportView: View {
                 report = nil
                 reportMeta = nil
             }
+            // Pull share state alongside the report so the badge +
+            // "Shared" button label render correctly on first paint.
+            // 404 just leaves share nil (not-shared is the default).
+            share = try? await APIClient.shared.getReportShare(sessionId: sid)
         } catch {
             loadError = error.localizedDescription
         }
+    }
+
+    private func tapShareLink() async {
+        guard let sid = effectiveSessionId else { return }
+        creatingShare = true
+        shareError = nil
+        defer { creatingShare = false }
+        do {
+            // First-time creation lazily mints the token; subsequent
+            // taps return the existing one. Either way, end state is
+            // the same: share is non-nil + share sheet opens.
+            let s = try await APIClient.shared.createReportShare(sessionId: sid)
+            share = s
+            showShareLink = true
+        } catch let err {
+            shareError = err.localizedDescription
+        }
+    }
+
+    private func revokeShareLink() async {
+        guard let sid = effectiveSessionId else { return }
+        do {
+            try await APIClient.shared.revokeReportShare(sessionId: sid)
+            share = nil
+        } catch {
+            shareError = error.localizedDescription
+        }
+    }
+
+    private func copyShareURL() {
+        guard let url = share?.url else { return }
+        UIPasteboard.general.string = url
+    }
+
+    private func openShareURL() {
+        guard let url = share?.url, let u = URL(string: url) else { return }
+        UIApplication.shared.open(u)
     }
 
     private func generate(force: Bool) async {

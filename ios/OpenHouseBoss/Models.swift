@@ -69,9 +69,14 @@ struct Session: Codable, Hashable, Identifiable {
     // Optional — sessions without lat/lon (or recorded before Phase 4)
     // just don't have a weather block.
     var weather: SessionWeather?
+    // Active public share link for the report (nil = not shared, or
+    // revoked). Mirrors backend/share.py's index entry. Lets the
+    // Report tab render "Shared · viewed N times" without a separate
+    // /share fetch on every open.
+    var share: ReportShare?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, address, name, error, result, report
+        case id, status, address, name, error, result, report, share
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case isLive = "is_live"
@@ -777,6 +782,25 @@ struct ReportMeta: Codable, Hashable {
         case sentAt = "sent_at"
         case sentTo = "sent_to"
         case sentMessageId = "sent_message_id"
+    }
+}
+
+// Public share link for a report — mints a token at POST /report/share,
+// the homeowner opens https://.../r/{token} (no auth, polished
+// stand-alone page). The view_count auto-increments on each open so
+// the agent gets a soft engagement signal.
+struct ReportShare: Codable, Hashable {
+    var token: String
+    var url: String
+    var createdAt: String?
+    var viewCount: Int
+    var lastViewedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case token, url
+        case createdAt = "created_at"
+        case viewCount = "view_count"
+        case lastViewedAt = "last_viewed_at"
     }
 }
 
