@@ -20,6 +20,7 @@ struct ReportView: View {
 
     @State private var report: SessionReport?
     @State private var reportMeta: ReportMeta?
+    @State private var resolvedSession: Session?
     @State private var homeownerEmail: String = ""
     @State private var homeownerName: String = ""
 
@@ -43,6 +44,19 @@ struct ReportView: View {
 
     private var effectiveSessionId: String? {
         sessionId ?? store.session?.id
+    }
+
+    // Past sessions aren't held in `store.session` (that slot is for the
+    // active recording), so reads must prefer the explicitly-loaded
+    // session. Without this, the Generate-report button reads the live
+    // session's status (often nil for past-session navigation) and stays
+    // silently disabled.
+    private var effectiveStatus: String? {
+        resolvedSession?.status ?? store.session?.status
+    }
+
+    private var effectiveAddress: String? {
+        resolvedSession?.address ?? store.session?.address
     }
 
     var body: some View {
@@ -124,7 +138,7 @@ struct ReportView: View {
         VStack(alignment: .leading, spacing: 6) {
             Eyebrow(text: "OPEN HOUSE REPORT", color: FoyerTheme.gold)
             Text(report?.address.isEmpty == false ? report!.address :
-                 (store.session?.address ?? "Open house"))
+                 (effectiveAddress ?? "Open house"))
                 .foyerDisplay(32)
                 .foregroundStyle(FoyerTheme.cream)
             if let r = report, !r.dateLabel.isEmpty {
@@ -200,10 +214,14 @@ struct ReportView: View {
                 }
             }
             .buttonStyle(FoyerPrimaryButton())
-            .disabled(effectiveSessionId == nil || store.session?.status != "ready")
+            .disabled(effectiveSessionId == nil || effectiveStatus != "ready")
 
-            if store.session?.status == "processing" {
+            if effectiveStatus == "processing" {
                 Text("Waiting on the session to finish processing.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            } else if effectiveStatus == "error" {
+                Text("This session errored out — nothing to report on.")
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.textMuted)
             } else if effectiveSessionId == nil {
@@ -815,10 +833,13 @@ struct ReportView: View {
         loadError = nil
         defer { loading = false }
         do {
-            // Prime homeowner email/name from the session — we keep these
-            // local for the Send sheet's default recipient. If the session
-            // isn't in the in-memory store yet, fetch it.
+            // Prime homeowner email/name + status from the session — we
+            // keep these local for the Send sheet's default recipient and
+            // for the empty-state Generate button's enabled check (past
+            // sessions aren't in store.session, so the button would
+            // otherwise stay silently disabled).
             if let s = try? await APIClient.shared.getSession(id: sid) {
+                resolvedSession = s
                 homeownerEmail = s.homeownerEmail ?? ""
                 homeownerName = s.homeownerName ?? ""
             }
@@ -845,7 +866,7 @@ struct ReportView: View {
         // adding ~2s to the total generate time (Claude is the slow
         // path at ~15s anyway). Best-effort: any failure here just
         // means the report renders without a weather chip.
-        let addressToGeocode = store.session?.address
+        let addressToGeocode = effectiveAddress
             ?? report?.address
             ?? ""
         await enrichWeatherIfPossible(sessionId: sid, address: addressToGeocode)
@@ -904,7 +925,7 @@ struct ReportView: View {
 
     private var pdfFilename: String {
         let raw = (report?.address.isEmpty == false ? report!.address
-                   : (store.session?.address ?? "open-house"))
+                   : (effectiveAddress ?? "open-house"))
         let safe = raw
             .replacingOccurrences(of: " ", with: "-")
             .components(separatedBy: CharacterSet.alphanumerics.union(.init(charactersIn: "-_")).inverted)
