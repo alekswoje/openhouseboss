@@ -3311,6 +3311,10 @@ def _summarize(s: dict) -> dict:
         # "manual" so the open-house history stays clean; the Leads inbox
         # shows everything.
         "kind": s.get("kind") or "recorded",
+        # True while the agent is still recording (the periodic snapshot
+        # pipeline set status=ready on a light pass). iOS uses this to mark
+        # the row "IN PROGRESS" instead of treating it like a finished one.
+        "is_live": bool(s.get("is_live")),
     }
 
 

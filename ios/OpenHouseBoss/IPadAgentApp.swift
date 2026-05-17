@@ -1544,10 +1544,15 @@ private struct IPadHome: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(s.displayTitle)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(s.displayTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .lineLimit(1)
+                    if s.isLive {
+                        StatusPill(text: "LIVE", tone: .live, pulsing: true)
+                    }
+                }
                 HStack(spacing: 8) {
                     Text(relativeTime(s.createdDate))
                         .font(.system(size: 12))
@@ -1558,6 +1563,14 @@ private struct IPadHome: View {
                     Text("\(s.visitorCount) \(s.visitorCount == 1 ? "lead" : "leads")")
                         .font(.system(size: 12))
                         .foregroundStyle(FoyerTheme.textDim)
+                    if s.isLive {
+                        Text("·")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text("recording — partial data")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
                 }
             }
             Spacer()
@@ -9172,41 +9185,76 @@ private struct IPadRecord: View {
     }
 
     private var recordingHeader: some View {
-        HStack(spacing: 14) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
-                    .frame(width: 8, height: 8)
-                    .modifier(PulseAnimation())
-                Text(paused ? "MUTED" : "LIVE")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .tracking(2.0)
-                    .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
+                        .frame(width: 8, height: 8)
+                        .modifier(PulseAnimation())
+                    Text(paused ? "MUTED" : "LIVE")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .tracking(2.0)
+                        .foregroundStyle(paused ? FoyerTheme.creamDim : FoyerTheme.terracotta)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                #if DEBUG
+                if DevSettings.shared.anyEnabled {
+                    Text("DEV")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundStyle(FoyerTheme.gold)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(FoyerTheme.gold.opacity(0.15)))
+                        .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+                        .fixedSize()
+                }
+                #endif
+                // On regular width (iPad) keep chips inline. On compact
+                // (phone) they move to a second row below so nothing
+                // truncates.
+                if !isCompact {
+                    snapshotPill
+                    #if DEBUG
+                    analyzeNowChip
+                    #endif
+                }
+                Spacer(minLength: 8)
+                Text(timeString)
+                    .font(.system(size: isCompact ? 18 : 22, weight: .medium, design: .monospaced))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .tracking(isCompact ? 1 : 2)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            #if DEBUG
-            if DevSettings.shared.anyEnabled {
-                Text("DEV")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.6)
-                    .foregroundStyle(FoyerTheme.gold)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(FoyerTheme.gold.opacity(0.15)))
-                    .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+
+            if isCompact && hasHeaderChips {
+                HStack(spacing: 8) {
+                    snapshotPill
+                    #if DEBUG
+                    analyzeNowChip
+                    #endif
+                    Spacer(minLength: 0)
+                }
             }
-            #endif
-            snapshotPill
-            #if DEBUG
-            analyzeNowChip
-            #endif
-            Spacer()
-            Text(timeString)
-                .font(.system(size: 22, weight: .medium, design: .monospaced))
-                .foregroundStyle(FoyerTheme.cream)
-                .tracking(2)
         }
         .padding(.horizontal, isCompact ? 20 : 56)
         .padding(.top, isCompact ? 18 : 36)
         .padding(.bottom, 8)
+    }
+
+    // True when at least one of the secondary chips (snapshot status,
+    // debug "Analyze now") is visible. Used to decide whether the compact
+    // layout needs a second row at all.
+    private var hasHeaderChips: Bool {
+        if store.liveLastSnapshotAt != nil { return true }
+        if store.liveSnapshotInFlight { return true }
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
     }
 
     // Debug-only "send the current audio to the pipeline now" button. Skips

@@ -169,12 +169,19 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     // everything. Decoded with a default so old session payloads (cached
     // on disk before this field existed) still parse cleanly.
     var kind: String = "recorded"
+    // True while the agent is still recording — the snapshot loop is
+    // pushing partial-light passes so the session is technically "ready"
+    // on the backend, but more audio is coming. iOS lists pin these to
+    // the top and badge them so the agent doesn't mistake a partial
+    // session for a finished one.
+    var isLive: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, status, address, name, kind
         case createdAt = "created_at"
         case completedAt = "completed_at"
         case visitorCount = "visitor_count"
+        case isLive = "is_live"
     }
 
     init(from decoder: Decoder) throws {
@@ -187,6 +194,7 @@ struct SessionSummary: Codable, Hashable, Identifiable {
         completedAt = try c.decodeIfPresent(String.self, forKey: .completedAt)
         visitorCount = try c.decode(Int.self, forKey: .visitorCount)
         kind = (try c.decodeIfPresent(String.self, forKey: .kind)) ?? "recorded"
+        isLive = (try c.decodeIfPresent(Bool.self, forKey: .isLive)) ?? false
     }
 }
 

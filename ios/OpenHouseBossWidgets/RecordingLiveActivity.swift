@@ -48,6 +48,8 @@ struct RecordingLiveActivity: Widget {
                                         .frame(width: 9, height: 9)
                                     Text("Stop")
                                         .font(.system(size: 12, weight: .semibold))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
                                 }
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 10).padding(.vertical, 6)
@@ -55,6 +57,7 @@ struct RecordingLiveActivity: Widget {
                             }
                             .buttonStyle(.plain)
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                     } else {
                         Text("Processing")
                             .font(.system(size: 12, weight: .semibold))
@@ -112,6 +115,7 @@ struct RecordingLiveActivity: Widget {
                 Text(label(for: context.state))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(accent)
+                    .lineLimit(1)
                 Text(context.attributes.address.isEmpty ? "Open house" : context.attributes.address)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
@@ -120,11 +124,13 @@ struct RecordingLiveActivity: Widget {
                     Text("Audio capture stopped — open the app")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
                 } else {
                     timerLine(for: context.state.startedAt, phase: context.state.phase, muted: muted)
                 }
             }
-            Spacer()
+            .layoutPriority(0)
+            Spacer(minLength: 8)
             if context.state.phase == .recording {
                 HStack(spacing: 8) {
                     Button(intent: ToggleMuteIntent()) {
@@ -133,6 +139,8 @@ struct RecordingLiveActivity: Widget {
                                 .font(.system(size: 13, weight: .semibold))
                             Text(muted ? "Unmute" : "Mute")
                                 .font(.system(size: 13, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         .foregroundStyle(.white)
                         .padding(.horizontal, 12).padding(.vertical, 9)
@@ -147,6 +155,8 @@ struct RecordingLiveActivity: Widget {
                                 .frame(width: 10, height: 10)
                             Text("Stop")
                                 .font(.system(size: 13, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 9)
@@ -154,6 +164,8 @@ struct RecordingLiveActivity: Widget {
                     }
                     .buttonStyle(.plain)
                 }
+                .layoutPriority(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)

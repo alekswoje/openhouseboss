@@ -602,6 +602,7 @@ struct SessionsTabContent: View {
     private var buckets: some View {
         let b = bucketSessions()
         return VStack(alignment: .leading, spacing: 18) {
+            if !b.live.isEmpty     { section(title: "In progress", rows: b.live) }
             if !b.today.isEmpty    { section(title: "Today",     rows: b.today) }
             if !b.thisWeek.isEmpty { section(title: "This week", rows: b.thisWeek) }
             if !b.older.isEmpty    { section(title: "Earlier",   rows: b.older) }
@@ -659,25 +660,38 @@ struct SessionsTabContent: View {
                             .tracking(1.4)
                             .foregroundStyle(FoyerTheme.textMuted)
                     }
+                    if s.isLive {
+                        Text("·")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text("PARTIAL — STILL RECORDING")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.terracotta)
+                    }
                 }
             }
             Spacer(minLength: 0)
-            statusChip(s.status)
+            statusChip(for: s)
         }
         .padding(.vertical, 14)
         .contentShape(Rectangle())
     }
 
     @ViewBuilder
-    private func statusChip(_ status: String) -> some View {
-        switch status {
-        case "ready":      StatusPill(text: "Ready",      tone: .sage)
-        case "processing": StatusPill(text: "Processing", tone: .gold, pulsing: true)
-        case "error":      StatusPill(text: "Error",      tone: .live)
-        default:
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(FoyerTheme.textMuted)
+    private func statusChip(for s: SessionSummary) -> some View {
+        if s.isLive {
+            StatusPill(text: "LIVE", tone: .live, pulsing: true)
+        } else {
+            switch s.status {
+            case "ready":      StatusPill(text: "Ready",      tone: .sage)
+            case "processing": StatusPill(text: "Processing", tone: .gold, pulsing: true)
+            case "error":      StatusPill(text: "Error",      tone: .live)
+            default:
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
         }
     }
 
@@ -702,6 +716,7 @@ struct SessionsTabContent: View {
     }
 
     private struct Buckets {
+        var live: [SessionSummary] = []
         var today: [SessionSummary] = []
         var thisWeek: [SessionSummary] = []
         var older: [SessionSummary] = []
@@ -710,6 +725,10 @@ struct SessionsTabContent: View {
         let cal = Calendar.current
         var b = Buckets()
         for s in store.pastSessions where s.kind != "manual" {
+            // Still-recording sessions get pinned to the top under their
+            // own "In progress" header so the agent isn't hunting for a
+            // partial-data row mixed in with finished open houses.
+            if s.isLive { b.live.append(s); continue }
             guard let d = s.createdDate else { b.older.append(s); continue }
             if cal.isDateInToday(d) { b.today.append(s) }
             else if let weekAgo = cal.date(byAdding: .day, value: -7, to: Date()), d > weekAgo {
