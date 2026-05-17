@@ -570,6 +570,7 @@ private struct CompactBottomTabBar: View {
             }
             moreButton
         }
+        .animation(nil, value: tab)
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .background(
@@ -592,7 +593,7 @@ private struct CompactBottomTabBar: View {
                     onSelectTab(t)
                 }
             )
-            .presentationDetents([.height(280)])
+            .presentationDetents([.height(380)])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color(white: 0.05))
         }
@@ -601,42 +602,36 @@ private struct CompactBottomTabBar: View {
     @ViewBuilder
     private func tabButton(_ t: IPadAgentApp.Tab) -> some View {
         let active = (tab == t) && (viewingPastSession == nil)
-        Button { onSelectTab(t) } label: {
-            VStack(spacing: 3) {
-                Image(systemName: active ? t.iconFilled : t.iconOutline)
-                    .font(.system(size: 19, weight: active ? .semibold : .regular))
-                    .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
-                    .contentTransition(.symbolEffect(.replace))
-                Text(t.label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.textMuted)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+        VStack(spacing: 3) {
+            Image(systemName: active ? t.iconFilled : t.iconOutline)
+                .font(.system(size: 19, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
+            Text(t.label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.textMuted)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelectTab(t) }
     }
 
     private var moreButton: some View {
         let isMoreActive = !primary.contains(tab) && viewingPastSession == nil
-        return Button { showMore = true } label: {
-            VStack(spacing: 3) {
-                Image(systemName: isMoreActive
-                      ? activeMoreIcon(tab).filled
-                      : "ellipsis")
-                    .font(.system(size: 19, weight: isMoreActive ? .semibold : .regular))
-                    .foregroundStyle(isMoreActive ? FoyerTheme.gold : FoyerTheme.creamDim)
-                    .contentTransition(.symbolEffect(.replace))
-                Text(isMoreActive ? tab.label : "More")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isMoreActive ? FoyerTheme.cream : FoyerTheme.textMuted)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+        return VStack(spacing: 3) {
+            Image(systemName: isMoreActive
+                  ? activeMoreIcon(tab).filled
+                  : "ellipsis")
+                .font(.system(size: 19, weight: isMoreActive ? .semibold : .regular))
+                .foregroundStyle(isMoreActive ? FoyerTheme.gold : FoyerTheme.creamDim)
+            Text(isMoreActive ? tab.label : "More")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(isMoreActive ? FoyerTheme.cream : FoyerTheme.textMuted)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { showMore = true }
     }
 
     // When the active tab is one of the overflow items (Offers, Listings,
@@ -658,7 +653,7 @@ private struct CompactMoreSheet: View {
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(FoyerTheme.cream)
                 .tracking(-0.3)
-                .padding(.horizontal, 22).padding(.top, 18).padding(.bottom, 6)
+                .padding(.horizontal, 22).padding(.top, 32).padding(.bottom, 6)
             ForEach(tabs) { t in
                 Button { onSelect(t) } label: {
                     HStack(spacing: 14) {
@@ -6365,15 +6360,19 @@ private struct IPadScripts: View {
             get: { openScriptId.map { ScriptIdRef(id: $0) } },
             set: { openScriptId = $0?.id }
         )) { ref in
+            // ScriptDetailSheet owns its own Ask-AI sheet for edits — SwiftUI
+            // can't stack two sheets bound to the same parent view, so a
+            // prompt presented from here would never appear until the detail
+            // sheet was first dismissed (the bug the agent hit on launch).
             ScriptDetailSheet(
                 scriptId: ref.id,
                 store: store,
-                onClose: { openScriptId = nil },
-                onAskAI: { id, name in
-                    promptTarget = .edit(scriptId: id, scriptName: name)
-                }
+                onClose: { openScriptId = nil }
             )
         }
+        // This binding is only fed by the "New with AI" button on the page
+        // header — no detail sheet is up at that point, so a single-level
+        // presentation works fine.
         .sheet(item: $promptTarget) { target in
             AgentScriptPromptSheet(
                 target: target,
@@ -6737,10 +6736,6 @@ private struct ScriptDetailSheet: View {
     let scriptId: String
     let store: SessionStore
     var onClose: () -> Void
-    // Triggered when the agent taps the sparkly "Ask AI" button. The parent
-    // is responsible for showing the AgentScriptPromptSheet — we hand back
-    // the id + display name so the prompt header can read naturally.
-    var onAskAI: (String, String) -> Void
 
     @State private var detail: APIClient.ScriptDetailDTO?
     @State private var loading: Bool = true
@@ -6749,6 +6744,11 @@ private struct ScriptDetailSheet: View {
     @State private var undoError: String?
     @State private var pendingDelete: Bool = false
     @State private var deleting: Bool = false
+    // Owned locally instead of bubbled up to the parent — SwiftUI can't
+    // present a second sheet from the same parent view while this detail
+    // sheet is already showing. Hosting the Ask-AI prompt as a child sheet
+    // lets it stack on top correctly.
+    @State private var askAITarget: AgentScriptTarget?
 
     private var summary: ScriptSummary? {
         store.availableScripts.first(where: { $0.id == scriptId })
@@ -6805,12 +6805,12 @@ private struct ScriptDetailSheet: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        onAskAI(scriptId, summary?.name ?? "this script")
+                        askAITarget = .edit(scriptId: scriptId, scriptName: summary?.name ?? "this script")
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 12, weight: .semibold))
-                                    Text("Ask AI")
+                            Text("Ask AI")
                                 .font(.system(size: 14, weight: .semibold))
                         }
                         .foregroundStyle(FoyerTheme.gold)
@@ -6830,6 +6830,21 @@ private struct ScriptDetailSheet: View {
                 Text(summary?.isPreset == true
                      ? "All edits will be discarded and the original factory version will come back."
                      : "This can't be undone. Past sessions graded against this script keep their results, but new sessions won't have it as an option.")
+            }
+            .sheet(item: $askAITarget) { target in
+                AgentScriptPromptSheet(
+                    target: target,
+                    onCancel: { askAITarget = nil },
+                    onApplied: { _ in
+                        askAITarget = nil
+                        Task {
+                            await store.refreshScripts()
+                            await load()  // pull fresh step bodies after edit
+                        }
+                    }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
         }
         .task { await load() }
@@ -10283,8 +10298,9 @@ private struct DiarizationAbTestSheet: View {
     @State private var loading = true
     @State private var loadError: String?
     @State private var results: [AbTestProviderResult] = []
-    @State private var shareURL: URL?
+    @State private var shareText: String?
     @State private var showShare = false
+    @State private var copyToast: String?
 
     var body: some View {
         NavigationStack {
@@ -10340,10 +10356,19 @@ private struct DiarizationAbTestSheet: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        if let url = buildBundleURL() {
-                            shareURL = url
-                            showShare = true
-                        }
+                        let text = buildBundleText()
+                        UIPasteboard.general.string = text
+                        showCopyToast()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .foregroundStyle(FoyerTheme.cream)
+                    .disabled(loading || (results.isEmpty && loadError == nil))
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        shareText = buildBundleText()
+                        showShare = true
                     } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
@@ -10352,18 +10377,45 @@ private struct DiarizationAbTestSheet: View {
                 }
             }
             .sheet(isPresented: $showShare) {
-                if let url = shareURL {
-                    ShareSheet(items: [url])
+                if let text = shareText {
+                    ShareSheet(items: [text])
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let toast = copyToast {
+                    Text(toast)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.cream)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(Color.black.opacity(0.88), in: Capsule())
+                        .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+                        .padding(.bottom, 32)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
         }
         .task { await run() }
     }
 
+    // Copies the bundle text via the OS clipboard. On macOS-paired Apple
+    // accounts this syncs through Universal Clipboard within a few seconds,
+    // so pasting on the Mac (⌘V) hands the full bundle to Claude.
+    private func showCopyToast() {
+        withAnimation(.easeOut(duration: 0.18)) {
+            copyToast = "Copied — paste on your Mac to share"
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.0))
+            withAnimation(.easeIn(duration: 0.25)) { copyToast = nil }
+        }
+    }
+
     // Builds a human-readable debug bundle (with raw JSON appended for
-    // fidelity) and writes it to a temp file so the iOS share sheet can
-    // hand it to AirDrop / Messages / Mail with a sensible filename.
-    private func buildBundleURL() -> URL? {
+    // fidelity). Returned as a String so Copy / share-sheet actions carry
+    // the actual text — file URLs don't sync via Universal Clipboard and
+    // get sandboxed when copied, which made the prior URL-based share
+    // unreadable on other devices.
+    private func buildBundleText() -> String {
         let df = ISO8601DateFormatter()
         df.formatOptions = [.withInternetDateTime]
         let now = df.string(from: Date())
@@ -10410,15 +10462,7 @@ private struct DiarizationAbTestSheet: View {
             out += s + "\n"
         }
 
-        let stamp = now.replacingOccurrences(of: ":", with: "-")
-        let filename = "ohc-compare-providers-\(sessionId)-\(stamp).txt"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-        do {
-            try out.write(to: url, atomically: true, encoding: .utf8)
-            return url
-        } catch {
-            return nil
-        }
+        return out
     }
 
     @MainActor
