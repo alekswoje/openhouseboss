@@ -126,6 +126,122 @@ def _extract_json(text: str) -> str:
     return text[start:]  # unbalanced; let the caller raise
 
 
+_REFINE_SYSTEM_PROMPT = (
+    "You correct speaker diarization on an open-house transcript. "
+    "Single-mic phone audio causes two recurring ASR failures:\n"
+    "  (a) SPEAKER FLIPS — labels swap on rapid back-and-forth.\n"
+    "  (b) LUMPED TURNS — multiple speakers' words collapsed into one "
+    "utterance. This is the dominant failure mode on close-talker audio.\n\n"
+    "WHO IS WHO:\n"
+    "- The AGENT asks questions ('what's your name?', 'what's your "
+    "price range?', 'how soon are you looking to move?'), welcomes "
+    "visitors ('welcome to the open house', 'thanks for coming'), "
+    "introduces themselves as 'the listing agent' / 'the realtor', "
+    "describes the property, says 'let me know if you have questions'. "
+    "They're running the show.\n"
+    "- A VISITOR describes their own needs ('I need a 4th bedroom', "
+    "'we have 2 kids', 'we're pre-approved for $X'), gets asked their "
+    "name, asks about the property, comments on what they see.\n"
+    "- 'Hi Alex' / 'Nice to meet you, Sarah' — the SPEAKER is talking "
+    "TO that named person; the named person is the OTHER speaker.\n"
+    "- 'I'm X' / 'My name's X' — the speaker is stating their OWN name.\n\n"
+    "SPLITTING LUMPED TURNS — be aggressive. Any of these patterns "
+    "inside one utterance means it MUST be split:\n"
+    "  - A QUESTION followed by an ANSWER ('what's your name? Ethan.') "
+    "→ split into 2 turns (question = one speaker, answer = other).\n"
+    "  - A NAME EXCHANGE ('What's your name? Ethan. Ethan, Alex. Nice "
+    "to meet you. Nice to meet you too.') → split into 4-5 turns: "
+    "agent asks, visitor names self, agent repeats+names self, "
+    "visitor returns greeting.\n"
+    "  - A GREETING + REPLY ('Nice to meet you. Nice to meet you too.') "
+    "→ ALWAYS 2 different speakers.\n"
+    "  - 'Yeah.' / 'Okay.' / 'Nice.' inline after a visitor statement "
+    "is usually the agent acknowledging — split it off as its own turn.\n"
+    "  - Self-introductions stitched together ('Hi, I'm Alex. Hey "
+    "Alex, I'm Ben.') → 2 turns, one per speaker.\n"
+    "When in doubt about whether a chunk has multiple speakers in it, "
+    "SPLIT. The downstream pipeline can recover from over-splitting; "
+    "it cannot recover from a visitor's words attributed to the agent.\n\n"
+    "TWO CORRECTIONS YOU CAN MAKE:\n"
+    "1. SPLIT a single utterance into multiple when its text contains "
+    "multiple speakers' words. When splitting, distribute start_ms "
+    "monotonically (later parts get later timestamps; if you can't "
+    "tell, evenly space them between the original start_ms and end_ms).\n"
+    "2. RE-LABEL an utterance's speaker when the linguistic content "
+    "doesn't match the provider's cluster.\n\n"
+    "Don't change the WORDS. Don't add new words. Don't drop words. "
+    "Only re-segment and re-label.\n\n"
+    "Return JSON only, no prose. Format: a list of objects with the "
+    "SAME shape as the input: "
+    '[{"speaker": "A", "start_ms": 0, "end_ms": 21000, "text": "..."}, ...]'
+)
+
+
+def _claude_refine_utterances(
+    input_payload: list[dict],
+    valid_speakers: list[str],
+) -> Optional[list[dict]]:
+    """Shared core for diarization refinement. Takes a normalized list of
+    {speaker, start_ms, end_ms, text} dicts, runs the refine prompt, and
+    returns the cleaned list (or None on any parse/validation failure).
+    Used by both the production refine pass and the A/B test's refined-AAI
+    lane so the Compare Providers view reflects what production actually
+    serves."""
+    if len(input_payload) < 2:
+        return None
+    client = Anthropic()
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=8192,
+        system=(
+            _REFINE_SYSTEM_PROMPT
+            + f"\n\nSpeaker labels you may use: {valid_speakers}. Do NOT "
+            "invent new labels — the ASR already detected the speaker "
+            "set. If you think there's a third speaker not in the list, "
+            "keep the label the provider gave you for that utterance."
+        ),
+        messages=[{
+            "role": "user",
+            "content": json.dumps(input_payload, indent=2),
+        }],
+    )
+    text = _extract_json(response.content[0].text)
+    try:
+        refined = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(refined, list) or not refined:
+        return None
+    cleaned: list[dict] = []
+    for item in refined:
+        if not isinstance(item, dict):
+            continue
+        speaker = item.get("speaker")
+        utt_text = item.get("text")
+        if not isinstance(speaker, str) or not isinstance(utt_text, str):
+            continue
+        # Reject hallucinated speaker labels — Claude occasionally
+        # invents "C" when the ASR only found A and B. Drop those rather
+        # than silently mislabeling a turn.
+        if speaker not in valid_speakers:
+            continue
+        try:
+            start = int(item.get("start_ms") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(item.get("end_ms") or 0)
+        except (TypeError, ValueError):
+            end = 0
+        cleaned.append({
+            "speaker": speaker,
+            "start_ms": start,
+            "end_ms": end,
+            "text": utt_text,
+        })
+    return cleaned or None
+
+
 def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
     """Run Claude over the diarized transcript to fix common single-mic
     diarization errors: speaker swaps on rapid back-and-forth and multiple
@@ -156,88 +272,19 @@ def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
         for u in utterances
     ]
 
-    client = Anthropic()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=(
-            "You correct speaker diarization on an open-house transcript. "
-            "The ASR clustering can flip speaker labels on rapid back-and-"
-            "forth or merge multiple speakers' words into one utterance "
-            "(common failure: 'what's your name? I'm Alex. Hi Alex.' all "
-            "in one turn). Use linguistic context to fix it.\n\n"
-            "WHO IS WHO:\n"
-            "- The AGENT asks questions ('what's your name?', 'what's "
-            "your price range?', 'how soon are you looking to move?'), "
-            "introduces themselves as 'the listing agent' / 'the "
-            "realtor', describes the property, welcomes visitors, says "
-            "'let me know if you have questions'. They're showing the "
-            "visitor around.\n"
-            "- The VISITOR describes their own needs ('I need a 4th "
-            "bedroom', 'we have 2 kids', 'we're pre-approved for $X'), "
-            "gets asked their name, asks about the property.\n"
-            "- 'Hi Alex' / 'Nice to meet you, Sarah' — the SPEAKER is "
-            "talking TO that named person, not the named person.\n"
-            "- 'I'm X' — the speaker is stating their own name.\n\n"
-            "TWO CORRECTIONS YOU CAN MAKE:\n"
-            "1. SPLIT a single utterance into multiple when its text "
-            "clearly contains multiple speakers' words.\n"
-            "2. RE-LABEL an utterance's speaker when the linguistic "
-            "content doesn't match the provider's cluster.\n\n"
-            f"Speaker labels you may use: {valid_speakers}. Do NOT "
-            "invent new labels — the ASR already detected the speaker "
-            "set. If you think there's a third speaker, just keep the "
-            "label the provider gave you for that utterance.\n\n"
-            "Don't change the WORDS. Don't add new words. Don't drop "
-            "words. Only re-segment and re-label.\n\n"
-            "Return JSON only, no prose. Format: a list of objects with "
-            "the SAME shape as the input: "
-            '[{"speaker": "A", "start_ms": 0, "end_ms": 21000, "text": "..."}, ...]'
-        ),
-        messages=[{
-            "role": "user",
-            "content": json.dumps(input_payload, indent=2),
-        }],
-    )
-
-    text = _extract_json(response.content[0].text)
-    try:
-        refined = json.loads(text)
-    except json.JSONDecodeError:
-        return transcript
-    if not isinstance(refined, list) or not refined:
+    cleaned = _claude_refine_utterances(input_payload, valid_speakers)
+    if not cleaned:
         return transcript
 
-    new_utts: list = []
-    for item in refined:
-        if not isinstance(item, dict):
-            continue
-        speaker = item.get("speaker")
-        utt_text = item.get("text")
-        if not isinstance(speaker, str) or not isinstance(utt_text, str):
-            continue
-        # Reject hallucinated speaker labels — Claude occasionally
-        # invents "C" when the ASR only found A and B. Drop those rather
-        # than silently mislabeling a turn.
-        if speaker not in valid_speakers:
-            continue
-        try:
-            start = int(item.get("start_ms") or 0)
-        except (TypeError, ValueError):
-            start = 0
-        try:
-            end = int(item.get("end_ms") or 0)
-        except (TypeError, ValueError):
-            end = 0
-        new_utts.append(SimpleNamespace(
-            speaker=speaker,
-            text=utt_text,
-            start=start,
-            end=end,
-        ))
-
-    if not new_utts:
-        return transcript
+    new_utts = [
+        SimpleNamespace(
+            speaker=item["speaker"],
+            text=item["text"],
+            start=item["start_ms"],
+            end=item["end_ms"],
+        )
+        for item in cleaned
+    ]
 
     # Try to mutate the AAI transcript's utterances list. AAI's Pydantic
     # model is mutable by default; if a future SDK version freezes it,

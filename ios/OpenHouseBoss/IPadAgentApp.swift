@@ -10315,7 +10315,7 @@ private struct DiarizationAbTestSheet: View {
                     if loading {
                         VStack(spacing: 10) {
                             ProgressView().tint(FoyerTheme.gold)
-                            Text("Running 3 providers in parallel…")
+                            Text("Running 4 providers in parallel…")
                                 .font(.system(size: 12))
                                 .foregroundStyle(FoyerTheme.textDim)
                             Text("Speechmatics can take up to a minute.")
@@ -10538,7 +10538,8 @@ private struct DiarizationAbTestSheet: View {
 
     private func displayName(_ key: String) -> String {
         switch key {
-        case "assemblyai": return "AssemblyAI (current)"
+        case "assemblyai": return "AssemblyAI (raw)"
+        case "assemblyai_refined": return "AssemblyAI + Claude refine (production)"
         case "deepgram": return "Deepgram nova-2"
         case "speechmatics": return "Speechmatics enhanced"
         default: return key

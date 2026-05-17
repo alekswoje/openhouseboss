@@ -78,6 +78,59 @@ def run_assemblyai(audio_path: Path, api_key: str) -> ProviderResult:
         return ProviderResult("assemblyai", time.time() - t0, 0, [], str(e))
 
 
+def run_assemblyai_refined(audio_path: Path, api_key: str) -> ProviderResult:
+    """Run AssemblyAI, then post-process through the Claude refinement pass
+    that production uses (pipeline/identify.refine_diarization). Shows what
+    the agent's session actually sees after the post-correction step that
+    fixes lumped turns ('What's your name? Ethan. Ethan, Alex.' → 3 turns).
+    """
+    t0 = time.time()
+    base = run_assemblyai(audio_path, api_key)
+    if base.error:
+        return ProviderResult("assemblyai_refined", time.time() - t0, 0, [], base.error)
+    try:
+        from pipeline.identify import _claude_refine_utterances
+        valid_speakers = sorted({u.speaker for u in base.utterances})
+        # The refine helper expects end_ms; AAI dropped it on the way through
+        # the abtest dataclass. We approximate end_ms = next utt's start (or
+        # +5s on the last one) — only used as a budget for monotonic splits.
+        starts = [u.start_ms for u in base.utterances]
+        payload = []
+        for i, u in enumerate(base.utterances):
+            end_ms = starts[i + 1] if i + 1 < len(starts) else u.start_ms + 5000
+            payload.append({
+                "speaker": u.speaker,
+                "start_ms": u.start_ms,
+                "end_ms": end_ms,
+                "text": u.text,
+            })
+        cleaned = _claude_refine_utterances(payload, valid_speakers)
+        if not cleaned:
+            # Refine failed — surface raw AAI under the refined label so the
+            # UI shows something, with an error hint via the speaker count.
+            return ProviderResult(
+                "assemblyai_refined", time.time() - t0,
+                len({u.speaker for u in base.utterances}),
+                base.utterances,
+                "refine pass returned no usable output — showing raw AAI",
+            )
+        refined_utts = [
+            Utterance(
+                speaker=item["speaker"],
+                start_ms=item["start_ms"],
+                text=item["text"],
+            )
+            for item in cleaned
+        ]
+        return ProviderResult(
+            "assemblyai_refined", time.time() - t0,
+            len({u.speaker for u in refined_utts}),
+            refined_utts,
+        )
+    except Exception as e:
+        return ProviderResult("assemblyai_refined", time.time() - t0, 0, [], str(e))
+
+
 # ---------------------------------------------------------------------------
 # Deepgram (HTTPS POST raw audio body to /v1/listen)
 # ---------------------------------------------------------------------------

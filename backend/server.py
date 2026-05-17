@@ -1088,6 +1088,9 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         # so analyze_visitor can bake them into the initial AI draft.
         templates = auth_lib.list_templates_for(user_id) if user_id else []
         force_templates = auth_lib.force_templates_for(user_id) if user_id else False
+        # The agent's own past follow-ups become the authoritative voice
+        # anchor in the prompt — beats any generic "be casual" instruction.
+        voice_samples = auth_lib.voice_samples_for(user_id) if user_id else []
 
         now_iso = datetime.now(timezone.utc).isoformat()
         visitors_out = []
@@ -1118,6 +1121,7 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                     transcript, visitor, DEFAULT_TAGS,
                     templates=templates,
                     force_templates=force_templates,
+                    voice_samples=voice_samples,
                 )
                 analysis_dict = analysis.model_dump()
 
@@ -1984,6 +1988,7 @@ def refine_visitor_draft(
         mentioned_templates=ctx["mentioned_templates"],
         available_offers=ctx["available_offers"],
         available_templates=ctx["available_templates"],
+        voice_samples=auth_lib.voice_samples_for(current_user["id"]),
     )
     return {"body": new_body, "resolved_offers": [
         {"id": o.get("id"), "name": o.get("name")}
@@ -2703,7 +2708,8 @@ def abtest_session(
     from concurrent.futures import ThreadPoolExecutor
     from dataclasses import asdict
     from pipeline.abtest_diarization import (
-        run_assemblyai, run_deepgram, run_speechmatics,
+        run_assemblyai, run_assemblyai_refined,
+        run_deepgram, run_speechmatics,
     )
 
     session_dir = SESSIONS_DIR / session_id
@@ -2727,17 +2733,20 @@ def abtest_session(
 
     keys = {
         "assemblyai": os.environ.get("ASSEMBLYAI_API_KEY", ""),
+        # Refined lane reuses the AAI key — it's AAI + a Claude post-pass.
+        "assemblyai_refined": os.environ.get("ASSEMBLYAI_API_KEY", ""),
         "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
         "speechmatics": os.environ.get("SPEECHMATICS_API_KEY", ""),
     }
     runners = {
         "assemblyai": run_assemblyai,
+        "assemblyai_refined": run_assemblyai_refined,
         "deepgram": run_deepgram,
         "speechmatics": run_speechmatics,
     }
 
     results: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {
             provider: ex.submit(runners[provider], audio_path, keys[provider])
             for provider in runners
@@ -2745,8 +2754,10 @@ def abtest_session(
         }
         for provider, fut in futures.items():
             results[provider] = asdict(fut.result())
-    # Stable order: AAI (current baseline), then Deepgram, then Speechmatics.
-    order = ["assemblyai", "deepgram", "speechmatics"]
+    # Stable order: raw AAI baseline, then AAI+refine (production), then
+    # Deepgram, then Speechmatics. Putting raw + refined adjacent makes
+    # the value of the Claude post-pass visible at a glance.
+    order = ["assemblyai", "assemblyai_refined", "deepgram", "speechmatics"]
     for provider in order:
         if provider not in results:
             results[provider] = {
