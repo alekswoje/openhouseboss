@@ -155,61 +155,65 @@ function VoiceWave({ width = 280, height = 140, orbSize = 64, animated = true })
 }
 
 // iPhone — captures the open house, then ends the session and shows
-// the transcript transcribing with 5 identified speakers. Three
-// phases: RECORDING (live waves + AI identifying speakers) →
-// TRANSCRIBING (spinner + processing) → READY (transcript with 5
-// leads, each their own colored speaker pill).
+// the transcript transcribing with 5 identified speakers, scored by
+// intent. Matches the real app: during recording we only show "we'll
+// identify each speaker at the end" — the reveal is the payoff.
+// Phases: RECORDING (wave + floating quote bubbles + offline flash) →
+// ENDING → TRANSCRIBING (spinner) → READY (5 speakers cascade in
+// best-intent-first with score rings filling around each avatar).
 const HDIPhone = () => {
   // Master 60ms tick.
   const tickFast = useCount(0, 60, 0);
 
-  // Phase plan:
-  //   RECORDING  ticks  0..69   (~4.2s) — waves + 4 voices identified
-  //   ENDING     ticks 70..78   (~0.5s) — "STOPPING…" banner
-  //   TRANSCRIBE ticks 79..104  (~1.5s) — spinner overlay
-  //   READY      ticks 105+    — transcript card with 5 speaker lines
-  const T_REC      = 70;
-  const T_ENDING   = 9;
-  const T_TRANS    = 26;
+  // Phase plan @ 60ms/tick — total ~5.5s:
+  //   RECORDING  ticks  0..37  (2.28s) — wave + 3 quote bubbles drift up
+  //   ENDING     ticks 38..42  (0.30s) — "STOPPING…" banner
+  //   TRANSCRIBE ticks 43..58  (0.96s) — spinner overlay
+  //   READY      ticks 59..91  (~2.0s) — 5 speakers cascade, score rings fill
+  const T_REC_END    = 38;
+  const T_ENDING_END = 43;
+  const T_TRANS_END  = 59;
   const t = tickFast;
-  const recording   = t < T_REC;
-  const ending      = t >= T_REC && t < T_REC + T_ENDING;
-  const transcribing = t >= T_REC + T_ENDING && t < T_REC + T_ENDING + T_TRANS;
-  const ready       = t >= T_REC + T_ENDING + T_TRANS;
+  const recording    = t < T_REC_END;
+  const ending       = t >= T_REC_END && t < T_ENDING_END;
+  const transcribing = t >= T_ENDING_END && t < T_TRANS_END;
+  const ready        = t >= T_TRANS_END;
 
-  // Elapsed timer — counts up during recording, freezes after.
-  const recSec = recording ? Math.min(60 * 14 + Math.floor(t * 0.06 * 5), 60 * 14 + 22) : (60 * 14 + 22);
-  const totalSec = 14 * 60 + 22 + (recording ? Math.floor(t / 17) : 0);
+  // Elapsed timer — sped to feel like a real open house compressed.
+  const totalSec = 14 * 60 + 22 + (recording ? Math.floor(t * 1.6) : 0);
   const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
   const ss = String(totalSec % 60).padStart(2, '0');
 
-  // Speaker detection — paced across the recording phase so all 4
-  // appear before STOPPING. After the session ends, transcript
-  // unveils a 5th speaker (Speaker E who arrived late).
-  const speakers = [
-    { id: 'A', detectedAt:  8, namedAt: 14, name: 'Sarah Chen',     kind: 'buyer'   },
-    { id: 'B', detectedAt: 22, namedAt: 28, name: 'Mike Rodriguez', kind: 'seller'  },
-    { id: 'C', detectedAt: 38, namedAt: 44, name: 'Jennifer Park',  kind: 'browser' },
-    { id: 'D', detectedAt: 54, namedAt: 60, name: 'David Lee',      kind: 'buyer'   },
+  // Quote bubbles that float up over the wave during recording — these
+  // are the things the agent would have to remember and write down by
+  // hand. Each appears, drifts up, and fades over ~12 ticks (720ms).
+  // No live speaker naming — the real app explicitly defers that.
+  const quoteBubbles = [
+    { text: "pre-approved $1.4M", appearAt:  6, kind: 'buyer'  },
+    { text: "60-day close",        appearAt: 14, kind: 'buyer'  },
+    { text: "loves the kitchen",   appearAt: 22, kind: 'buyer'  },
+    { text: "HOA?",                appearAt: 30, kind: 'browser' },
   ];
-  const liveSpeakersIdentified = speakers.filter(s => t >= s.namedAt).length;
 
-  // Transcript lines, revealed one at a time during READY. 5
-  // speakers — the 4 above plus a "late arrival" Elena.
+  // Brief "WORKS OFFLINE · 0 BARS" flash on the SAVED pill so agents
+  // catch that this thing keeps recording in basements.
+  const showOfflineFlash = recording && t >= 18 && t < 28;
+
+  // Transcript lines for the READY reveal. Ordered by buyer-intent
+  // score descending — the TikTok "best leads first" payoff.
   const transcriptLines = [
-    { speaker: 'Sarah',    kind: 'buyer',   line: "Pre-approved to $1.4M. We can close in 60 days." },
-    { speaker: 'Mike',     kind: 'seller',  line: "I've been here 15 years — kids are off to college now." },
-    { speaker: 'Jennifer', kind: 'browser', line: "Just curious — my lease runs through 2027." },
-    { speaker: 'David',    kind: 'buyer',   line: "We love the kitchen. Could we see the basement?" },
-    { speaker: 'Elena',    kind: 'browser', line: "What's the HOA like?" },
+    { first: 'Sarah',    name: 'Sarah Chen',     kind: 'buyer',   score: 94, line: "Pre-approved $1.4M. 60-day close." },
+    { first: 'David',    name: 'David Lee',      kind: 'buyer',   score: 88, line: "We love the kitchen. Can we see the basement?" },
+    { first: 'Mike',     name: 'Mike Rodriguez', kind: 'seller',  score: 76, line: "I've been here 15 years — kids off to college." },
+    { first: 'Elena',    name: 'Elena Morales',  kind: 'browser', score: 41, line: "What's the HOA like?" },
+    { first: 'Jennifer', name: 'Jennifer Park',  kind: 'browser', score: 38, line: "Just curious — lease runs through 2027." },
   ];
-  // After the READY phase starts, each line appears 9 ticks (~540ms)
-  // after the previous one.
-  const readyTicks = ready ? t - (T_REC + T_ENDING + T_TRANS) : -1;
-  const linesShown = readyTicks < 0 ? 0 : Math.min(5, Math.floor(readyTicks / 8) + 1);
+  // 5 ticks (~300ms) between each card appearing.
+  const readyTicks = ready ? t - T_TRANS_END : -1;
+  const linesShown = readyTicks < 0 ? 0 : Math.min(5, Math.floor(readyTicks / 4) + 1);
 
   // Cloud "Saved" pulse — runs during recording.
-  const savedPulse = recording ? Math.floor(t / 28) : Math.floor(T_REC / 28);
+  const savedPulse = recording ? Math.max(1, Math.floor(t / 14)) : Math.floor(T_REC_END / 14);
 
   return (
     <div style={{
@@ -264,7 +268,7 @@ const HDIPhone = () => {
                  : ending ? 'var(--text-dim)'
                  : 'var(--terracotta)',
           }}>
-            {ready ? 'SESSION READY' : transcribing ? 'TRANSCRIBING' : ending ? 'STOPPING…' : 'RECORDING'}
+            {ready ? 'SESSION READY' : transcribing ? 'TRANSCRIBING' : ending ? 'STOPPING…' : 'LISTENING'}
           </span>
           <span style={{ flex: 1 }} />
           <span className="mono" style={{ fontSize: 12, color: 'var(--cream)', letterSpacing: '0.06em' }}>
@@ -272,41 +276,33 @@ const HDIPhone = () => {
           </span>
         </div>
 
-        {/* Listing title */}
+        {/* Listing title — matches the real app's Listening screen
+            ("WE'LL IDENTIFY EACH SPEAKER AT THE END") so visitors see
+            we don't mislabel mid-recording. */}
         <div style={{ marginTop: 12 }}>
           <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>
-            {ready ? 'TRANSCRIPT' : 'HOSTING'}
+            {ready ? 'TRANSCRIPT · BEST INTENT FIRST'
+              : transcribing ? 'SEPARATING VOICES…'
+              : `412 W 78TH ST · ${recording ? 'IDENTIFIED AT END' : 'HOSTED'}`}
           </div>
           <div className="serif" style={{ fontSize: 20, color: 'var(--cream)', marginTop: 2, letterSpacing: '-0.01em' }}>
-            412 W 78th St
+            {ready ? '5 leads, scored' : 'Listening'}
           </div>
         </div>
 
         {/* Main content area — wave during recording, spinner during
             transcribing, transcript when ready. */}
         {ready ? (
-          // READY — transcript card with 5 speakers, lines fade in
+          // READY — transcript card with 5 speakers, score ring around
+          // each avatar, cards cascade in best-intent-first. The score
+          // ring is the TikTok payoff: numbers tick up from 0.
           <div style={{
-            marginTop: 14, flex: 1,
+            marginTop: 12, flex: 1,
             overflow: 'hidden',
-            display: 'flex', flexDirection: 'column', gap: 7,
+            display: 'flex', flexDirection: 'column', gap: 6,
           }}>
             {transcriptLines.slice(0, linesShown).map((ln, i) => (
-              <div key={ln.speaker} style={{
-                animation: 'hdSlideIn .35s cubic-bezier(.22,1,.36,1) both',
-                padding: '7px 10px', borderRadius: 8,
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid var(--hairline)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                  <span className={`tag tag-${ln.kind}`} style={{ fontSize: 7.5, padding: '2px 6px 3px' }}>
-                    <span className="tag-dot" style={{ width: 4, height: 4 }} />{ln.speaker}
-                  </span>
-                </div>
-                <div style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--cream-dim)' }}>
-                  "{ln.line}"
-                </div>
-              </div>
+              <SpeakerLeadRow key={ln.first} ln={ln} index={i} />
             ))}
           </div>
         ) : transcribing ? (
@@ -322,7 +318,7 @@ const HDIPhone = () => {
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
             }}>
               <div className="mono" style={{ fontSize: 9, color: 'var(--gold)', letterSpacing: '0.14em' }}>
-                SEPARATING VOICES…
+                SEPARATING 5 VOICES…
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
                 Tagging each guest
@@ -330,76 +326,119 @@ const HDIPhone = () => {
             </div>
           </div>
         ) : (
-          // RECORDING / ENDING — live wave + identified speakers
+          // RECORDING / ENDING — wave + floating quote bubbles drift up
+          // and dissolve over the wave. The hint card explains that
+          // speakers are tagged at the end (mirrors the real app copy).
           <>
-            <div style={{ marginTop: 14, padding: '6px 0', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)', opacity: ending ? 0.5 : 1, transition: 'opacity .35s' }}>
-              <VoiceWave width={268} height={92} orbSize={48} animated={!ending} />
+            <div style={{
+              position: 'relative',
+              marginTop: 12, padding: '6px 0',
+              borderTop: '1px solid var(--hairline)',
+              borderBottom: '1px solid var(--hairline)',
+              opacity: ending ? 0.5 : 1,
+              transition: 'opacity .35s',
+              overflow: 'hidden',
+            }}>
+              <VoiceWave width={268} height={100} orbSize={52} animated={!ending} />
+              {/* Floating quote bubbles — the things an agent would
+                  otherwise have to scribble. Each appears at its
+                  appearAt tick, drifts up + fades over 14 ticks. */}
+              {recording && quoteBubbles.map((qb) => {
+                const localT = t - qb.appearAt;
+                if (localT < 0 || localT > 14) return null;
+                const progress = localT / 14;
+                const opacity = progress < 0.15 ? progress / 0.15
+                              : progress > 0.7 ? Math.max(0, (1 - progress) / 0.3) : 1;
+                return (
+                  <div key={qb.text} style={{
+                    position: 'absolute',
+                    left: '50%',
+                    bottom: 10,
+                    transform: `translateX(-50%) translateY(${-progress * 56}px)`,
+                    opacity,
+                    pointerEvents: 'none',
+                    padding: '3px 9px',
+                    borderRadius: 999,
+                    background: 'rgba(0,0,0,0.72)',
+                    border: '1px solid ' + (qb.kind === 'buyer' ? 'rgba(134,166,128,0.55)' : 'rgba(255,255,255,0.18)'),
+                    fontSize: 9.5,
+                    color: qb.kind === 'buyer' ? 'var(--sage)' : 'var(--cream-dim)',
+                    whiteSpace: 'nowrap',
+                    fontStyle: 'italic',
+                    fontFamily: 'var(--serif)',
+                  }}>
+                    "{qb.text}"
+                  </div>
+                );
+              })}
             </div>
             <div style={{ marginTop: 14, flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="var(--gold)" stroke="none"><path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/></svg>
-                <span className="mono" style={{ fontSize: 8.5, color: 'var(--gold)', letterSpacing: '0.14em' }}>
-                  AI IDENTIFIED · {liveSpeakersIdentified}
-                </span>
+              <div className="mono" style={{
+                fontSize: 8.5, color: 'var(--text-dim)',
+                letterSpacing: '0.14em', textAlign: 'center',
+              }}>
+                WE'LL IDENTIFY EACH SPEAKER AT THE END
               </div>
-              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {speakers.map(sp => {
-                  const detected = t >= sp.detectedAt;
-                  const named    = t >= sp.namedAt;
-                  if (!detected) return null;
-                  return (
-                    <div key={sp.id} style={{
-                      padding: '7px 10px', borderRadius: 8,
-                      background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid var(--hairline)',
-                      display: 'flex', alignItems: 'center', gap: 9,
-                      animation: 'hdSlideIn .45s cubic-bezier(.22,1,.36,1) both',
-                    }}>
-                      <div style={{
-                        width: 22, height: 22, borderRadius: '50%',
-                        background: named ? 'var(--gold-soft)' : 'rgba(255,255,255,0.08)',
-                        color: named ? 'var(--gold)' : 'var(--text-muted)',
-                        display: 'grid', placeItems: 'center',
-                        fontFamily: 'var(--sans)', fontSize: 9, fontWeight: 600,
-                        transition: 'background .35s ease, color .35s ease',
-                      }}>
-                        {named ? sp.name.charAt(0) : sp.id}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 11, color: 'var(--cream)' }}>
-                          {named ? sp.name : `Speaker ${sp.id}`}
-                        </div>
-                        <div className="mono" style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 1, letterSpacing: '0.08em' }}>
-                          {named ? 'IDENTIFIED' : 'DETECTING…'}
-                        </div>
-                      </div>
-                      {named && (
-                        <span className={`tag tag-${sp.kind}`} style={{ fontSize: 7.5, padding: '2px 6px 3px' }}>
-                          <span className="tag-dot" style={{ width: 4, height: 4 }} />{sp.kind}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+              <div style={{
+                marginTop: 10, padding: '10px 12px',
+                borderRadius: 10,
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--hairline)',
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: '50%',
+                  background: 'var(--terracotta-soft, rgba(202,80,71,0.12))',
+                  border: '1px solid rgba(202,80,71,0.4)',
+                  display: 'grid', placeItems: 'center',
+                  flexShrink: 0,
+                }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--terracotta)" strokeWidth="2">
+                    <rect x="9" y="2" width="6" height="11" rx="3"/>
+                    <path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>
+                  </svg>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: 'var(--cream)', lineHeight: 1.3 }}>
+                    Capturing every conversation
+                  </div>
+                  <div className="mono" style={{
+                    fontSize: 8, color: 'var(--text-muted)',
+                    marginTop: 2, letterSpacing: '0.08em',
+                  }}>
+                    AUTO-PAUSES ON SILENCE · 14 HRS BATTERY
+                  </div>
+                </div>
               </div>
             </div>
           </>
         )}
 
-        {/* Status pill below the content. Saved during recording,
-            "5 leads ready" once the transcript lands. */}
+        {/* Status pill below the content. Saved during recording —
+            briefly flips to "WORKS OFFLINE" so visitors catch the
+            differentiator. "5 LEADS · SCORED" once transcript lands. */}
         {!transcribing && (
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               padding: '5px 9px', borderRadius: 999,
-              background: 'rgba(134,166,128,0.12)',
-              color: 'var(--sage)',
+              background: showOfflineFlash ? 'rgba(196,162,82,0.16)' : 'rgba(134,166,128,0.12)',
+              color: showOfflineFlash ? 'var(--gold)' : 'var(--sage)',
               fontSize: 9, fontWeight: 600,
+              border: '1px solid ' + (showOfflineFlash ? 'rgba(196,162,82,0.45)' : 'transparent'),
+              transition: 'background .2s, color .2s, border-color .2s',
             }}>
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              {showOfflineFlash ? (
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
+                </svg>
+              ) : (
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              )}
               <span className="mono" style={{ letterSpacing: '0.1em' }}>
-                {ready ? `READY · ${linesShown}/${transcriptLines.length} TRANSCRIBED` : `SAVED · ${savedPulse}m AGO`}
+                {ready ? `5 LEADS · SCORED`
+                  : showOfflineFlash ? 'WORKS OFFLINE'
+                  : `SAVED · ${savedPulse}m AGO`}
               </span>
             </div>
             <span style={{ flex: 1 }} />
@@ -446,81 +485,146 @@ const HDIPhone = () => {
   );
 };
 
+// One row in the transcript reveal — name + score ring + intent tag + quote.
+// The score ring is the visual hit: a circular stroke around the avatar
+// fills from 0 to the lead's score over ~400ms once the row mounts, and
+// the number ticks up in lockstep. Sage for warm buyers, gold for
+// sellers, terracotta-ish dim for low-intent browsers.
+function SpeakerLeadRow({ ln, index }) {
+  // Local 30ms tick — drives the score ring fill and number tick. Tied
+  // to the row's mount, not the parent's master clock, so each row's
+  // ring starts at 0 the moment it appears.
+  const [n, setN] = useHD(0);
+  useHDEf(() => {
+    let id;
+    let v = 0;
+    id = setInterval(() => {
+      v += 4;
+      if (v >= ln.score) { v = ln.score; clearInterval(id); }
+      setN(v);
+    }, 22);
+    return () => clearInterval(id);
+  }, []);
+
+  const ringColor = ln.score >= 70 ? 'var(--sage)'
+                  : ln.score >= 50 ? 'var(--gold)'
+                  : 'var(--text-muted)';
+  const C = 2 * Math.PI * 13;             // circumference for r=13
+  const dashOffset = C * (1 - n / 100);
+
+  return (
+    <div style={{
+      animation: 'hdSlideIn .32s cubic-bezier(.22,1,.36,1) both',
+      padding: '6px 8px', borderRadius: 8,
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid var(--hairline)',
+      display: 'flex', alignItems: 'center', gap: 9,
+    }}>
+      <div style={{ position: 'relative', width: 32, height: 32, flexShrink: 0 }}>
+        <svg width="32" height="32" viewBox="0 0 32 32" style={{ position: 'absolute', inset: 0 }}>
+          <circle cx="16" cy="16" r="13" fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth="2" />
+          <circle
+            cx="16" cy="16" r="13" fill="none"
+            stroke={ringColor} strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={dashOffset}
+            transform="rotate(-90 16 16)"
+            style={{ transition: 'stroke-dashoffset .04s linear' }}
+          />
+        </svg>
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'grid', placeItems: 'center',
+          fontFamily: 'var(--mono)', fontSize: 9, fontWeight: 700,
+          color: ringColor,
+        }}>
+          {n}
+        </div>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 1 }}>
+          <span style={{ fontSize: 10.5, color: 'var(--cream)', fontWeight: 500 }}>{ln.name}</span>
+          <span className={`tag tag-${ln.kind}`} style={{ fontSize: 7, padding: '1.5px 5px 2px' }}>
+            <span className="tag-dot" style={{ width: 3.5, height: 3.5 }} />{ln.kind}
+          </span>
+        </div>
+        <div style={{ fontSize: 9.5, lineHeight: 1.32, color: 'var(--cream-dim)', fontStyle: 'italic' }}>
+          "{ln.line}"
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // iPad LANDSCAPE — KIOSK in fullscreen guest mode. Side rail is hidden
 // (locked kiosk), big listing photo on the left, sign-in form on the
-// right. ONE guest signs in per carousel visit (no looping within a
-// mount) — the carousel moves to the next device after success holds
-// for a beat. A window-scoped counter rotates the guest on each
-// remount so successive iPad visits show different people.
+// right. THREE guests sign in back-to-back so visitors see the
+// throughput, not just one slow form-fill. Fields fill via a gold
+// scan-line sweep (no letter-by-letter typing — TikTok pace).
 const HDIPad = () => {
-  // Pick this visit's guest once on mount. Window-scoped counter
-  // increments per remount so the rotation persists across the
-  // carousel's conditional render cycle.
-  const guestRotation = [
-    { name: 'Sarah Chen',     email: 'sarah.chen@example.com',  phone: '(212) 555-0101', hasAgent: 'no'  },
-    { name: 'Mike Rodriguez', email: 'mike.r@example.com',      phone: '(212) 555-0142', hasAgent: 'no'  },
-    { name: 'Jennifer Park',  email: 'jpark.nyc@example.com',   phone: '(212) 555-0173', hasAgent: 'yes' },
-    { name: 'David Lee',      email: 'd.lee@example.com',       phone: '(212) 555-0188', hasAgent: 'no'  },
-    { name: 'Elena Morales',  email: 'elena.m@example.com',     phone: '(212) 555-0124', hasAgent: 'yes' },
+  // Three guests cycled through, in order. Counter ticks 6 → 9 across
+  // the cycle so the listing photo's "N SIGNED IN" badge climbs.
+  const guests = [
+    { name: 'Sarah Chen',     email: 'sarah.chen@example.com', phone: '(212) 555-0101', hasAgent: 'no'  },
+    { name: 'Mike Rodriguez', email: 'mike.r@example.com',     phone: '(212) 555-0142', hasAgent: 'yes' },
+    { name: 'Jennifer Park',  email: 'jpark.nyc@example.com',  phone: '(212) 555-0173', hasAgent: 'yes' },
   ];
-  const [guestIdx] = useHD(() => {
-    const next = (window._foyerIPadVisit ?? 0) % guestRotation.length;
-    window._foyerIPadVisit = (window._foyerIPadVisit ?? 0) + 1;
-    return next;
-  });
-  const guest = guestRotation[guestIdx];
 
-  // Fast tick (every 60ms) drives a single sign-in. Phase durations
-  // are tuned so the form completes in ~4.5s, then the success
-  // overlay holds until the carousel moves on. No looping.
+  // 60ms tick. Per-guest phase plan (27 ticks ≈ 1.62s):
+  //   NAME   ticks 0..4  (0.30s)  — scan-line wipe + field fills
+  //   EMAIL  ticks 5..9  (0.30s)
+  //   PHONE  ticks 10..14 (0.30s)
+  //   CHIP   ticks 15..16 (0.12s)  — agent chip clicks
+  //   PRESS  ticks 17..18 (0.12s)  — submit button glows
+  //   SUCCESS ticks 19..26 (0.48s) — overlay holds
+  // After 3 guests (81 ticks) we hold for an additional ~10 ticks so
+  // the final success card lingers for the carousel handoff.
+  const PER_GUEST = 27;
+  const TOTAL = PER_GUEST * 3;
   const tickFast = useCount(0, 60, 0);
+  const t = Math.min(tickFast, TOTAL + 10);
 
-  const T_NAME    = 12;   // ~720ms
-  const T_PAUSE_1 = 4;
-  const T_EMAIL   = 22;   // ~1320ms
-  const T_PAUSE_2 = 4;
-  const T_PHONE   = 16;
-  const T_PAUSE_3 = 3;
-  const T_AGENT   = 6;
-  const T_SUCCESS_START = T_NAME + T_PAUSE_1 + T_EMAIL + T_PAUSE_2 + T_PHONE + T_PAUSE_3 + T_AGENT;
+  const guestIdx = Math.min(guests.length - 1, Math.floor(t / PER_GUEST));
+  const guest = guests[guestIdx];
+  const localT = t - guestIdx * PER_GUEST;
 
-  // Clamp so the animation freezes on the success overlay until
-  // the carousel unmounts us.
-  const t = Math.min(tickFast, T_SUCCESS_START + 60);
+  const NAME_END   = 5;
+  const EMAIL_END  = 10;
+  const PHONE_END  = 15;
+  const CHIP_END   = 17;
+  const PRESS_END  = 19;
+  const SUCCESS_END = PER_GUEST;
 
-  // The "N SIGNED IN" badge on the listing photo. Bumps the moment
-  // this guest's success overlay fires.
-  const baseSignedIn = 6 + guestIdx;
-  const guestsIn = t >= T_SUCCESS_START ? baseSignedIn + 1 : baseSignedIn;
+  const nameActive  = localT < NAME_END;
+  const emailActive = localT >= NAME_END  && localT < EMAIL_END;
+  const phoneActive = localT >= EMAIL_END && localT < PHONE_END;
+  const chipSet     = localT >= PHONE_END;
+  const pressing    = localT >= CHIP_END && localT < PRESS_END;
+  const showSuccess = localT >= PRESS_END;
 
-  // Return a typed substring of `target` that fills proportionally
-  // through the [startTick, startTick + duration) window. Before the
-  // window starts: empty. After it ends: full string.
-  function typedSubstring(target, startTick, duration) {
-    if (t < startTick) return '';
-    if (t >= startTick + duration) return target;
-    const localT = t - startTick;
-    return target.slice(0, Math.ceil((localT + 1) / duration * target.length));
+  // Scan-line progress for the currently-active field (0..1).
+  const scanProgress = (start, end) => {
+    if (localT < start) return 0;
+    if (localT >= end)  return 1;
+    return (localT - start) / (end - start);
+  };
+
+  // Listing badge counter — climbs each time a guest hits success.
+  // Starts at 6 + offset for visual believability.
+  let guestsIn = 6;
+  for (let i = 0; i < guests.length; i++) {
+    if (t >= i * PER_GUEST + PRESS_END) guestsIn += 1;
   }
 
-  const nameStart  = 0;
-  const emailStart = T_NAME + T_PAUSE_1;
-  const phoneStart = emailStart + T_EMAIL + T_PAUSE_2;
-  const agentStart = phoneStart + T_PHONE + T_PAUSE_3;
-  const successStart = T_SUCCESS_START;
-
-  const nameTyped  = typedSubstring(guest.name,  nameStart,  T_NAME);
-  const emailTyped = typedSubstring(guest.email, emailStart, T_EMAIL);
-  const phoneTyped = typedSubstring(guest.phone, phoneStart, T_PHONE);
-  const agentSet   = t >= agentStart;
-  const termsOK    = t >= agentStart;
-  const showSuccess = t >= successStart;
-
-  // Which field has the focus caret right now. Used to put the gold
-  // border + blinking cursor on the field currently being typed.
-  const nameActive  = t >= nameStart  && t < nameStart  + T_NAME;
-  const emailActive = t >= emailStart && t < emailStart + T_EMAIL;
-  const phoneActive = t >= phoneStart && t < phoneStart + T_PHONE;
+  // Field value: empty until that field's scan-line has covered any of
+  // it, then full once it's started (no per-char animation — the gold
+  // sweep over the empty field implies "auto-filling from prior visit").
+  const nameTyped  = (localT >= NAME_END  - 1) ? guest.name  : '';
+  const emailTyped = (localT >= EMAIL_END - 1) ? guest.email : '';
+  const phoneTyped = (localT >= PHONE_END - 1) ? guest.phone : '';
+  const agentSet   = chipSet;
+  const termsOK    = chipSet;
 
   return (
     <div style={{
@@ -608,11 +712,15 @@ const HDIPad = () => {
           </div>
         </div>
 
-        {/* SIGN-IN FORM PANE — animated auto-fill, no human typing */}
-        <div style={{
+        {/* SIGN-IN FORM PANE — gold scan-line wipes each field instead
+            of letter-by-letter typing. Keyed on guestIdx so each guest
+            cycle starts from a fresh form (no half-old values
+            bleeding across). */}
+        <div key={`form-${guestIdx}`} style={{
           background: '#000', padding: '32px 28px',
           display: 'flex', flexDirection: 'column',
           position: 'relative',
+          animation: 'hdFadeIn .25s ease both',
         }}>
           <div style={{ marginBottom: 18 }}>
             <div className="serif" style={{ fontSize: 22, color: 'var(--cream)', lineHeight: 1, letterSpacing: '-0.02em' }}>
@@ -623,39 +731,40 @@ const HDIPad = () => {
             </div>
           </div>
 
-          {/* Form fields — each types its target string letter by letter
-              during the field's active window. The blinking caret only
-              shows on the field currently being typed. */}
-          <KioskField label="NAME"  value={nameTyped}  active={nameActive}  />
-          <KioskField label="EMAIL" value={emailTyped} active={emailActive} />
-          <KioskField label="PHONE" value={phoneTyped} active={phoneActive} />
+          {/* Form fields — a gold scan-line wipes left→right across the
+              active field, leaving the filled value behind it. */}
+          <KioskField label="NAME"  value={nameTyped}  active={nameActive}
+            progress={scanProgress(0, NAME_END)} />
+          <KioskField label="EMAIL" value={emailTyped} active={emailActive}
+            progress={scanProgress(NAME_END, EMAIL_END)} />
+          <KioskField label="PHONE" value={phoneTyped} active={phoneActive}
+            progress={scanProgress(EMAIL_END, PHONE_END)} />
 
-          {/* Agent + terms — toggle in when stage hits 4 */}
-          <div style={{ marginTop: 6, opacity: agentSet ? 1 : 0.3, transition: 'opacity .35s ease' }}>
+          {/* Agent chip — clicks at PHONE_END. Briefly bumps when set. */}
+          <div style={{ marginTop: 6, opacity: agentSet ? 1 : 0.3, transition: 'opacity .2s ease' }}>
             <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>
               WORKING WITH AN AGENT?
             </div>
             <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
-              <span style={{
-                padding: '5px 11px', borderRadius: 999, fontSize: 10, fontWeight: 500,
-                background: agentSet && guest.hasAgent === 'no'  ? 'var(--gold-soft)' : 'rgba(255,255,255,0.04)',
-                color:      agentSet && guest.hasAgent === 'no'  ? 'var(--gold)'      : 'var(--text-dim)',
-                border: '1px solid ' + (agentSet && guest.hasAgent === 'no' ? 'var(--gold)' : 'var(--hairline)'),
-                transition: 'all .35s ease',
-              }}>Not yet</span>
-              <span style={{
-                padding: '5px 11px', borderRadius: 999, fontSize: 10, fontWeight: 500,
-                background: agentSet && guest.hasAgent === 'yes' ? 'var(--gold-soft)' : 'rgba(255,255,255,0.04)',
-                color:      agentSet && guest.hasAgent === 'yes' ? 'var(--gold)'      : 'var(--text-dim)',
-                border: '1px solid ' + (agentSet && guest.hasAgent === 'yes' ? 'var(--gold)' : 'var(--hairline)'),
-                transition: 'all .35s ease',
-              }}>Yes</span>
+              {['no', 'yes'].map(opt => {
+                const selected = agentSet && guest.hasAgent === opt;
+                return (
+                  <span key={opt} style={{
+                    padding: '5px 11px', borderRadius: 999, fontSize: 10, fontWeight: 500,
+                    background: selected ? 'var(--gold-soft)' : 'rgba(255,255,255,0.04)',
+                    color:      selected ? 'var(--gold)'      : 'var(--text-dim)',
+                    border: '1px solid ' + (selected ? 'var(--gold)' : 'var(--hairline)'),
+                    transition: 'all .2s ease',
+                    animation: selected ? 'hdPop .25s cubic-bezier(.22,1.4,.36,1) both' : 'none',
+                  }}>{opt === 'no' ? 'Not yet' : 'Yes'}</span>
+                );
+              })}
             </div>
           </div>
 
           <div style={{ flex: 1 }} />
 
-          {/* Submit button — pulses gold when the form is "complete" */}
+          {/* Submit button — visibly compresses on the press tick. */}
           <button style={{
             marginTop: 14,
             padding: '12px', border: 0,
@@ -663,18 +772,20 @@ const HDIPad = () => {
             color: 'var(--ink-on-gold)',
             borderRadius: 12, fontFamily: 'var(--sans)', fontSize: 13, fontWeight: 600,
             boxShadow: termsOK ? '0 0 0 4px rgba(196,162,82,0.18)' : 'none',
-            transition: 'all .35s ease',
+            transform: pressing ? 'scale(0.96)' : 'scale(1)',
+            transition: 'all .12s ease',
           }}>
             Sign in
           </button>
 
-          {/* Success overlay — fully covers the form when stage hits 5 */}
+          {/* Success overlay — covers the form when each guest hits
+              success. Unmounts when the next guest's form keys in. */}
           {showSuccess && (
             <div style={{
               position: 'absolute', inset: 0, background: '#000',
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
-              animation: 'hdFadeIn .4s ease both',
+              animation: 'hdFadeIn .2s ease both',
               padding: 28,
             }}>
               <div style={{
@@ -682,7 +793,7 @@ const HDIPad = () => {
                 background: 'var(--gold-soft)', color: 'var(--gold)',
                 display: 'grid', placeItems: 'center',
                 boxShadow: '0 0 0 6px rgba(196,162,82,0.16)',
-                animation: 'hdPop .5s cubic-bezier(.22,1.4,.36,1) both',
+                animation: 'hdPop .35s cubic-bezier(.22,1.4,.36,1) both',
               }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
@@ -692,6 +803,15 @@ const HDIPad = () => {
               <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>
                 Saved · ready to listen
               </div>
+              <div style={{
+                marginTop: 18, padding: '5px 10px', borderRadius: 999,
+                background: 'rgba(134,166,128,0.14)',
+                border: '1px solid rgba(134,166,128,0.4)',
+                fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--sage)',
+                letterSpacing: '0.14em',
+              }}>
+                LEAD · {guest.hasAgent === 'no' ? 'BUYER (UNREPPED)' : 'BUYER (HAS AGENT)'}
+              </div>
             </div>
           )}
         </div>
@@ -700,31 +820,52 @@ const HDIPad = () => {
   );
 };
 
-// One labeled field in the kiosk form. Renders the value as it types in,
-// with a blinking caret while the parent says this row is "active".
-function KioskField({ label, value, active }) {
+// One labeled field in the kiosk form. While the parent says this row
+// is "active", a gold scan-line sweeps left→right based on `progress`
+// (0..1) and the filled value is revealed behind it. No human typing.
+function KioskField({ label, value, active, progress = 0 }) {
+  const showValue = value && value.length > 0;
   return (
     <div style={{ marginBottom: 12 }}>
       <div className="mono" style={{ fontSize: 8.5, color: 'var(--text-dim)', letterSpacing: '0.14em' }}>
         {label}
       </div>
       <div style={{
+        position: 'relative', overflow: 'hidden',
         marginTop: 5, padding: '9px 12px',
         background: 'rgba(255,255,255,0.04)',
         border: '1px solid ' + (active ? 'var(--gold)' : 'var(--hairline)'),
         boxShadow: active ? '0 0 0 3px rgba(196, 162, 82, 0.14)' : 'none',
         borderRadius: 8,
-        fontSize: 12, color: value ? 'var(--cream)' : 'var(--text-muted)',
+        fontSize: 12, color: showValue ? 'var(--cream)' : 'var(--text-muted)',
         fontFamily: 'var(--sans)', minHeight: 16,
-        transition: 'border-color .25s ease, box-shadow .25s ease',
+        transition: 'border-color .15s ease, box-shadow .15s ease',
       }}>
-        {value || (active ? '' : <span style={{ color: 'var(--text-muted)' }}>…</span>)}
+        <span style={{
+          opacity: showValue ? 1 : 0.4,
+          transition: 'opacity .15s ease',
+        }}>
+          {showValue ? value : '…'}
+        </span>
         {active && (
-          <span style={{
-            display: 'inline-block', width: 1.5, height: 12, marginLeft: 1,
-            background: 'var(--gold)', verticalAlign: '-1px',
-            animation: 'hdBlink 0.9s steps(2) infinite',
-          }} />
+          <>
+            {/* Gold scan-line bar — wipes across the field. */}
+            <span style={{
+              position: 'absolute', top: 0, bottom: 0,
+              left: `${Math.max(0, Math.min(100, progress * 100))}%`,
+              width: 3, marginLeft: -1,
+              background: 'linear-gradient(to bottom, transparent, var(--gold), transparent)',
+              boxShadow: '0 0 12px 3px rgba(196,162,82,0.55)',
+              pointerEvents: 'none',
+            }} />
+            {/* Soft gold trail behind the line. */}
+            <span style={{
+              position: 'absolute', top: 0, bottom: 0, left: 0,
+              width: `${Math.max(0, Math.min(100, progress * 100))}%`,
+              background: 'linear-gradient(90deg, transparent, rgba(196,162,82,0.10))',
+              pointerEvents: 'none',
+            }} />
+          </>
         )}
       </div>
     </div>
@@ -763,35 +904,44 @@ const HDLaptop = () => {
   // motion rather than a stepped animation.
   const tickFast = useCount(0, 50, 0);
 
-  // Phase plan (one cycle = one bulk send, then hold):
-  //   T_PROMPT     prompt fades in
-  //   T_BUILD      "Building plan…" spinner
-  //   T_PLAN       plan panel + recipient grid appears
-  //   T_CASCADE    each tile staggers through drafting → sent
-  //   T_HOLD       all-sent state holds for the dwell remainder
-  const T_PROMPT  = 10;   // ~500ms
-  const T_BUILD   = 10;   // ~500ms
-  const T_STAGGER = 4;    // ~200ms between tile starts
-  const T_DRAFT   = 8;    // ~400ms drafting per tile
-  const T_SEND    = 4;    // ~200ms sending per tile
+  // Phase plan @ 50ms/tick — total 6.0s:
+  //   PROMPT     ticks  0..7   (0.4s)  prompt fades in + cursor types
+  //   BUILD      ticks  8..15  (0.4s)  "Building plan…" spinner
+  //   CASCADE    ticks 16..63  (2.4s)  14 tiles cascade through states
+  //   INSPECTOR  ticks 30..90  (3.0s)  personalization modal slides in
+  //   STAT BAND  ticks 75..120 (2.25s) sage stat band slides up
+  //   HOLD       remainder
+  const T_PROMPT  = 8;
+  const T_BUILD   = 8;
+  const T_STAGGER = 3;    // ~150ms between tile starts
+  const T_DRAFT   = 6;    // ~300ms drafting per tile
+  const T_SEND    = 3;    // ~150ms sending per tile
 
-  const PROMPT_START = 0;
-  const BUILD_START  = T_PROMPT;
-  const PLAN_START   = BUILD_START + T_BUILD;
-  // Last tile begins at PLAN_START + (N-1) * T_STAGGER, finishes
-  // T_DRAFT + T_SEND ticks later.
-  const ALL_SENT_AT  = PLAN_START + (queue.length - 1) * T_STAGGER + T_DRAFT + T_SEND;
+  const PROMPT_START    = 0;
+  const BUILD_START     = T_PROMPT;
+  const PLAN_START      = BUILD_START + T_BUILD;
+  const ALL_SENT_AT     = PLAN_START + (queue.length - 1) * T_STAGGER + T_DRAFT + T_SEND;
+  const INSPECTOR_OPEN  = 30;
+  const INSPECTOR_CLOSE = 90;
+  const STAT_BAND_START = 75;
+  const TOTAL_TICKS     = 120;
 
-  // Run once and freeze on the "all sent" state. The carousel slot
-  // for laptop is ~9.5s; the cascade completes around 5s in, then
-  // we hold the green stat until the carousel switches devices.
-  // No looping inside a mount — looping back to empty mid-view was
-  // confusing.
-  const t = Math.min(tickFast, ALL_SENT_AT + 6);
+  const t = Math.min(tickFast, TOTAL_TICKS + 6);
 
-  const showPrompt = t >= PROMPT_START;
-  const showBuild  = t >= BUILD_START && t < PLAN_START;
-  const showPlan   = t >= PLAN_START;
+  const showPrompt    = t >= PROMPT_START;
+  const showBuild     = t >= BUILD_START && t < PLAN_START;
+  const showPlan      = t >= PLAN_START;
+  const showInspector = t >= INSPECTOR_OPEN && t < INSPECTOR_CLOSE;
+  const showStatBand  = t >= STAT_BAND_START;
+
+  // Prompt text — the cursor "types" by revealing characters. Looks
+  // fast (~3 chars/tick) but matches a realistic prompt.
+  const promptTarget = "Send @SpringBuyerCredit to all warm buyers from 412 W 78th";
+  const promptLen = t < PROMPT_START ? 0
+    : t >= PROMPT_START + T_PROMPT ? promptTarget.length
+    : Math.ceil((t - PROMPT_START) / T_PROMPT * promptTarget.length);
+  const promptTyped = promptTarget.slice(0, promptLen);
+  const promptDone  = t >= PROMPT_START + T_PROMPT;
 
   // Per-tile status. Each tile starts T_STAGGER ticks after the
   // previous one. States cycle drafting → drafted → sending → sent.
@@ -854,7 +1004,7 @@ const HDLaptop = () => {
             </div>
             <div style={{ flex: 1 }} />
             <span className="mono" style={{ fontSize: 10, letterSpacing: '0.16em', color: 'var(--text-muted)' }}>
-              foyer.house /#/leads
+              openhousecopilot.com /#/leads
             </span>
           </div>
 
@@ -898,6 +1048,8 @@ const HDLaptop = () => {
             <div style={{
               padding: '16px 22px 0',
               display: 'flex', flexDirection: 'column', minHeight: 0,
+              position: 'relative',
+              overflow: 'hidden',
             }}>
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
@@ -918,7 +1070,9 @@ const HDLaptop = () => {
                 </span>
               </div>
 
-              {/* Ask-your-inbox prompt — the bulk send trigger */}
+              {/* Ask-your-inbox prompt — the bulk send trigger. The
+                  cursor types the prompt, then "BUILDING PLAN…", then
+                  the recipient count. */}
               <div style={{
                 padding: '10px 12px', borderRadius: 10,
                 background: 'rgba(196,162,82,0.08)',
@@ -926,36 +1080,51 @@ const HDLaptop = () => {
                 display: 'flex', alignItems: 'center', gap: 8,
                 opacity: showPrompt ? 1 : 0,
                 transform: showPrompt ? 'translateY(0)' : 'translateY(-4px)',
-                transition: 'opacity .35s ease, transform .35s ease',
+                transition: 'opacity .25s ease, transform .25s ease',
+                minHeight: 32,
               }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="var(--gold)" stroke="none">
                   <path d="M12 2v6m0 8v6M2 12h6m8 0h6M5.6 5.6l3.5 3.5M14.9 14.9l3.5 3.5M5.6 18.4l3.5-3.5M14.9 9.1l3.5-3.5"/>
                 </svg>
-                <span style={{ fontSize: 11, color: 'var(--cream)' }}>
-                  Send the <span className="mono" style={{ color: 'var(--gold)', fontWeight: 600 }}>@SpringBuyerCredit</span> to all warm buyers from the Maple St open house
+                <span style={{ fontSize: 11, color: 'var(--cream)', flex: 1, minWidth: 0 }}>
+                  {promptTyped.split('@SpringBuyerCredit').map((part, i, arr) => (
+                    <React.Fragment key={i}>
+                      {part}
+                      {i < arr.length - 1 && (
+                        <span className="mono" style={{ color: 'var(--gold)', fontWeight: 600 }}>@SpringBuyerCredit</span>
+                      )}
+                    </React.Fragment>
+                  ))}
+                  {!promptDone && (
+                    <span style={{
+                      display: 'inline-block', width: 1.5, height: 11, marginLeft: 1,
+                      background: 'var(--gold)', verticalAlign: '-1px',
+                      animation: 'hdBlink 0.5s steps(2) infinite',
+                    }} />
+                  )}
                 </span>
                 {showBuild && (
                   <span style={{
-                    marginLeft: 'auto',
                     display: 'inline-flex', alignItems: 'center', gap: 5,
                     fontSize: 9, color: 'var(--gold)', fontWeight: 600,
+                    flexShrink: 0,
                   }}>
                     <span style={{
                       width: 8, height: 8, borderRadius: '50%',
                       background: 'var(--gold)',
-                      animation: 'hdPulse 0.9s ease-in-out infinite',
+                      animation: 'hdPulse 0.5s ease-in-out infinite',
                     }} />
                     <span className="mono" style={{ letterSpacing: '0.1em' }}>BUILDING PLAN…</span>
                   </span>
                 )}
                 {showPlan && (
                   <span className="mono" style={{
-                    marginLeft: 'auto',
                     padding: '3px 8px', borderRadius: 999,
                     background: 'rgba(196,162,82,0.18)', color: 'var(--gold)',
                     fontSize: 8.5, letterSpacing: '0.12em', fontWeight: 600,
+                    flexShrink: 0,
                   }}>
-                    PLAN · {queue.length} RECIPIENTS
+                    {queue.length} RECIPIENTS · PERSONALIZED
                   </span>
                 )}
               </div>
@@ -983,7 +1152,7 @@ const HDLaptop = () => {
               <div style={{
                 padding: '10px 0 12px',
                 opacity: showPlan ? 1 : 0,
-                transition: 'opacity .35s ease',
+                transition: 'opacity .25s ease',
               }}>
                 <div style={{
                   height: 4, borderRadius: 2,
@@ -994,7 +1163,7 @@ const HDLaptop = () => {
                     height: '100%',
                     width: `${(sentCount / queue.length) * 100}%`,
                     background: allSent ? 'var(--sage)' : 'var(--gold)',
-                    transition: 'width .25s ease, background .35s ease',
+                    transition: 'width .15s ease, background .2s ease',
                     boxShadow: allSent
                       ? '0 0 10px rgba(134,166,128,0.6)'
                       : '0 0 10px rgba(196,162,82,0.5)',
@@ -1016,6 +1185,131 @@ const HDLaptop = () => {
                   </span>
                 </div>
               </div>
+
+              {/* PERSONALIZATION INSPECTOR — slides in from the right
+                  mid-cascade. Shows ONE expanded draft with quote chips
+                  pulled directly from the open-house transcript, so the
+                  visitor sees this isn't boilerplate. */}
+              {showInspector && (
+                <div style={{
+                  position: 'absolute',
+                  top: 12, right: 12, bottom: 12,
+                  width: '56%',
+                  background: 'linear-gradient(165deg, rgba(20,20,24,0.98), rgba(8,8,10,0.98))',
+                  border: '1px solid rgba(196,162,82,0.32)',
+                  borderRadius: 12,
+                  boxShadow: '0 24px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.4)',
+                  padding: '14px 16px',
+                  display: 'flex', flexDirection: 'column', gap: 10,
+                  animation: 'hdInspectorIn .35s cubic-bezier(.22,1,.36,1) both',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{
+                      width: 28, height: 28, borderRadius: '50%',
+                      background: 'var(--gold-soft)', color: 'var(--gold)',
+                      display: 'grid', placeItems: 'center',
+                      fontFamily: 'var(--sans)', fontSize: 11, fontWeight: 600,
+                    }}>S</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: 'var(--cream)', fontWeight: 500 }}>Sarah Chen</div>
+                      <div className="mono" style={{ fontSize: 8, color: 'var(--text-muted)', letterSpacing: '0.1em' }}>
+                        DRAFT · PERSONALIZED FROM TRANSCRIPT
+                      </div>
+                    </div>
+                    <span className="mono" style={{
+                      padding: '2px 7px', borderRadius: 999,
+                      background: 'rgba(134,166,128,0.16)',
+                      color: 'var(--sage)',
+                      fontSize: 8, letterSpacing: '0.12em', fontWeight: 600,
+                    }}>
+                      INTENT 94
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {['Pre-approved $1.4M', '60-day close', 'Loves the kitchen'].map(chip => (
+                      <span key={chip} className="mono" style={{
+                        padding: '3px 7px', borderRadius: 6,
+                        background: 'rgba(196,162,82,0.12)',
+                        color: 'var(--gold)',
+                        border: '1px solid rgba(196,162,82,0.32)',
+                        fontSize: 8.5, letterSpacing: '0.06em',
+                      }}>
+                        {chip}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{
+                    flex: 1,
+                    padding: '10px 12px', borderRadius: 8,
+                    background: 'rgba(255,255,255,0.025)',
+                    border: '1px solid var(--hairline)',
+                    fontSize: 10.5, lineHeight: 1.55, color: 'var(--cream-dim)',
+                    overflow: 'hidden',
+                  }}>
+                    <div style={{ color: 'var(--cream)', fontWeight: 500, marginBottom: 4 }}>
+                      Hi Sarah —
+                    </div>
+                    Thanks for stopping by <span style={{ color: 'var(--gold)' }}>412 W 78th</span> on Saturday. You mentioned wanting to <span style={{ color: 'var(--gold)' }}>close in 60 days</span> and that you're <span style={{ color: 'var(--gold)' }}>pre-approved at $1.4M</span> — wanted to send the Spring Buyer Credit summary that could shave ~30bps off your rate if we move this quarter.
+                    <div style={{ marginTop: 6, color: 'var(--cream-dim)' }}>
+                      Also: happy to walk you through the basement on a private — you didn't get to see it yesterday.
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="mono" style={{
+                      padding: '3px 7px', borderRadius: 999,
+                      background: 'rgba(134,166,128,0.14)',
+                      color: 'var(--sage)',
+                      fontSize: 8, letterSpacing: '0.12em', fontWeight: 600,
+                    }}>
+                      ✓ APPROVED
+                    </span>
+                    <span className="mono" style={{
+                      padding: '3px 7px', borderRadius: 999,
+                      background: 'rgba(255,255,255,0.04)',
+                      color: 'var(--text-dim)',
+                      fontSize: 8, letterSpacing: '0.12em',
+                    }}>
+                      SENDS TOMORROW · 9:14 AM
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* STAT BAND — slides up from the bottom at the climax.
+                  The "four hours → 2.4 seconds" comparison is the
+                  payoff stat that justifies the whole product. */}
+              {showStatBand && (
+                <div style={{
+                  position: 'absolute',
+                  left: 12, right: 12, bottom: 12,
+                  padding: '10px 14px', borderRadius: 10,
+                  background: 'linear-gradient(95deg, rgba(134,166,128,0.18), rgba(134,166,128,0.06))',
+                  border: '1px solid rgba(134,166,128,0.42)',
+                  display: 'flex', alignItems: 'center', gap: 14,
+                  animation: 'hdStatBandIn .4s cubic-bezier(.22,1,.36,1) both',
+                  boxShadow: '0 12px 28px rgba(0,0,0,0.4)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <span className="serif" style={{ fontSize: 18, color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                      4 hrs
+                    </span>
+                    <span className="serif" style={{ fontSize: 24, color: 'var(--sage)', fontWeight: 500, letterSpacing: '-0.02em' }}>
+                      → {completedAt.toFixed(1)}s
+                    </span>
+                  </div>
+                  <span style={{ width: 1, height: 26, background: 'rgba(134,166,128,0.28)' }} />
+                  <div className="mono" style={{
+                    fontSize: 9, color: 'var(--sage)',
+                    letterSpacing: '0.12em', lineHeight: 1.5,
+                  }}>
+                    14 PERSONALIZED ·<br/>EVERY QUOTE FROM THE ROOM
+                  </div>
+                  <span style={{ flex: 1 }} />
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--sage)" strokeWidth="2">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1147,11 +1441,11 @@ const HeroDevices = () => {
   const [idx, setIdx] = useHD(0);
   const tRef = useHDRef(null);
 
-  // Per-device dwell times so each animation gets exactly the time it
-  // needs — iPhone has the longest (recording → transcribing → 5
-  // transcript lines), iPad is the shortest (one sign-in then hold
-  // success briefly).
-  const dwellMs = [9500, 6500, 9500];
+  // Per-device dwell times — tuned to each device's full animation
+  // length plus a small carry-over for the climax hold. Quick cuts
+  // inside each device do the heavy lifting; the dwell just frames
+  // the beats so the carousel doesn't cut off the payoff moment.
+  const dwellMs = [5500, 5400, 6200];
 
   useHDEf(() => {
     function advance() {
@@ -1281,6 +1575,14 @@ const HeroDevices = () => {
           0%   { transform: translateY(80px) rotateZ(-4deg) scale(0.9); opacity: 0; }
           50%  { opacity: 1; }
           100% { transform: translateY(0) rotateZ(0) scale(1); opacity: 1; }
+        }
+        @keyframes hdInspectorIn {
+          0%   { transform: translateX(40px); opacity: 0; }
+          100% { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes hdStatBandIn {
+          0%   { transform: translateY(60px); opacity: 0; }
+          100% { transform: translateY(0); opacity: 1; }
         }
       `}</style>
     </div>
