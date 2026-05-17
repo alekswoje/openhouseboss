@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -177,6 +178,16 @@ _REFINE_SYSTEM_PROMPT = (
 )
 
 
+# Lowercase word/number tokens, keeping internal apostrophes and hyphens
+# ("don't", "cul-de-sac") but stripping all other punctuation. Used to
+# verify Claude only re-segmented + re-labeled — not substituted words.
+_WORD_RE = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
+
+
+def _word_tokens(text: str) -> list[str]:
+    return _WORD_RE.findall(text.lower())
+
+
 def _claude_refine_utterances(
     input_payload: list[dict],
     valid_speakers: list[str],
@@ -239,7 +250,32 @@ def _claude_refine_utterances(
             "end_ms": end,
             "text": utt_text,
         })
-    return cleaned or None
+    if not cleaned:
+        return None
+
+    # Verbatim check: refined transcript must be a re-ordering / re-segmentation
+    # of the raw words — no substitutions, no inserts, no drops. Claude
+    # occasionally "fixes" a transcription error ("It's good to meet you" →
+    # "Okay. So good to meet you"), which corrupts the source-of-truth for
+    # downstream attribution. Reject the whole refine if word multisets
+    # differ and fall back to the raw provider output.
+    raw_tokens = Counter()
+    for item in input_payload:
+        raw_tokens.update(_word_tokens(item.get("text", "")))
+    refined_tokens = Counter()
+    for item in cleaned:
+        refined_tokens.update(_word_tokens(item["text"]))
+    if raw_tokens != refined_tokens:
+        added = refined_tokens - raw_tokens
+        dropped = raw_tokens - refined_tokens
+        print(
+            f"[diarization-refine] verbatim check FAILED — falling back to raw. "
+            f"added={dict(added.most_common(8))} "
+            f"dropped={dict(dropped.most_common(8))}",
+            flush=True,
+        )
+        return None
+    return cleaned
 
 
 def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
