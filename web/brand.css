@@ -342,3 +342,119 @@
 }
 
 ::selection { background: var(--gold); color: #1a1610; }
+
+/* ============ RESPONSIVE: tablet + mobile ============
+   Marketing layout uses inline `style={{}}` with fixed pixel
+   sizes (104px hero, 56px section padding, repeat(3, 1fr) grids).
+   Inline styles win over plain CSS, so every override below has
+   to use `!important` — that's load-bearing, not a smell. */
+
+@media (max-width: 960px) {
+  /* All sections + nav + footer get tighter horizontal padding */
+  .foyer > header,
+  .foyer > section,
+  .foyer > footer {
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+  .foyer > section { padding-top: 80px !important; padding-bottom: 80px !important; }
+
+  /* Collapse every multi-column layout */
+  .foyer-cols-2,
+  .foyer-cols-3,
+  .foyer-cols-4,
+  .foyer-hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .foyer-cols-4 { gap: 32px !important; }
+
+  /* Showcase preview list/detail stacks */
+  .foyer-preview-inner {
+    grid-template-columns: 1fr !important;
+    min-height: 0 !important;
+  }
+  .foyer-preview-inner > div:first-child {
+    border-right: none !important;
+    border-bottom: 1px solid var(--hairline) !important;
+  }
+
+  /* DeviceJob: stack copy above device, drop RTL flip */
+  .foyer-device-job {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+    direction: ltr !important;
+    margin-bottom: 60px !important;
+  }
+
+  /* Section-head flex (h2 + blurb side by side) wraps */
+  .foyer-section-head {
+    flex-direction: column !important;
+    gap: 20px !important;
+    align-items: flex-start !important;
+  }
+
+  /* Headline scaling */
+  .foyer-hero-title { font-size: 56px !important; }
+  .foyer-h2 { font-size: 38px !important; }
+  .foyer-cta-title { font-size: 52px !important; }
+}
+
+@media (max-width: 720px) {
+  /* NAV: brand on the left, CTA on the right, hide the inline links.
+     Without this the brand text squishes into 3 lines as in the bug. */
+  .foyer-nav {
+    padding: 16px 20px !important;
+    gap: 12px !important;
+  }
+  .foyer-nav-links { display: none !important; }
+  .foyer-nav .crest { font-size: 17px !important; }
+  .foyer-nav .crest-mark { width: 24px !important; height: 24px !important; font-size: 13px !important; }
+  .foyer-nav .btn { padding: 10px 14px !important; font-size: 12px !important; white-space: nowrap; }
+
+  /* Hero */
+  .foyer-hero { padding: 48px 20px 72px !important; }
+  .foyer-hero-title { font-size: 44px !important; line-height: 1.02 !important; }
+
+  /* Section padding */
+  .foyer > section { padding-top: 64px !important; padding-bottom: 64px !important; padding-left: 20px !important; padding-right: 20px !important; }
+
+  /* Headlines */
+  .foyer-h2 { font-size: 32px !important; }
+  .foyer-cta-title { font-size: 40px !important; }
+
+  /* Footer */
+  .foyer-footer {
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    text-align: center !important;
+    gap: 18px !important;
+    padding: 40px 20px 32px !important;
+  }
+
+  /* HeroDevices container — shrink the fixed 660px height + scale the
+     mocks so the wider iPad/laptop fit inside a 375px viewport instead
+     of being clipped by overflow-x: hidden. */
+  .foyer-hero-grid > :nth-child(2) {
+    min-height: 460px !important;
+    height: 460px !important;
+    transform: scale(0.62);
+    transform-origin: top center;
+    margin-bottom: -180px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .foyer-hero-title { font-size: 36px !important; }
+  .foyer-h2 { font-size: 28px !important; }
+  .foyer-cta-title { font-size: 32px !important; }
+
+  /* Trust row: tighter gap, smaller logos so the row doesn't run */
+  .foyer-hero [class~="eyebrow"] + .mono { font-size: 10px !important; }
+
+  /* HeroDevices: even smaller scale at iPhone SE width */
+  .foyer-hero-grid > :nth-child(2) {
+    transform: scale(0.52);
+    margin-bottom: -220px !important;
+  }
+}

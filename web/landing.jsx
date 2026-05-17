@@ -12,16 +12,16 @@ const Landing = () => {
   };
 
   return (
-    <div className="foyer" data-screen-label="Landing" style={{ background: 'var(--bg-deep)', minHeight: '100%', width: '100%' }}>
+    <div className="foyer" data-screen-label="Landing" style={{ background: 'var(--bg-deep)', minHeight: '100%', width: '100%', overflowX: 'hidden' }}>
 
       {/* TOP NAV */}
-      <header style={{
+      <header className="foyer-nav" style={{
         padding: '28px 56px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         borderBottom: '1px solid var(--hairline)',
       }}>
         <a href="#/" style={{ textDecoration: 'none', color: 'inherit' }}><Crest /></a>
-        <nav style={{ display: 'flex', gap: 36, fontSize: 13, color: 'var(--text-dim)' }}>
+        <nav className="foyer-nav-links" style={{ display: 'flex', gap: 36, fontSize: 13, color: 'var(--text-dim)' }}>
           {/* Anchor scrolling done via onClick because index.html uses hash
               routing — `href="#pricing"` would otherwise be treated as a
               route hash and bounce back to home.
@@ -44,11 +44,11 @@ const Landing = () => {
       </header>
 
       {/* HERO */}
-      <section style={{ padding: '90px 56px 120px', position: 'relative' }}>
-        <div className="foyer-hero-grid" style={{ display: 'grid', gridTemplateColumns: '1.05fr 0.95fr', gap: 64, alignItems: 'center' }}>
+      <section className="foyer-hero" style={{ padding: '90px 56px 120px', position: 'relative' }}>
+        <div className="foyer-hero-grid foyer-cols-2" style={{ display: 'grid', gridTemplateColumns: '1.05fr 0.95fr', gap: 64, alignItems: 'center' }}>
           <div>
             <Eyebrow num="01">For the modern broker</Eyebrow>
-            <h1 className="serif" style={{
+            <h1 className="serif foyer-hero-title" style={{
               fontSize: 104,
               lineHeight: 0.94,
               margin: '32px 0 0',
@@ -95,15 +95,15 @@ const Landing = () => {
 
       {/* THE METHOD — 3 step */}
       <section id="method" style={{ padding: '120px 56px', scrollMarginTop: 80 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 80, alignItems: 'start' }}>
+        <div className="foyer-cols-2" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 80, alignItems: 'start' }}>
           <div>
             <Eyebrow num="02">The method</Eyebrow>
-            <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+            <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
               Three movements,<br/>
               <span className="serif-it" style={{ color: 'var(--gold)' }}>one finished record.</span>
             </h2>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1, background: 'var(--hairline)' }}>
+          <div className="foyer-cols-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1, background: 'var(--hairline)' }}>
             {[
               { n: '01', title: 'Record', body: 'Tap once when the first guest arrives. Open House Copilot captures every conversation through the open house, in pocket, on airplane mode if needed.' },
               { n: '02', title: 'Recognize', body: "Guests sign in on your iPad — we match each voice to a name, separate the buyers from the browsers, and pull out what they said matters to them." },
@@ -124,10 +124,10 @@ const Landing = () => {
       {/* SHOWCASE — product capture */}
       <section style={{ padding: '120px 56px', background: 'var(--bg)' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 60 }}>
+          <div className="foyer-section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 60 }}>
             <div>
               <Eyebrow num="03">A closer look</Eyebrow>
-              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+              <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
                 What you see, <span className="serif-it" style={{ color: 'var(--gold)' }}>Monday morning.</span>
               </h2>
             </div>
@@ -146,7 +146,7 @@ const Landing = () => {
             boxShadow: 'var(--shadow-deep)',
             overflow: 'hidden',
           }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', minHeight: 460 }}>
+            <div className="foyer-preview-inner" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', minHeight: 460 }}>
               <div style={{ borderRight: '1px solid var(--hairline)', padding: 28 }}>
                 <div className="eyebrow">Saturday, May 10</div>
                 <div className="serif" style={{ fontSize: 24, color: 'var(--cream)', marginTop: 6 }}>412 W 78th Street</div>
@@ -208,10 +208,10 @@ const Landing = () => {
       {/* NEW FEATURES — AI you can talk to */}
       <section style={{ padding: '120px 56px', background: 'var(--bg-deep)' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 60 }}>
+          <div className="foyer-section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 60 }}>
             <div>
               <Eyebrow num="03.5">Inside the inbox</Eyebrow>
-              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+              <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
                 An AI you can <span className="serif-it" style={{ color: 'var(--gold)' }}>actually talk to.</span>
               </h2>
             </div>
@@ -222,7 +222,7 @@ const Landing = () => {
           </div>
 
           {/* Three feature cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
+          <div className="foyer-cols-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
             {/* Ask your inbox */}
             <FeatureCard
               eyebrow="01 / LEADS AGENT"
@@ -353,10 +353,10 @@ const Landing = () => {
       {/* THREE JOBS — each device, one role, all automated */}
       <section style={{ padding: '120px 56px 60px', background: 'var(--bg-deep)' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 80 }}>
+          <div className="foyer-section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 80 }}>
             <div>
               <Eyebrow num="04">Three devices, three jobs</Eyebrow>
-              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+              <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
                 You bring the people. <span className="serif-it" style={{ color: 'var(--gold)' }}>Open House Copilot does the rest.</span>
               </h2>
             </div>
@@ -423,7 +423,7 @@ const Landing = () => {
 
       {/* PROOF — pull quotes */}
       <section style={{ padding: '140px 56px', background: 'var(--bg-deep)' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 48 }}>
+        <div className="foyer-cols-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 48 }}>
           {[
             { quote: "It is the difference between hosting an open house and harvesting one.", who: 'Eliana Morales', title: 'Top producer, UWS' },
             { quote: "Open House Copilot wrote a follow-up that closed a $2.4M townhouse. I sent it word for word.", who: 'David Chen', title: 'Principal broker' },
@@ -445,7 +445,7 @@ const Landing = () => {
 
       {/* STATS */}
       <section style={{ padding: '90px 56px', borderTop: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 48 }}>
+        <div className="foyer-cols-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 48 }}>
           <Stat value="9" suffix="min" label="Avg. response time" />
           <Stat value="3.4" suffix="×" label="More follow-ups sent" />
           <Stat value="92" suffix="%" label="Speaker recognition" />
@@ -456,10 +456,10 @@ const Landing = () => {
       {/* PRICING */}
       <section id="pricing" style={{ padding: '140px 56px', scrollMarginTop: 24 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 72 }}>
+          <div className="foyer-section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 72 }}>
             <div>
               <Eyebrow num="05">Pricing</Eyebrow>
-              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+              <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
                 Start free.<br/>
                 <span className="serif-it" style={{ color: 'var(--gold)' }}>Pay when it earns its keep.</span>
               </h2>
@@ -470,7 +470,7 @@ const Landing = () => {
             </div>
           </div>
 
-          <div id="pricing-tiers" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24, scrollMarginTop: 64 }}>
+          <div id="pricing-tiers" className="foyer-cols-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24, scrollMarginTop: 64 }}>
             <PricingTier
               tier="TRIAL"
               price="$0"
@@ -526,10 +526,10 @@ const Landing = () => {
       {/* SECURITY */}
       <section id="security" style={{ padding: '140px 56px', scrollMarginTop: 24, background: 'var(--bg)' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 80, alignItems: 'start', marginBottom: 64 }}>
+          <div className="foyer-cols-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 80, alignItems: 'start', marginBottom: 64 }}>
             <div>
               <Eyebrow num="06">Security</Eyebrow>
-              <h2 className="serif" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
+              <h2 className="serif foyer-h2" style={{ fontSize: 56, lineHeight: 1, marginTop: 28, color: 'var(--cream)' }}>
                 Quietly.<br/>
                 <span className="serif-it" style={{ color: 'var(--gold)' }}>And on the record.</span>
               </h2>
@@ -552,7 +552,7 @@ const Landing = () => {
               live product (kiosk disclosure, LIVE indicator on iOS,
               DELETE /sessions/{id}, DELETE /me, HSTS middleware,
               post-transcription AAI delete). No aspirational claims. */}
-          <div id="security-pillars" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, background: 'var(--hairline)', scrollMarginTop: 64 }}>
+          <div id="security-pillars" className="foyer-cols-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, background: 'var(--hairline)', scrollMarginTop: 64 }}>
             {[
               { title: 'Consent on every sign-in',
                 body: 'Every kiosk shows a recording notice above the form and a consent line above the submit button. Required for two-party-consent states; safe everywhere.' },
@@ -579,7 +579,7 @@ const Landing = () => {
       {/* CTA */}
       <section style={{ padding: '140px 56px', textAlign: 'center', borderTop: '1px solid var(--hairline)' }}>
         <Eyebrow num="07">An invitation</Eyebrow>
-        <h2 className="serif" style={{ fontSize: 88, lineHeight: 1, margin: '32px 0 0', color: 'var(--cream)' }}>
+        <h2 className="serif foyer-cta-title" style={{ fontSize: 88, lineHeight: 1, margin: '32px 0 0', color: 'var(--cream)' }}>
           The next cohort opens <span className="serif-it" style={{ color: 'var(--gold)' }}>soon.</span>
         </h2>
         <p style={{ maxWidth: 520, margin: '32px auto 0', color: 'var(--text-dim)', fontSize: 16, lineHeight: 1.7 }}>
@@ -605,7 +605,7 @@ const Landing = () => {
       )}
 
       {/* FOOTER */}
-      <footer style={{ padding: '60px 56px 40px', borderTop: '1px solid var(--hairline)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <footer className="foyer-footer" style={{ padding: '60px 56px 40px', borderTop: '1px solid var(--hairline)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Crest size={18} />
         <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.14em' }}>
           MADE IN NEW YORK · © MMXXVI
@@ -639,7 +639,7 @@ function DeviceJob({ eyebrow, title, bullets, device, scale = 0.6, flip = false 
             : device === 'ipad'   ? { w: 920, h: 660 }
             : { w: 300, h: 612 };
   return (
-    <div style={{
+    <div className="foyer-device-job" style={{
       display: 'grid',
       gridTemplateColumns: flip ? '1fr 1fr' : '1fr 1fr',
       gap: 60, alignItems: 'center',
