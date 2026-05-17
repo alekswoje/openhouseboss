@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0E31B02AC791DFD9C9CB69FC /* BrandingEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE931A1694992C972E5BD12A /* BrandingEditorSheet.swift */; };
 		1083B061DCE584035504F74C /* LiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 701CBCDE2440532BB88C1222 /* LiveView.swift */; };
+		1AD82B78610C46F108BD8160 /* CopilotSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595408CFBC89DE6F3AFDF033 /* CopilotSheet.swift */; };
 		2E66898E45212FB451BFFBFB /* StopRecordingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */; };
 		31252B8AD4EA911D1CFE924E /* ToggleMuteIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B0BA6C383B3D4BF64E34FD /* ToggleMuteIntent.swift */; };
 		318599127FDC9978A2EEFE2E /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A14FF6B9071E2F1778CD44 /* APIClient.swift */; };
@@ -84,6 +85,7 @@
 		47AEF0ECEC367647C6EA6639 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		486C86D53F7F13F83881027C /* FollowupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowupView.swift; sourceTree = "<group>"; };
 		49A00317B74209CC35C75028 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		595408CFBC89DE6F3AFDF033 /* CopilotSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopilotSheet.swift; sourceTree = "<group>"; };
 		661C2F2EF9FC742158DE3390 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		6E0DF985428F286A7A4014BD /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		701CBCDE2440532BB88C1222 /* LiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveView.swift; sourceTree = "<group>"; };
@@ -136,6 +138,7 @@
 				BF8BCE20CB28CFE1DEA036E9 /* AudioRecorder.swift */,
 				BE931A1694992C972E5BD12A /* BrandingEditorSheet.swift */,
 				49A00317B74209CC35C75028 /* Config.swift */,
+				595408CFBC89DE6F3AFDF033 /* CopilotSheet.swift */,
 				17AAE43B7C807B2B3D1CD658 /* DevMode.swift */,
 				486C86D53F7F13F83881027C /* FollowupView.swift */,
 				B6DB7C9D6CA21742ED702246 /* foyer-loading.gif */,
@@ -269,6 +272,7 @@
 				D2521FB2DA85A9BB1EE7EBA8 /* AudioRecorder.swift in Sources */,
 				0E31B02AC791DFD9C9CB69FC /* BrandingEditorSheet.swift in Sources */,
 				6A28EBEABC7ACEE2205D25C5 /* Config.swift in Sources */,
+				1AD82B78610C46F108BD8160 /* CopilotSheet.swift in Sources */,
 				AA19024C60B17597536B6CED /* DevMode.swift in Sources */,
 				8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */,
 				A8CC3AF05D4BE251321536C7 /* FoyerBrand.swift in Sources */,

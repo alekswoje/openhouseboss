@@ -279,6 +279,8 @@ struct CopilotSheet: View {
     private func toolCallChips(_ calls: [APIClient.CopilotToolCall]) -> some View {
         // Wrapping chip strip — visual hint at what the agent did under the
         // hood. Reads like "Reviewed 12 sessions · Looked up Maple St".
+        // FlowLayout lives in RecordView.swift (shared with VisitorDetailView's
+        // signal chips); default spacing of 8 is what we want here too.
         FlowLayout(spacing: 6) {
             ForEach(calls) { c in
                 HStack(spacing: 4) {
@@ -443,68 +445,3 @@ struct CopilotSheet: View {
     }
 }
 
-// MARK: – FlowLayout — minimal wrapping H-stack for the chip strip
-
-// SwiftUI doesn't ship a wrapping HStack. This is a tiny Layout implementation
-// that flows children left-to-right, wrapping when the proposed width runs
-// out. Used for the tool-call chips under each assistant turn so a long
-// chain of tool calls doesn't push the layout sideways or clip off-screen.
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        let rows = arrangeRows(subviews: subviews, maxWidth: maxWidth)
-        let height = rows.reduce(0) { acc, row in
-            acc + (row.maxHeight) + (acc > 0 ? spacing : 0)
-        }
-        let width = rows.map(\.totalWidth).max() ?? 0
-        return CGSize(width: min(width, maxWidth), height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let rows = arrangeRows(subviews: subviews, maxWidth: bounds.width)
-        var y = bounds.minY
-        for row in rows {
-            var x = bounds.minX
-            for item in row.items {
-                let size = subviews[item.index].sizeThatFits(.unspecified)
-                subviews[item.index].place(
-                    at: CGPoint(x: x, y: y),
-                    anchor: .topLeading,
-                    proposal: ProposedViewSize(size)
-                )
-                x += size.width + spacing
-            }
-            y += row.maxHeight + spacing
-        }
-    }
-
-    private struct Row {
-        var items: [(index: Int, width: CGFloat)] = []
-        var maxHeight: CGFloat = 0
-        var totalWidth: CGFloat = 0
-    }
-
-    private func arrangeRows(subviews: Subviews, maxWidth: CGFloat) -> [Row] {
-        var rows: [Row] = []
-        var current = Row()
-        for (i, sub) in subviews.enumerated() {
-            let size = sub.sizeThatFits(.unspecified)
-            let projected = current.totalWidth
-                + (current.items.isEmpty ? 0 : spacing)
-                + size.width
-            if !current.items.isEmpty, projected > maxWidth {
-                rows.append(current)
-                current = Row()
-            }
-            current.items.append((index: i, width: size.width))
-            current.totalWidth = current.items.reduce(0) {
-                $0 + $1.width
-            } + spacing * CGFloat(max(0, current.items.count - 1))
-            current.maxHeight = max(current.maxHeight, size.height)
-        }
-        if !current.items.isEmpty { rows.append(current) }
-        return rows
-    }
-}

@@ -91,6 +91,11 @@ struct IPadAgentApp: View {
     // Sheet flag for the Add Listing flow opened from the Kiosk launcher
     // or the Listings tab. Both surfaces present the same editor.
     @State private var showAddListing: Bool = false
+    // Copilot — global "ask anything" agent. Sheet is presented from the
+    // shell so it floats above the side rail, LiveSessionBar, and tab bar
+    // on every surface. Opened by the Ask Copilot hero on Home or the
+    // floating pill that lives on every other tab.
+    @State private var showCopilot: Bool = false
 
     // Plays once per cold launch when the user is signed in. Renders on top
     // of the main UI from the very first frame so the agent sees the
@@ -159,6 +164,17 @@ struct IPadAgentApp: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 14)
                 }
+                // Floating Ask pill on every iPad surface except Home (Home
+                // shows the bigger hero card). Sits at the trailing edge so
+                // it doesn't compete with the centered LiveSessionBar.
+                if shouldShowCopilotFAB {
+                    HStack {
+                        Spacer()
+                        CopilotFloatingPill(onTap: { showCopilot = true })
+                            .padding(.trailing, 24)
+                            .padding(.bottom, hasLiveContext ? 88 : 22)
+                    }
+                }
             }
             if showWelcome {
                 WelcomeOverlay(name: firstName, greeting: welcomeIsFirstTime ? "Welcome," : "Welcome back,")
@@ -192,6 +208,12 @@ struct IPadAgentApp: View {
                     if let listing { activeListing = listing }
                     showAddListing = false
                 }
+            )
+        }
+        .sheet(isPresented: $showCopilot) {
+            CopilotSheet(
+                onDismiss: { showCopilot = false },
+                onAction: { action in handleCopilotAction(action) }
             )
         }
         .onAppear {
@@ -254,6 +276,62 @@ struct IPadAgentApp: View {
             } catch {
                 // User cancelled or failed — stay locked.
             }
+        }
+    }
+
+    // Show the floating Ask pill on every screen except Home (which has the
+    // bigger hero card built into the page). Hidden under the WelcomeOverlay
+    // so it doesn't poke out during the cold-start animation, and hidden in
+    // kiosk-locked mode where guests are using the iPad.
+    private var shouldShowCopilotFAB: Bool {
+        !kioskLocked && !showWelcome && (tab != .home || viewingPastSession != nil)
+    }
+
+    // Route a Copilot navigation action — the model called open_screen and
+    // the user tapped the resulting "Open …" button on the assistant turn.
+    // We just dispatch to the same primitives the tabs use (selectTab,
+    // viewingPastSession, activeSessionId for the Leads pre-filter, etc.)
+    // so the agent lands on the same surface a normal tap would produce.
+    @MainActor
+    private func handleCopilotAction(_ action: CopilotAction) {
+        showCopilot = false
+        switch action.target {
+        case "session":
+            if let id = action.sessionId, !id.isEmpty {
+                viewingPastSession = id
+            }
+        case "lead":
+            // Land on the Leads inbox pre-filtered to the lead's session.
+            // The current IPadLeads surface doesn't take a (name, speaker)
+            // deep selection, so we drop the user one click away — they
+            // see the right lead in the list.
+            if let id = action.sessionId, !id.isEmpty {
+                activeSessionId = id
+            }
+            selectTab(.leads)
+        case "followup":
+            // No dedicated deep link to the per-lead followup composer in
+            // the iPad pane (it's a sheet inside Leads). Best-effort: take
+            // them to that session's Leads view.
+            if let id = action.sessionId, !id.isEmpty {
+                activeSessionId = id
+            }
+            selectTab(.leads)
+        case "leads":
+            if let id = action.sessionId, !id.isEmpty {
+                activeSessionId = id
+            } else {
+                activeSessionId = nil
+            }
+            selectTab(.leads)
+        case "insights":
+            selectTab(.insights)
+        case "record":
+            selectTab(.record)
+        case "kiosk":
+            selectTab(.kiosk)
+        default:
+            break
         }
     }
 
@@ -339,12 +417,27 @@ struct IPadAgentApp: View {
         ZStack(alignment: .bottom) {
             mainPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Reserve room at the bottom so the floating tab bar (and
-                // optional live bar) never covers pane content.
+                // Reserve room at the bottom so the floating tab bar — plus
+                // the optional live bar and floating Ask pill — never cover
+                // pane content. Heights add up to the actual stack height in
+                // `compactShell`'s bottom VStack.
                 .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: hasLiveContext ? 132 : 72)
+                    let base: CGFloat = 72
+                    let liveBar: CGFloat = hasLiveContext ? 60 : 0
+                    let fab: CGFloat = shouldShowCopilotFAB ? 50 : 0
+                    Color.clear.frame(height: base + liveBar + fab)
                 }
             VStack(spacing: 8) {
+                // Floating Ask pill on every iPhone surface except Home
+                // (where the big hero card lives). Trailing-aligned so the
+                // tab bar's center icons stay primary.
+                if shouldShowCopilotFAB {
+                    HStack {
+                        Spacer()
+                        CopilotFloatingPill(onTap: { showCopilot = true })
+                            .padding(.trailing, 16)
+                    }
+                }
                 if hasLiveContext {
                     LiveSessionBar(
                         store: store,
@@ -386,7 +479,8 @@ struct IPadAgentApp: View {
                 },
                 onOpenSession: { id in
                     viewingPastSession = id
-                }
+                },
+                onAskCopilot: { showCopilot = true }
             )
         case .record:
             IPadRecord(
@@ -1019,6 +1113,9 @@ private struct IPadHome: View {
     var onStartKiosk: (Listing) -> Void
     var onStartRecording: (Listing?) -> Void
     var onOpenSession: (String) -> Void
+    // Fired by the Ask Copilot hero card. The parent IPadAgentApp owns the
+    // sheet presentation so it can float above the side rail / tab bar.
+    var onAskCopilot: () -> Void
 
     @Environment(\.horizontalSizeClass) private var hSize
     private var isCompact: Bool { hSize == .compact }
@@ -1035,6 +1132,7 @@ private struct IPadHome: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: isCompact ? 24 : 36) {
                 greeting
+                CopilotHeroCard(onTap: onAskCopilot)
                 if store.unfinishedRecording != nil {
                     unfinishedRecordingBanner
                 }
