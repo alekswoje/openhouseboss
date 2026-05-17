@@ -273,11 +273,15 @@ struct ScriptSummary: Codable, Hashable, Identifiable {
     let description: String
     let stepCount: Int
     var isPreset: Bool = false
+    // True when the backend has a stored pre-edit snapshot we can roll
+    // back to. Drives the Undo affordance after an agent-applied edit.
+    var canUndo: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, name, description
         case stepCount = "step_count"
         case isPreset = "is_preset"
+        case canUndo = "can_undo"
     }
 }
 

@@ -640,6 +640,62 @@ actor APIClient {
         return try JSONDecoder().decode(ScriptDetailDTO.self, from: data)
     }
 
+    // ── Agent-driven script editing ─────────────────────────────────────
+    //
+    // The instruction is plain language ("rephrase the opener to be
+    // friendlier", "add a step about pricing", etc.). The backend pipes it
+    // through Claude with a forced tool call so the returned shape matches
+    // ScriptDetailDTO. Snapshots the pre-edit state for undo.
+
+    // POST /scripts/agent-edit/{id} — mutate in place.
+    func agentEditScript(id: String, instruction: String) async throws -> ScriptDetailDTO {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/agent-edit/\(id)"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Agent edits hit Claude and can take ~10–20s; bump per-request
+        // timeout so the URLSession default doesn't cancel them early.
+        req.timeoutInterval = 60
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["instruction": instruction])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ScriptDetailDTO.self, from: data)
+    }
+
+    // POST /scripts/agent-create — build a fresh script from a brief.
+    func agentCreateScript(instruction: String) async throws -> ScriptDetailDTO {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/agent-create"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 60
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["instruction": instruction])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ScriptDetailDTO.self, from: data)
+    }
+
+    // POST /scripts/{id}/undo — roll back to the pre-edit snapshot. Returns
+    // the restored Script, OR a deletion sentinel { "deleted": id } when
+    // the snapshot was "absent" (i.e. the script was created by the agent).
+    enum UndoOutcome {
+        case restored(ScriptDetailDTO)
+        case deleted(String)
+    }
+    func undoScript(id: String) async throws -> UndoOutcome {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts/\(id)/undo"))
+        req.httpMethod = "POST"
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct DeletedWrapper: Codable { let deleted: String }
+        if let restored = try? JSONDecoder().decode(ScriptDetailDTO.self, from: data) {
+            return .restored(restored)
+        }
+        let wrapper = try JSONDecoder().decode(DeletedWrapper.self, from: data)
+        return .deleted(wrapper.deleted)
+    }
+
     // POST /leads — adds a manual lead with no audio. The backend creates
     // a kind="manual" session so the lead flows into the inbox like any
     // recorded visitor. Returns the new session so callers can route into
@@ -1388,6 +1444,65 @@ actor APIClient {
         let (data, response) = try await coldStartPOST(request: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(LeadsAgentReply.self, from: data)
+    }
+
+    // MARK: – Copilot (global "ask anything" agent)
+
+    // One turn of the home-screen Copilot conversation. iOS sends the full
+    // chat history (text-only); backend runs the tool-use loop and returns
+    // a final assistant reply plus an optional navigation action.
+    struct CopilotTurn: Codable, Hashable, Identifiable {
+        let role: String   // "user" | "assistant"
+        let text: String
+        var id: String { "\(role):\(text.hashValue)" }
+    }
+
+    struct CopilotToolCall: Codable, Hashable, Identifiable {
+        let name: String
+        let summary: String
+        var id: String { "\(name):\(summary.hashValue)" }
+    }
+
+    // The model fills in only the fields relevant to the chosen target —
+    // e.g. .lead needs sessionId + name; .insights / .record need neither.
+    struct CopilotAction: Codable, Hashable {
+        let target: String       // "session"|"lead"|"followup"|"leads"|"insights"|"record"|"kiosk"
+        let sessionId: String?
+        let name: String?
+        let speaker: String?
+        enum CodingKeys: String, CodingKey {
+            case target
+            case sessionId = "session_id"
+            case name
+            case speaker
+        }
+    }
+
+    struct CopilotReply: Codable, Hashable {
+        let text: String
+        let action: CopilotAction?
+        let toolCalls: [CopilotToolCall]
+        enum CodingKeys: String, CodingKey {
+            case text, action
+            case toolCalls = "tool_calls"
+        }
+    }
+
+    func askCopilot(turns: [CopilotTurn]) async throws -> CopilotReply {
+        let body: [String: Any] = [
+            "turns": turns.map { ["role": $0.role, "text": $0.text] }
+        ]
+        var req = try crmRequest("agent/chat", method: "POST", body: body)
+        // Tool-use loop can chain a few Claude calls — give it real headroom
+        // but stay well under the URLSession resource cap.
+        req.timeoutInterval = 60
+        // Read-only and idempotent (no sends or mutations), so a transient
+        // 502 retry is safe.
+        let (data, response) = try await coldStartPOST(
+            request: req, firstTimeout: 60, retryTimeout: 45
+        )
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(CopilotReply.self, from: data)
     }
 
     func executeLeadsAgentPlan(

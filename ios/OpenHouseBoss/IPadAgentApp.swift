@@ -504,6 +504,7 @@ private struct CompactBottomTabBar: View {
                 Image(systemName: active ? t.iconFilled : t.iconOutline)
                     .font(.system(size: 19, weight: active ? .semibold : .regular))
                     .foregroundStyle(active ? FoyerTheme.gold : FoyerTheme.creamDim)
+                    .contentTransition(.symbolEffect(.replace))
                 Text(t.label)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(active ? FoyerTheme.cream : FoyerTheme.textMuted)
@@ -524,6 +525,7 @@ private struct CompactBottomTabBar: View {
                       : "ellipsis")
                     .font(.system(size: 19, weight: isMoreActive ? .semibold : .regular))
                     .foregroundStyle(isMoreActive ? FoyerTheme.gold : FoyerTheme.creamDim)
+                    .contentTransition(.symbolEffect(.replace))
                 Text(isMoreActive ? tab.label : "More")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(isMoreActive ? FoyerTheme.cream : FoyerTheme.textMuted)
@@ -6226,8 +6228,7 @@ private struct IPadScripts: View {
     private var isCompact: Bool { hSize == .compact }
 
     @State private var openScriptId: String? = nil
-    @State private var editingScriptId: String? = nil
-    @State private var showNewScript: Bool = false
+    @State private var promptTarget: AgentScriptTarget? = nil
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -6262,34 +6263,32 @@ private struct IPadScripts: View {
                 scriptId: ref.id,
                 store: store,
                 onClose: { openScriptId = nil },
-                onEdit: { id in
-                    openScriptId = nil
-                    editingScriptId = id
+                onAskAI: { id, name in
+                    promptTarget = .edit(scriptId: id, scriptName: name)
                 }
             )
         }
-        .sheet(isPresented: $showNewScript) {
-            ScriptEditorSheet(
-                existingId: nil,
-                onCancel: { showNewScript = false },
-                onSaved: {
-                    showNewScript = false
-                    Task { await store.refreshScripts() }
+        .sheet(item: $promptTarget) { target in
+            AgentScriptPromptSheet(
+                target: target,
+                onCancel: { promptTarget = nil },
+                onApplied: { result in
+                    promptTarget = nil
+                    Task {
+                        await store.refreshScripts()
+                        await MainActor.run {
+                            // If we just created a brand-new script, jump
+                            // straight into its detail view so the agent
+                            // sees what the AI produced.
+                            if case .create = target {
+                                openScriptId = result.id
+                            }
+                        }
+                    }
                 }
             )
-        }
-        .sheet(item: Binding(
-            get: { editingScriptId.map { ScriptIdRef(id: $0) } },
-            set: { editingScriptId = $0?.id }
-        )) { ref in
-            ScriptEditorSheet(
-                existingId: ref.id,
-                onCancel: { editingScriptId = nil },
-                onSaved: {
-                    editingScriptId = nil
-                    Task { await store.refreshScripts() }
-                }
-            )
+            .presentationDetents([.height(360), .medium])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -6300,17 +6299,18 @@ private struct IPadScripts: View {
                     .font(.system(size: 34, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
                     .tracking(-0.5)
-                Text("The walkthrough you want to deliver at every open house. We grade each session's transcript against your default script.")
+                Text("The walkthrough you deliver at every open house. Describe changes in plain language — AI applies them, you can always undo.")
                     .font(.system(size: 13))
                     .foregroundStyle(FoyerTheme.textDim)
                     .lineSpacing(3)
             }
             Spacer()
-            Button { showNewScript = true } label: {
+            Button { promptTarget = .create } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "plus")
+                    Image(systemName: "sparkles")
                         .font(.system(size: 12, weight: .semibold))
-                    Text("New script")
+                        .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                    Text("New with AI")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(FoyerTheme.inkOnGold)
@@ -6382,18 +6382,264 @@ private struct IPadScripts: View {
     }
 }
 
+// ── Agent prompt sheet ──────────────────────────────────────────────────
+//
+// The only way to edit or create scripts in the app. The user describes the
+// change in plain language, the backend pipes it through Claude (with a
+// forced tool call so the shape matches), and we refresh the list.
+//
+// Designed for mobile: short height, single big input that grows, sparkly
+// "Ask AI" send button. The sheet auto-focuses the text field so the
+// keyboard slides up as soon as it appears — one tap from "Edit" to typing.
+
+enum AgentScriptTarget: Identifiable, Hashable {
+    case create
+    case edit(scriptId: String, scriptName: String)
+
+    var id: String {
+        switch self {
+        case .create: return "__create__"
+        case .edit(let id, _): return id
+        }
+    }
+}
+
+private struct AgentScriptPromptSheet: View {
+    let target: AgentScriptTarget
+    var onCancel: () -> Void
+    var onApplied: (APIClient.ScriptDetailDTO) -> Void
+
+    @State private var instruction: String = ""
+    @State private var sending: Bool = false
+    @State private var errorMessage: String?
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            promptField
+            if let err = errorMessage {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+            }
+            examples
+            Spacer(minLength: 0)
+            sendBar
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color(white: 0.06).ignoresSafeArea())
+        .onAppear { fieldFocused = true }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                    Text(target.id == "__create__" ? "CREATE WITH AI" : "EDIT WITH AI")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+                Text(titleText)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button { onCancel() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .frame(width: 30, height: 30)
+                    .background(Color.white.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(sending)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+    }
+
+    private var titleText: String {
+        switch target {
+        case .create: return "Describe the new script you want"
+        case .edit(_, let name): return "What should I change in \"\(name)\"?"
+        }
+    }
+
+    private var promptField: some View {
+        TextField(
+            "",
+            text: $instruction,
+            prompt: Text(placeholderText).foregroundStyle(FoyerTheme.textMuted.opacity(0.7)),
+            axis: .vertical
+        )
+        .font(.system(size: 15))
+        .foregroundStyle(FoyerTheme.cream)
+        .tint(FoyerTheme.gold)
+        .focused($fieldFocused)
+        .lineLimit(3...6)
+        .padding(14)
+        .background(Color.black, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .padding(.horizontal, 20)
+        .padding(.bottom, 10)
+        .disabled(sending)
+    }
+
+    private var placeholderText: String {
+        switch target {
+        case .create:
+            return "e.g. \u{201C}A 6-step seller flow that pitches my pricing strategy and ends with a free home valuation offer.\u{201D}"
+        case .edit:
+            return "e.g. \u{201C}Rephrase the opener to be friendlier\u{201D} or \u{201C}Add a step about pricing the home.\u{201D}"
+        }
+    }
+
+    @ViewBuilder
+    private var examples: some View {
+        let hints: [String] = {
+            switch target {
+            case .create:
+                return [
+                    "Buyer flow with a $2k rebate close",
+                    "5-step luxury listing pitch",
+                    "Short script for FSBO conversations",
+                ]
+            case .edit:
+                return [
+                    "Make the close more direct",
+                    "Add a step about financing options",
+                    "Remove the rebate language",
+                ]
+            }
+        }()
+        VStack(alignment: .leading, spacing: 6) {
+            Text("EXAMPLES")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textMuted)
+            FlowChips(items: hints) { hint in
+                instruction = hint
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
+    }
+
+    private var sendBar: some View {
+        HStack(spacing: 10) {
+            Spacer()
+            Button { Task { await send() } } label: {
+                HStack(spacing: 8) {
+                    if sending {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(FoyerTheme.inkOnGold)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 13, weight: .semibold))
+                            .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                    }
+                    Text(sending ? "Working…" : "Ask AI")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(FoyerTheme.gold, in: Capsule())
+                .opacity(canSend ? 1 : 0.5)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 18)
+    }
+
+    private var canSend: Bool {
+        !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sending
+    }
+
+    private func send() async {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        sending = true
+        errorMessage = nil
+        defer { sending = false }
+        do {
+            let result: APIClient.ScriptDetailDTO
+            switch target {
+            case .create:
+                result = try await APIClient.shared.agentCreateScript(instruction: trimmed)
+            case .edit(let id, _):
+                result = try await APIClient.shared.agentEditScript(id: id, instruction: trimmed)
+            }
+            onApplied(result)
+        } catch {
+            errorMessage = "Couldn't apply that: \(error.localizedDescription)"
+        }
+    }
+}
+
+// Tiny wrapping chip row — used by the prompt sheet to show example
+// instructions the agent can tap as starters. No external lib, just a
+// hand-rolled flow layout that wraps on width.
+private struct FlowChips: View {
+    let items: [String]
+    var onTap: (String) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(items, id: \.self) { item in
+                Button { onTap(item) } label: {
+                    Text(item)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.06), in: Capsule())
+                        .overlay(
+                            Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 // Full-text reader for a single script. Loads the verbatim quotes + intents
 // from GET /scripts/{id}, groups them by section, and offers Set-as-default
-// plus (for user scripts) Edit. Presets are read-only.
+// plus an Ask-AI edit affordance. Editing is agent-driven only — there is
+// no manual field editor anywhere in the app for scripts.
 private struct ScriptDetailSheet: View {
     let scriptId: String
     let store: SessionStore
     var onClose: () -> Void
-    var onEdit: (String) -> Void
+    // Triggered when the agent taps the sparkly "Ask AI" button. The parent
+    // is responsible for showing the AgentScriptPromptSheet — we hand back
+    // the id + display name so the prompt header can read naturally.
+    var onAskAI: (String, String) -> Void
 
     @State private var detail: APIClient.ScriptDetailDTO?
     @State private var loading: Bool = true
     @State private var loadError: String?
+    @State private var undoing: Bool = false
+    @State private var undoError: String?
+    @State private var pendingDelete: Bool = false
+    @State private var deleting: Bool = false
 
     private var summary: ScriptSummary? {
         store.availableScripts.first(where: { $0.id == scriptId })
@@ -6419,6 +6665,7 @@ private struct ScriptDetailSheet: View {
                             .font(.system(size: 13))
                             .foregroundStyle(FoyerTheme.terracotta)
                     }
+                    destructiveActions
                     Spacer(minLength: 20)
                 }
                 .padding(.horizontal, 24)
@@ -6433,14 +6680,104 @@ private struct ScriptDetailSheet: View {
                     Button("Close") { onClose() }
                         .tint(FoyerTheme.gold)
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Edit") { onEdit(scriptId) }
+                if summary?.canUndo == true {
+                    ToolbarItem(placement: .navigation) {
+                        Button { Task { await undo() } } label: {
+                            if undoing {
+                                ProgressView().controlSize(.small).tint(FoyerTheme.gold)
+                            } else {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                        }
                         .tint(FoyerTheme.gold)
+                        .disabled(undoing)
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        onAskAI(scriptId, summary?.name ?? "this script")
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 12, weight: .semibold))
+                                .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                            Text("Ask AI")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .foregroundStyle(FoyerTheme.gold)
+                    }
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
+            .alert(
+                summary?.isPreset == true ? "Reset to factory?" : "Delete this script?",
+                isPresented: $pendingDelete
+            ) {
+                Button("Cancel", role: .cancel) {}
+                Button(summary?.isPreset == true ? "Reset" : "Delete", role: .destructive) {
+                    Task { await performDelete() }
+                }
+            } message: {
+                Text(summary?.isPreset == true
+                     ? "All edits will be discarded and the original factory version will come back."
+                     : "This can't be undone. Past sessions graded against this script keep their results, but new sessions won't have it as an option.")
+            }
         }
         .task { await load() }
+    }
+
+    @ViewBuilder
+    private var destructiveActions: some View {
+        if let s = summary {
+            VStack(spacing: 8) {
+                if let err = undoError {
+                    Text(err)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.terracotta)
+                }
+                Button(role: .destructive) { pendingDelete = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: s.isPreset ? "arrow.uturn.backward.circle" : "trash")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(s.isPreset ? "Reset to preset" : "Delete script")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(FoyerTheme.terracotta.opacity(0.10), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(deleting || undoing)
+            }
+            .padding(.top, 12)
+        }
+    }
+
+    private func undo() async {
+        undoing = true
+        undoError = nil
+        defer { undoing = false }
+        do {
+            _ = try await APIClient.shared.undoScript(id: scriptId)
+            await store.refreshScripts()
+            await load()  // refresh visible step bodies
+        } catch {
+            undoError = "Couldn't undo: \(error.localizedDescription)"
+        }
+    }
+
+    private func performDelete() async {
+        deleting = true
+        defer { deleting = false }
+        do {
+            try await APIClient.shared.deleteScript(id: scriptId)
+            await store.refreshScripts()
+            onClose()
+        } catch {
+            undoError = "Couldn't delete: \(error.localizedDescription)"
+        }
     }
 
     private var headerBlock: some View {
@@ -6748,10 +7085,10 @@ private struct IPadProfile: View {
     @State private var fubName: String? = nil
     @State private var showFubSheet: Bool = false
 
-    // Scripts state
+    // Scripts state — fully agent-driven now. Tapping a script or "New script"
+    // opens the AgentScriptPromptSheet instead of a field-by-field editor.
     @State private var scriptsError: String?
-    @State private var editingScriptId: String? = nil
-    @State private var showNewScript: Bool = false
+    @State private var scriptPromptTarget: AgentScriptTarget? = nil
 
     // Branding state — controls the brokerage/license/phone/headshot
     // editor sheet that drives the agent's email signature.
@@ -6830,28 +7167,17 @@ private struct IPadProfile: View {
                 }
             )
         }
-        .sheet(isPresented: $showNewScript) {
-            ScriptEditorSheet(
-                existingId: nil,
-                onCancel: { showNewScript = false },
-                onSaved: {
-                    showNewScript = false
+        .sheet(item: $scriptPromptTarget) { target in
+            AgentScriptPromptSheet(
+                target: target,
+                onCancel: { scriptPromptTarget = nil },
+                onApplied: { _ in
+                    scriptPromptTarget = nil
                     Task { await store.refreshScripts() }
                 }
             )
-        }
-        .sheet(item: Binding(
-            get: { editingScriptId.map { ScriptIdRef(id: $0) } },
-            set: { editingScriptId = $0?.id }
-        )) { ref in
-            ScriptEditorSheet(
-                existingId: ref.id,
-                onCancel: { editingScriptId = nil },
-                onSaved: {
-                    editingScriptId = nil
-                    Task { await store.refreshScripts() }
-                }
-            )
+            .presentationDetents([.height(360), .medium])
+            .presentationDragIndicator(.visible)
         }
         .alert("Sign out?", isPresented: $showSignOutConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -7018,11 +7344,12 @@ private struct IPadProfile: View {
             }
             HStack {
                 Spacer()
-                Button { showNewScript = true } label: {
+                Button { scriptPromptTarget = .create } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "plus")
+                        Image(systemName: "sparkles")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("New script")
+                            .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                        Text("New with AI")
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundStyle(FoyerTheme.inkOnGold)
@@ -7044,7 +7371,7 @@ private struct IPadProfile: View {
     private func scriptRow(_ s: ScriptSummary) -> some View {
         let isDefault = store.defaultScriptId == s.id
         return Button {
-            editingScriptId = s.id
+            scriptPromptTarget = .edit(scriptId: s.id, scriptName: s.name)
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -7071,9 +7398,10 @@ private struct IPadProfile: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(FoyerTheme.creamDim)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
             .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 12))
@@ -8832,6 +9160,7 @@ private struct IPadSessionDetail: View {
                     } else if let err = session.error {
                         sessionErrorCard(err)
                     }
+                    sessionActionsFooter
                 } else if let loadError {
                     errorCard(loadError)
                 }
@@ -8963,21 +9292,14 @@ private struct IPadSessionDetail: View {
     }
 
     private var topBar: some View {
-        // On compact width (iPhone) the 5 actions don't fit on one line — labels
-        // collapse character-by-character. Keep Back pinned on the left and
-        // horizontally scroll the action chips on the right. On regular width
-        // (iPad) keep the original spread-out layout.
+        // Just Back + Continue recording on top. Rename and Delete live at the
+        // bottom of the page in a quieter destructive footer — they're rare
+        // actions and don't deserve prime real estate. The header title also
+        // taps to rename, so Rename here is a secondary affordance.
         HStack(spacing: 12) {
             backButton
-            if isCompact {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) { actionButtons }
-                        .padding(.trailing, 4)
-                }
-            } else {
-                Spacer(minLength: 12)
-                HStack(spacing: 14) { actionButtons }
-            }
+            Spacer(minLength: 12)
+            continueRecordingButton
         }
     }
 
@@ -8998,7 +9320,7 @@ private struct IPadSessionDetail: View {
     }
 
     @ViewBuilder
-    private var actionButtons: some View {
+    private var continueRecordingButton: some View {
         if let session, session.status == "ready" {
             // Pick capture back up against this same session id —
             // SessionStore.continueRecording handles either reusing the
@@ -9018,40 +9340,27 @@ private struct IPadSessionDetail: View {
             .buttonStyle(.plain)
             .fixedSize(horizontal: true, vertical: false)
         }
-        if let session, session.status == "ready" {
-            Button { onOpenLeads(session.id) } label: {
-                HStack(spacing: 6) {
-                    Text("Open in Leads")
-                        .font(.system(size: 13, weight: .semibold))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundStyle(FoyerTheme.inkOnGold)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(FoyerTheme.gold, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .fixedSize(horizontal: true, vertical: false)
-        }
-        if let session {
+    }
+
+    private var sessionActionsFooter: some View {
+        HStack(spacing: 10) {
             Button {
-                renameText = session.name ?? ""
+                renameText = session?.name ?? ""
                 showRenamePrompt = true
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "pencil")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("Rename")
-                        .font(.system(size: 13, weight: .semibold))
+                    Text("Rename session")
+                        .font(.system(size: 13, weight: .medium))
                 }
                 .foregroundStyle(FoyerTheme.creamDim)
-                .padding(.horizontal, 12).padding(.vertical, 8)
+                .padding(.horizontal, 14).padding(.vertical, 9)
                 .background(Color.white.opacity(0.06), in: Capsule())
+                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
-            .fixedSize(horizontal: true, vertical: false)
-        }
-        if session != nil {
+
             Button { showDeleteConfirm = true } label: {
                 HStack(spacing: 6) {
                     if deleting {
@@ -9060,17 +9369,18 @@ private struct IPadSessionDetail: View {
                         Image(systemName: "trash")
                             .font(.system(size: 12, weight: .semibold))
                     }
-                    Text("Delete")
-                        .font(.system(size: 13, weight: .semibold))
+                    Text("Delete session")
+                        .font(.system(size: 13, weight: .medium))
                 }
                 .foregroundStyle(FoyerTheme.terracotta)
-                .padding(.horizontal, 12).padding(.vertical, 8)
+                .padding(.horizontal, 14).padding(.vertical, 9)
                 .background(FoyerTheme.terracotta.opacity(0.12), in: Capsule())
+                .overlay(Capsule().stroke(FoyerTheme.terracotta.opacity(0.3), lineWidth: 0.5))
             }
             .buttonStyle(.plain)
             .disabled(deleting)
-            .fixedSize(horizontal: true, vertical: false)
         }
+        .padding(.top, 12)
     }
 
     private func continueRecordingTapped() {
@@ -9886,6 +10196,8 @@ private struct DiarizationAbTestSheet: View {
     @State private var loading = true
     @State private var loadError: String?
     @State private var results: [AbTestProviderResult] = []
+    @State private var shareURL: URL?
+    @State private var showShare = false
 
     var body: some View {
         NavigationStack {
@@ -9939,9 +10251,87 @@ private struct DiarizationAbTestSheet: View {
                     Button("Done") { dismiss() }
                         .foregroundStyle(FoyerTheme.cream)
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        if let url = buildBundleURL() {
+                            shareURL = url
+                            showShare = true
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .foregroundStyle(FoyerTheme.cream)
+                    .disabled(loading || (results.isEmpty && loadError == nil))
+                }
+            }
+            .sheet(isPresented: $showShare) {
+                if let url = shareURL {
+                    ShareSheet(items: [url])
+                }
             }
         }
         .task { await run() }
+    }
+
+    // Builds a human-readable debug bundle (with raw JSON appended for
+    // fidelity) and writes it to a temp file so the iOS share sheet can
+    // hand it to AirDrop / Messages / Mail with a sensible filename.
+    private func buildBundleURL() -> URL? {
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime]
+        let now = df.string(from: Date())
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let device = UIDevice.current
+        let deviceLine = "\(device.model) · iOS \(device.systemVersion)"
+
+        var out = ""
+        out += "Open House Copilot — Compare Providers Debug Bundle\n"
+        out += "Generated: \(now)\n"
+        out += "Session ID: \(sessionId)\n"
+        out += "App: \(appVersion) (\(appBuild))\n"
+        out += "Device: \(deviceLine)\n"
+
+        if let loadError {
+            out += "\n═══════════════════════════════════════════════════\n"
+            out += "ERROR LOADING A/B TEST\n"
+            out += "───────────────────────────────────────────────────\n"
+            out += loadError + "\n"
+        }
+
+        for r in results {
+            out += "\n═══════════════════════════════════════════════════\n"
+            out += "PROVIDER: \(displayName(r.provider))\n"
+            if let err = r.error {
+                out += "ERROR: \(err)\n"
+                continue
+            }
+            out += "Elapsed: \(String(format: "%.1f", r.elapsedS))s · Speakers: \(r.speakerCount) · Turns: \(r.utterances.count)\n"
+            out += "───────────────────────────────────────────────────\n"
+            for u in r.utterances {
+                out += "[\(timeLabel(u.startMs))] \(u.speaker): \(u.text)\n"
+            }
+        }
+
+        out += "\n═══════════════════════════════════════════════════\n"
+        out += "RAW JSON (for replay)\n"
+        out += "───────────────────────────────────────────────────\n"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let json = try? encoder.encode(AbTestResponse(results: results)),
+           let s = String(data: json, encoding: .utf8) {
+            out += s + "\n"
+        }
+
+        let stamp = now.replacingOccurrences(of: ":", with: "-")
+        let filename = "ohc-compare-providers-\(sessionId)-\(stamp).txt"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try out.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     @MainActor

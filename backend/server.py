@@ -20,7 +20,8 @@ from backend import auth as auth_lib
 from backend import mls_store
 from backend import mls_replicator
 from backend import stats as stats_lib
-from pipeline.analyze import analyze_visitor, refine_draft
+from pipeline.analyze import analyze_visitor, generate_session_name, refine_draft
+from pipeline.copilot_agent import run_copilot_turn
 from pipeline.leads_agent import query_leads_agent
 from pipeline.identify import identify_agent_and_visitors
 from pipeline.mock import load_mock_transcript
@@ -30,8 +31,21 @@ from pipeline.report import (
     refine_report as _refine_report,
     render_report_html,
 )
+from pipeline.script_agent import agent_create_script, agent_edit_script
 from pipeline.script_coverage import grade_against_script
-from pipeline.scripts import get_script, list_scripts_summary, save_user_script, update_user_script, delete_user_script
+from pipeline.scripts import (
+    Script,
+    USER_SCRIPTS_DIR,
+    get_script,
+    has_revision,
+    list_scripts_summary,
+    restore_revision,
+    save_user_script,
+    snapshot_absent,
+    snapshot_revision,
+    update_user_script,
+    delete_user_script,
+)
 from pipeline.tags import DEFAULT_TAGS
 from pipeline.transcribe import transcribe_with_speakers
 from pipeline.weather import enrich_session_with_weather
@@ -803,6 +817,71 @@ def leads_agent_execute(
 
 
 # --------------------------------------------------------------------------
+# Copilot — global "ask anything" agent surfaced on the iOS home screen
+# --------------------------------------------------------------------------
+#
+# Stateless per turn. iOS sends the full chat history (text-only) and we
+# replay it through Claude with the copilot tool set. Reads only — no
+# email sends or session mutations here. When the model decides the user
+# wants to navigate somewhere, it calls the open_screen tool and we
+# return the resulting `action` so the client can route on tap.
+
+
+@app.post("/agent/chat")
+def copilot_chat(
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """One turn of the Copilot conversation.
+
+    Body: {turns: [{role: "user"|"assistant", text: str}, ...]}
+    The last turn must be from the user.
+
+    Returns:
+      {
+        "text": "...",            # plain-text reply
+        "action": {...} | null,   # optional {target, session_id?, name?, speaker?}
+        "tool_calls": [{"name", "summary"}, ...]
+      }
+    """
+    turns = payload.get("turns") or []
+    if not isinstance(turns, list) or not turns:
+        raise HTTPException(400, "turns is required")
+    if turns[-1].get("role") != "user":
+        raise HTTPException(400, "Last turn must be from the user")
+
+    # Hydrate so the tool helpers see every session that's been written to
+    # disk (cold-start safety — the in-memory cache may not have been
+    # touched yet by any prior request this process handled).
+    _hydrate_sessions_from_disk()
+    user_id = current_user["id"]
+
+    def _list_user_sessions() -> list[dict]:
+        with _sessions_lock:
+            return [
+                dict(s)
+                for s in _sessions.values()
+                if s.get("user_id") == user_id
+            ]
+
+    def _user_insights(period: str) -> dict:
+        return stats_lib.query_insights(user_id, period=period)
+
+    agent_name = (current_user.get("name") or "").strip()
+
+    try:
+        result = run_copilot_turn(
+            turns=turns,
+            agent_name=agent_name,
+            list_user_sessions=_list_user_sessions,
+            get_user_insights=_user_insights,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Copilot failed: {exc}")
+    return result
+
+
+# --------------------------------------------------------------------------
 # Contact verification for the kiosk sign-in form
 # --------------------------------------------------------------------------
 
@@ -1129,6 +1208,19 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                     updates["weather"] = weather
             except Exception as wexc:  # noqa: BLE001
                 print(f"[weather] enrich failed for {session_id}: {wexc}", flush=True)
+
+            # Auto-name unaddressed sessions so the agent's list shows
+            # something memorable instead of "Session a1b2c3d4". Only fires
+            # when both `name` (agent nickname) and `address` are empty —
+            # if either is set, the display chain in Models.swift already
+            # has something better to show.
+            if not (projected.get("name") or "").strip() and not (projected.get("address") or "").strip():
+                try:
+                    coined = generate_session_name(transcript, identification.agent_speaker)
+                    if coined:
+                        updates["name"] = coined
+                except Exception as nexc:  # noqa: BLE001
+                    print(f"[name] auto-name failed for {session_id}: {nexc}", flush=True)
 
         _update(session_id, **updates)
     except Exception as e:
@@ -1476,6 +1568,90 @@ def remove_script(script_id: str):
     if not delete_user_script(script_id):
         raise HTTPException(404, f"Script {script_id} not found")
     return {"deleted": script_id}
+
+
+# ── Agent-driven script editing ──────────────────────────────────────────
+#
+# The in-app editor is read-only now; all mutations route through Claude
+# via tool_use. The model never replies in prose — it MUST call the
+# save_script tool, which is shaped like the Script pydantic model.
+# Before each mutation we snapshot the pre-edit state to a single-slot
+# revisions dir so /undo can roll back one step.
+
+def _save_script_to_disk(script: Script) -> Script:
+    """Persist a Script (presets land as overrides at the same id; user
+    scripts overwrite their existing file). Mirrors save_user_script /
+    update_user_script's write path without re-validating step shapes,
+    since the agent already produced a fully-formed Script."""
+    (USER_SCRIPTS_DIR / f"{script.id}.json").write_text(
+        json.dumps(script.model_dump(), indent=2)
+    )
+    return script
+
+
+@app.post("/scripts/agent-edit/{script_id}")
+async def agent_edit_script_endpoint(script_id: str, payload: dict):
+    """Mutate an existing script via a natural-language instruction.
+    Body: { "instruction": "..." }. Returns the updated Script. The pre-edit
+    state is snapshotted so the next call to /scripts/{id}/undo reverts it."""
+    instruction = (payload.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+    current = get_script(script_id)
+    if current is None:
+        raise HTTPException(404, f"Script {script_id} not found")
+    try:
+        snapshot_revision(current)
+        updated = agent_edit_script(current, instruction)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Agent edit failed: {e}")
+    _save_script_to_disk(updated)
+    out = updated.model_dump()
+    out["can_undo"] = True
+    return out
+
+
+@app.post("/scripts/agent-create")
+async def agent_create_script_endpoint(payload: dict):
+    """Create a new script from a natural-language brief.
+    Body: { "instruction": "..." }. Returns the new Script. The snapshot
+    marks the id as 'absent' pre-edit so undo deletes it."""
+    instruction = (payload.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+    new_id = f"user_{uuid.uuid4().hex[:10]}"
+    try:
+        created = agent_create_script(new_id, instruction)
+        snapshot_absent(new_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Agent create failed: {e}")
+    _save_script_to_disk(created)
+    out = created.model_dump()
+    out["can_undo"] = True
+    return out
+
+
+@app.post("/scripts/{script_id}/undo")
+def undo_script(script_id: str):
+    """Restore the pre-edit snapshot for `script_id`. If the snapshot is the
+    'absent' sentinel (i.e. the script was created by the agent), the
+    current script is deleted instead. Returns { "deleted": id } or the
+    restored Script."""
+    if not has_revision(script_id):
+        raise HTTPException(404, f"No undo available for {script_id}")
+    try:
+        restored = restore_revision(script_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"No undo available for {script_id}")
+    if restored is None:
+        # Pre-edit state was 'absent' — the script was created by the agent.
+        # Undo = delete it; the user is back to where they started.
+        delete_user_script(script_id)
+        return {"deleted": script_id}
+    _save_script_to_disk(restored)
+    out = restored.model_dump()
+    out["can_undo"] = False
+    return out
 
 
 @app.post("/sessions/{session_id}/reprocess")

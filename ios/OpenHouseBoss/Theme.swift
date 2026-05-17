@@ -59,14 +59,14 @@ struct Hairline: View {
     var body: some View { Rectangle().fill(FoyerTheme.hairline).frame(height: 0.5) }
 }
 
-// Crest — sans "F" with a thin cyan outline + "Foyer" wordmark. Used in the
+// Crest — outlined "C" tile + "Open House Copilot" wordmark. Used in the
 // iPad kiosk header. Kept here for cross-app reuse.
 struct Crest: View {
     var size: CGFloat = 22
 
     var body: some View {
         HStack(spacing: size * 0.4) {
-            Text("F")
+            Text("C")
                 .font(.system(size: size * 0.75, weight: .semibold))
                 .foregroundStyle(FoyerTheme.gold)
                 .frame(width: size * 1.3, height: size * 1.3)
@@ -74,7 +74,7 @@ struct Crest: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(FoyerTheme.gold, lineWidth: 1)
                 )
-            Text("Foyer")
+            Text("Open House Copilot")
                 .font(.system(size: size, weight: .semibold))
                 .tracking(-size * 0.02)
                 .foregroundStyle(FoyerTheme.cream)

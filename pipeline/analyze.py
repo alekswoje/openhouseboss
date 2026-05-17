@@ -442,3 +442,54 @@ def refine_draft(
     ):
         text = text[1:-1].strip()
     return _scrub_placeholders(text)
+
+
+def generate_session_name(
+    transcript: aai.Transcript,
+    agent_speaker: str | None = None,
+) -> str:
+    """Coin a short, human-readable label for a session whose address was
+    never set — beats showing the agent "Session a1b2c3d4" in their list.
+    Haiku for speed/cost; fail-soft (returns "" so caller falls back to
+    the existing display chain)."""
+    utterances = transcript.utterances or []
+    lines = [
+        f"[{u.speaker}{' ← agent' if u.speaker == agent_speaker else ''}] {u.text}"
+        for u in utterances
+    ]
+    # Skip near-empty transcripts — a 5-word recording will produce a
+    # weird hallucinated label and the date fallback is fine.
+    joined = "\n".join(lines).strip()
+    if len(joined) < 80:
+        return ""
+
+    try:
+        client = Anthropic()
+        response = client.messages.create(
+            model=FAST_MODEL,
+            max_tokens=40,
+            system=(
+                "You coin a 3-5 word label for an open-house recording so the "
+                "agent can recognize it in a list later. Pull out the most "
+                "memorable concrete detail: visitor name (\"Tour with Sarah & "
+                "Mike\"), buyer type (\"Cash investor walkthrough\"), a "
+                "neighborhood or feature they fixated on (\"Kitchen-focused "
+                "young couple\"), or their situation (\"Relocating family, two "
+                "kids\"). Title Case. No quotes, no trailing punctuation, no "
+                "\"Open house\" or \"Session\" prefix. Return ONLY the label."
+            ),
+            messages=[{"role": "user", "content": joined}],
+        )
+        text = (response.content[0].text or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1].strip()
+    if text.startswith("'") and text.endswith("'"):
+        text = text[1:-1].strip()
+    text = text.rstrip(".!? ").strip()
+    # Cap length defensively — Haiku ignoring the 3-5 word ask shouldn't
+    # blow up the list cell.
+    if len(text) > 60:
+        text = text[:60].rstrip() + "…"
+    return text

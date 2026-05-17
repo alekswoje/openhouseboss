@@ -60,6 +60,7 @@ struct HomeShell: View {
                     )
                 }
             )
+            .background(HorizontalDominanceGate())
         }
         .coordinateSpace(name: "hscroll")
         .scrollTargetBehavior(.paging)
@@ -164,6 +165,118 @@ extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
 
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         return viewControllers.count > 1
+    }
+}
+
+// MARK: – Horizontal dominance gate
+//
+// Stops the paged horizontal ScrollView from grabbing near-vertical pans.
+// Without this, a downward swipe with a small lateral drift can swing the
+// pager to the next tab instead of scrolling the inner vertical list.
+//
+// Strategy: wrap the outer horizontal UIScrollView's pan gesture delegate.
+// `gestureRecognizerShouldBegin` is intercepted to reject pans whose
+// initial velocity is more vertical than horizontal — the pager simply
+// never starts in that case, so the inner vertical scroll picks up the
+// gesture as it would for any other touch. All other delegate methods
+// pass through to the scroll view's own implementation.
+private struct HorizontalDominanceGate: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = ProbeView()
+        v.isUserInteractionEnabled = false
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    final class ProbeView: UIView {
+        private let proxy = PanDelegateProxy()
+        private var installed = false
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            DispatchQueue.main.async { [weak self] in self?.install() }
+        }
+
+        private func install() {
+            guard !installed, window != nil else { return }
+            var view: UIView? = superview
+            while let cur = view {
+                if let scroll = cur as? UIScrollView {
+                    let pan = scroll.panGestureRecognizer
+                    proxy.fallback = pan.delegate
+                    pan.delegate = proxy
+                    installed = true
+                    return
+                }
+                view = cur.superview
+            }
+        }
+    }
+
+    final class PanDelegateProxy: NSObject, UIGestureRecognizerDelegate {
+        weak var fallback: UIGestureRecognizerDelegate?
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            if let pan = g as? UIPanGestureRecognizer {
+                let v = pan.velocity(in: pan.view)
+                // Reject pans that are more vertical than horizontal.
+                // The 1.2x bias keeps deliberate horizontal swipes
+                // responsive while protecting near-vertical scrolls.
+                if abs(v.y) > abs(v.x) * 1.2 {
+                    return false
+                }
+            }
+            return fallback?.gestureRecognizerShouldBegin?(g) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldRecognizeSimultaneouslyWith: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldRequireFailureOf other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldRequireFailureOf: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldBeRequiredToFailBy other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldBeRequiredToFailBy: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: touch) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive press: UIPress
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: press) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive event: UIEvent
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: event) ?? true
+        }
     }
 }
 
@@ -779,7 +892,7 @@ struct ProfileTabContent: View {
             FUBConnectSheet(connectedName: $fubConnectedName)
                 .presentationDetents([.medium, .large])
         }
-        .confirmationDialog("Sign out of Foyer?", isPresented: $showSignOutConfirm, titleVisibility: .visible) {
+        .confirmationDialog("Sign out of Open House Copilot?", isPresented: $showSignOutConfirm, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { auth.signOut() }
             Button("Cancel", role: .cancel) {}
         } message: {

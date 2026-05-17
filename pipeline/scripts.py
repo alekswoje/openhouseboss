@@ -223,6 +223,13 @@ PRESETS: list[Script] = [ALEKS_SCRIPT]
 USER_SCRIPTS_DIR = Path("scripts_data")
 USER_SCRIPTS_DIR.mkdir(exist_ok=True)
 
+# Single-step undo. Before any agent-edit we snapshot the current script
+# here, keyed by id; undo restores the snapshot and deletes it. One slot per
+# script — chained edits overwrite the snapshot, so undo always rolls back
+# the most recent change.
+REVISIONS_DIR = USER_SCRIPTS_DIR / "_revisions"
+REVISIONS_DIR.mkdir(exist_ok=True)
+
 
 def _load_user_scripts() -> list[Script]:
     """Read all user-created scripts from disk. Cheap — there shouldn't be
@@ -321,7 +328,8 @@ def list_scripts_summary() -> list[dict]:
     """Compact list for the iOS Scripts tab — presets + user scripts. Each
     preset id is deduped: if the agent has saved an override, the override
     wins and `is_preset` stays true so the UI keeps the badge and DELETE
-    resets it to factory."""
+    resets it to factory. `can_undo` flags scripts that have a stored
+    pre-edit revision the user can roll back to."""
     preset_ids = {s.id for s in PRESETS}
     user_scripts = _load_user_scripts()
     user_ids = {s.id for s in user_scripts}
@@ -337,6 +345,7 @@ def list_scripts_summary() -> list[dict]:
             "description": s.description,
             "step_count": len(s.steps),
             "is_preset": True,
+            "can_undo": _revision_path(s.id).exists(),
         })
     for s in user_scripts:
         items.append({
@@ -345,5 +354,48 @@ def list_scripts_summary() -> list[dict]:
             "description": s.description,
             "step_count": len(s.steps),
             "is_preset": s.id in preset_ids,
+            "can_undo": _revision_path(s.id).exists(),
         })
     return items
+
+
+# ─────────── Revisions (single-step undo) ───────────
+
+def _revision_path(script_id: str) -> Path:
+    return REVISIONS_DIR / f"{script_id}.json"
+
+
+def snapshot_revision(script: Optional[Script]) -> None:
+    """Persist `script` as the pre-edit revision for its id. Call this BEFORE
+    any agent-edit so undo restores the right state. A `None` script means
+    'this id had no prior state' (a fresh agent-create) — we still write a
+    sentinel so undo deletes the freshly-created script."""
+    if script is None:
+        return
+    _revision_path(script.id).write_text(
+        json.dumps(script.model_dump(), indent=2)
+    )
+
+
+def snapshot_absent(script_id: str) -> None:
+    """Mark `script_id` as having no prior state, so undo deletes it."""
+    _revision_path(script_id).write_text(json.dumps({"absent": True}))
+
+
+def restore_revision(script_id: str) -> Optional[Script]:
+    """Roll back to the last snapshot for `script_id`. Returns the restored
+    script (or None if the snapshot says the script didn't exist pre-edit, in
+    which case the caller should delete the current script). Raises
+    FileNotFoundError if there's no revision to restore."""
+    path = _revision_path(script_id)
+    if not path.exists():
+        raise FileNotFoundError(f"No revision for {script_id}")
+    raw = json.loads(path.read_text())
+    path.unlink()
+    if raw.get("absent"):
+        return None
+    return Script(**raw)
+
+
+def has_revision(script_id: str) -> bool:
+    return _revision_path(script_id).exists()

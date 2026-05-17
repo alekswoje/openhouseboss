@@ -130,7 +130,7 @@ struct RootView: View {
             // IPadAgentApp branches internally on horizontalSizeClass — wide
             // canvas → side rail + split panes; compact → bottom tab bar +
             // pushed detail. The legacy HomeShell / NavigationStack route is
-            // intentionally retired so iPhone gets the full Foyer feature set
+            // intentionally retired so iPhone gets the full Copilot feature set
             // (offers, leads agent, kiosk, etc.) the agent already loves on
             // iPad.
             IPadAgentApp()
@@ -210,8 +210,9 @@ struct SplashView: View {
                     .scaleEffect(titleIn ? 1.0 : 0.86)
 
                 // Wordmark — large editorial serif.
-                Text("Foyer")
-                    .foyerDisplay(72)
+                Text("Open House\nCopilot")
+                    .foyerDisplay(54)
+                    .multilineTextAlignment(.center)
                     .foregroundStyle(FoyerTheme.cream)
                     .opacity(titleIn ? 1 : 0)
                     .offset(y: titleIn ? 0 : 10)
@@ -324,8 +325,9 @@ struct LoginView: View {
                         .scaleEffect(markIn ? 1.0 : 0.86)
                         .opacity(markIn ? 1 : 0)
 
-                    Text("Foyer")
-                        .foyerDisplay(72)
+                    Text("Open House\nCopilot")
+                        .foyerDisplay(54)
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(FoyerTheme.cream)
                         .opacity(titleIn ? 1 : 0)
                         .offset(y: titleIn ? 0 : 14)
@@ -406,7 +408,7 @@ struct LoginView: View {
             .disabled(isSigningIn || auth.loading)
             .opacity(isSigningIn || auth.loading ? 0.65 : 1)
 
-            Text("BY CONTINUING, YOU AGREE TO FOYER'S TERMS · AGENTS ONLY")
+            Text("BY CONTINUING, YOU AGREE TO OPEN HOUSE COPILOT'S TERMS · AGENTS ONLY")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(FoyerTheme.textMuted)

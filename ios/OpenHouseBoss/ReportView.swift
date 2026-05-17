@@ -186,7 +186,7 @@ struct ReportView: View {
                 Task { await generate(force: true) }
             }
         } message: {
-            Text("This will replace the current report with a fresh Claude-generated one.")
+            Text("This will replace the current report with a fresh AI-generated one.")
         }
         .sheet(isPresented: $showRefineSheet) {
             AIRefineSheet(
@@ -985,8 +985,8 @@ private struct GeneratingAnimation: View {
     }
     private var subtitle: String {
         kind == .refining
-            ? "Haiku is editing the report — usually 2-4 seconds."
-            : "Claude is reading the session and writing the report. Usually 15-25 seconds."
+            ? "Our AI is rewriting the report — usually a few seconds."
+            : "Our AI is reading the session and writing the report."
     }
     private var titleSize: CGFloat { kind == .refining ? 22 : 28 }
     private var orbSize: CGFloat { kind == .refining ? 14 : 22 }
@@ -1074,7 +1074,11 @@ private struct GeneratingAnimation: View {
         // disappears (Task.isCancelled handled via try? sleep).
         Task { @MainActor in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3.5))
+                // Cycle a touch faster than the natural cadence of
+                // "reading a sentence" so the loader always feels like
+                // something just changed — even when the underlying
+                // Claude call is still in flight at the same step.
+                try? await Task.sleep(for: .seconds(2.4))
                 if Task.isCancelled { return }
                 stageIndex = (stageIndex + 1) % stages.count
             }
@@ -1127,7 +1131,7 @@ private struct AIRefineSheet: View {
                 } header: {
                     Text("What should change?")
                 } footer: {
-                    Text("Haiku rewrites the report based on your instruction — usually 2-4 seconds. Fields you don't mention stay exactly as they are.")
+                    Text("Our AI rewrites the report based on your instruction — usually a few seconds. Fields you don't mention stay exactly as they are.")
                 }
                 Section("Quick edits") {
                     ForEach(presets, id: \.self) { p in
@@ -1156,7 +1160,7 @@ private struct AIRefineSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Throws away the current report and starts over with a fresh Claude generation.")
+                    Text("Throws away the current report and starts over with a fresh AI generation.")
                 }
             }
             .navigationTitle("Edit with AI")
