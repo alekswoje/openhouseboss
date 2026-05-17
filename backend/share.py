@@ -169,15 +169,22 @@ def _public_url(token: str) -> str:
 
 # --- Public HTML page -----------------------------------------------------
 #
-# Rendered server-side at /r/{token}. Designed to look polished in both
-# desktop and mobile webviews (homeowners open these in iMessage,
-# Gmail, Safari). Includes:
-#   - Open Graph + Twitter meta tags so link previews unfurl with the
-#     property address, snippet, and (eventually) a photo.
-#   - Responsive single-column layout; no horizontal scroll on phones.
-#   - Branded header with the agent's headshot/name/brokerage.
-#   - Same content as the in-app + email report (single source of truth
-#     for facts), restyled for a stand-alone web page.
+# Rendered server-side at /r/{token}. Brand-matched (dark navy + cream +
+# gold) so a recipient who lands on it from a shared link sees the same
+# editorial Open House Copilot aesthetic the iOS app has, not a generic
+# "report" page. Color tokens + typography come straight from web/brand.css
+# so a future brand tweak there propagates here too.
+#
+# Header + footer link back to openhousecopilot.com because a meaningful
+# slice of recipients are other agents (sellers share these with their
+# kids' realtor parents, agents pass them between teammates as templates).
+# Curiosity → CTA → conversion.
+
+# Public marketing site — also used as the destination for the brand
+# header + footer CTA. Pulled from env so a staging or preview deploy
+# can override without touching code.
+MARKETING_URL = os.environ.get("MARKETING_URL", "https://openhousecopilot.com").rstrip("/")
+
 
 def render_report_public_html(
     *,
@@ -185,54 +192,48 @@ def render_report_public_html(
     agent: dict,
     weather: Optional[dict] = None,
 ) -> str:
-    """Render the public-facing share page. `report` is the
-    SessionReport dict (post-validation); `agent` is the user record
-    (for the branded header); `weather` lifts the temp/condition out
-    of session.weather if present (the report already carries
-    weather_label but the public page renders a richer chip with the
-    SF Symbol equivalent → unicode glyph)."""
+    """Render the public share page (dark brand theme).
+    `report` is the SessionReport dict (post-validation); `agent` is the
+    user record (drives the agent card at the bottom); `weather` is the
+    session's enriched Open-Meteo block (the report already carries a
+    weather_label; agent record gives us the headshot path)."""
 
     def _h(s) -> str:
         return html.escape(str(s or ""))
 
-    # Header — agent identity. Falls back to a clean text-only block
-    # when no headshot is configured.
-    agent_name = (agent.get("name") or "").strip()
-    brokerage = (agent.get("brokerage") or "").strip()
-    headshot_filename = agent.get("headshot_filename")
-    agent_id = agent.get("id") or ""
-    cache_buster = agent.get("headshot_updated_at") or ""
-    cb_qs = f"?v={cache_buster}" if cache_buster else ""
-    headshot_url = (
-        f"{SHARE_BASE_URL}/me/profile/headshot/{_h(agent_id)}{cb_qs}"
-        if headshot_filename else ""
-    )
-
-    # Hero — property + date + weather chip.
+    # --- Pull report fields ----------------------------------------
     address = (report.get("address") or "Your property").strip()
     date_label = (report.get("date_label") or "").strip()
     weather_label = (report.get("weather_label") or "").strip()
     visitor_count = int(report.get("visitor_count") or 0)
     duration_min = int(report.get("duration_minutes") or 0)
+    headline = (report.get("headline") or "").strip()
+    tldr_items = report.get("tldr") or []
+    price_signal = (report.get("price_signal") or "").strip()
+    traffic_summary = (report.get("traffic_summary") or "").strip()
+    agent_take = (report.get("agent_take") or "").strip()
+    next_steps = report.get("next_steps") or []
 
-    # Meta line — same composition as the email but rendered as
-    # individual styled pills on the web page for legibility.
+    # Header pills (date · duration · visitors · weather).
     pill_bits: list[str] = []
-    if date_label: pill_bits.append(date_label)
-    if duration_min > 0: pill_bits.append(f"{duration_min} min")
+    if date_label:
+        pill_bits.append(date_label)
+    if duration_min > 0:
+        pill_bits.append(f"{duration_min} min")
     if visitor_count > 0:
-        pill_bits.append(f"{visitor_count} visitor{'s' if visitor_count != 1 else ''}")
-    if weather_label: pill_bits.append(weather_label)
+        pill_bits.append(
+            f"{visitor_count} visitor"
+            f"{'s' if visitor_count != 1 else ''}"
+        )
+    if weather_label:
+        pill_bits.append(weather_label)
     pills_html = "".join(
         f'<span class="pill">{_h(p)}</span>' for p in pill_bits
     )
 
-    # TL;DR
-    headline = (report.get("headline") or "").strip()
-    tldr_items = report.get("tldr") or []
     tldr_html = "".join(f"<li>{_h(b)}</li>" for b in tldr_items)
 
-    # Sections
+    # --- Themes / standouts / next steps ---------------------------
     def render_themes(themes: list, fallback: str) -> str:
         if not themes:
             return f'<p class="fallback">{_h(fallback)}</p>'
@@ -256,26 +257,31 @@ def render_report_public_html(
                 )
             out.append(
                 f'<div class="theme">'
-                f'<div class="theme-head"><span class="theme-title">{_h(t.get("title") or "")}</span>{freq_chip}</div>'
+                f'<div class="theme-head">'
+                f'<span class="theme-title">{_h(t.get("title") or "")}</span>'
+                f'{freq_chip}</div>'
                 f'<p class="theme-summary">{_h(t.get("summary") or "")}</p>'
                 f'{quotes_html}'
                 f'</div>'
             )
         return "".join(out)
 
-    highlights_html = render_themes(report.get("highlights") or [], "Nothing recurred across visitors this session.")
-    concerns_html = render_themes(report.get("concerns") or [], "No recurring concerns surfaced.")
+    highlights_html = render_themes(
+        report.get("highlights") or [],
+        "Nothing recurred across visitors this session."
+    )
+    concerns_html = render_themes(
+        report.get("concerns") or [],
+        "No recurring concerns surfaced."
+    )
 
     standouts = report.get("standout_visitors") or []
     if standouts:
-        rows: list[str] = []
+        standout_rows: list[str] = []
         for s in standouts:
             score = int(s.get("score") or 0)
-            score_tone = (
-                "hot" if score >= 70 else
-                ("warm" if score >= 40 else "cool")
-            )
-            rows.append(
+            score_tone = "hot" if score >= 70 else ("warm" if score >= 40 else "cool")
+            standout_rows.append(
                 f'<div class="standout">'
                 f'<div class="standout-head">'
                 f'<span class="standout-label">{_h(s.get("label") or "")}</span>'
@@ -285,54 +291,59 @@ def render_report_public_html(
                 f'<p class="standout-status">{_h(s.get("follow_up_status") or "")}</p>'
                 f'</div>'
             )
-        standouts_html = "".join(rows)
+        standouts_html = "".join(standout_rows)
     else:
         standouts_html = '<p class="fallback">No standouts this session.</p>'
 
-    price_signal = _h(report.get("price_signal") or "")
-    traffic_summary = _h(report.get("traffic_summary") or "")
-    agent_take = _h(report.get("agent_take") or "")
-
-    next_steps = report.get("next_steps") or []
     next_steps_html = "".join(f"<li>{_h(s)}</li>" for s in next_steps)
     next_steps_block = (
         f'<ol class="next-steps">{next_steps_html}</ol>'
         if next_steps else '<p class="fallback">Stay the course.</p>'
     )
 
-    # OG description — first TL;DR bullet (or headline). Plain text,
-    # truncated; iMessage / Slack quote up to ~200 chars in previews.
+    # --- Agent card ------------------------------------------------
+    agent_name = (agent.get("name") or "").strip()
+    brokerage = (agent.get("brokerage") or "").strip()
+    headshot_filename = agent.get("headshot_filename")
+    agent_id = agent.get("id") or ""
+    cache_buster = agent.get("headshot_updated_at") or ""
+    cb_qs = f"?v={cache_buster}" if cache_buster else ""
+    # Agent-card image is served by the API itself — public endpoint, no
+    # auth required. Use SHARE_BASE_URL so the URL stays on the brand
+    # domain when it's rewritten (no Render origin leak in the rendered
+    # page) but fall back to the bare API host when the headshot route
+    # isn't proxied (the static-site rewrite only covers /r/*).
+    headshot_url = (
+        f"https://openhouseboss-api.onrender.com/me/profile/headshot/{_h(agent_id)}{cb_qs}"
+        if headshot_filename else ""
+    )
+
+    if headshot_url:
+        agent_card_html = (
+            '<div class="agent-card">'
+            f'<img class="agent-headshot" src="{headshot_url}" alt="" />'
+            '<div class="agent-text">'
+            f'<div class="agent-name">{_h(agent_name)}</div>'
+            f'<div class="agent-broker">{_h(brokerage)}</div>'
+            '</div>'
+            '</div>'
+        )
+    else:
+        agent_card_html = (
+            '<div class="agent-card no-photo">'
+            '<div class="agent-text">'
+            f'<div class="agent-name">{_h(agent_name)}</div>'
+            f'<div class="agent-broker">{_h(brokerage)}</div>'
+            '</div>'
+            '</div>'
+        )
+
+    # --- OG / Twitter meta -----------------------------------------
     og_description_raw = (tldr_items[0] if tldr_items else headline).strip()
     og_description = _h(og_description_raw[:200])
-    og_title_raw = f"Open House Report — {address}"
-    og_title = _h(og_title_raw)
+    og_title = _h(f"Open House Report — {address}")
+    marketing = _h(MARKETING_URL)
 
-    # Header block — agent identity. Either a row with headshot or a
-    # text-only signature for agents who haven't uploaded a photo.
-    if headshot_url:
-        agent_header = f"""
-        <div class="agent-row">
-          <img class="agent-headshot" src="{headshot_url}" alt="" />
-          <div class="agent-text">
-            <div class="agent-name">{_h(agent_name)}</div>
-            <div class="agent-broker">{_h(brokerage)}</div>
-          </div>
-        </div>
-        """
-    else:
-        agent_header = f"""
-        <div class="agent-row no-photo">
-          <div class="agent-text">
-            <div class="agent-name">{_h(agent_name)}</div>
-            <div class="agent-broker">{_h(brokerage)}</div>
-          </div>
-        </div>
-        """
-
-    # All-in-one HTML document. Inlined styles so we don't depend on
-    # a CDN being reachable when the homeowner opens it from a hotel
-    # Wi-Fi network. System font stack so it looks native on iPhone,
-    # Mac, and Android out of the box.
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -344,193 +355,363 @@ def render_report_public_html(
 <meta property="og:description" content="{og_description}">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Open House Copilot">
+<meta property="og:url" content="{marketing}">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{og_title}">
 <meta name="twitter:description" content="{og_description}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
 <style>
+  /* Dark brand tokens — pulled from web/brand.css's :root defaults so
+     a tweak there can be propagated here in one swap. */
   :root {{
-    --bg: #faf7f0;
-    --surface: #ffffff;
-    --ink: #1a1a1a;
-    --ink-dim: #555;
-    --ink-mute: #888;
-    --line: #e5e1d8;
-    --accent: #c9a55b;
-    --accent-deep: #a07f3a;
-    --hot: #b8612f;
-    --warm: #c9a55b;
-    --cool: #8a8a8a;
+    --bg-deep: #0a0e13;
+    --bg-card: #161c24;
+    --bg-elev: #1d242d;
+    --gold: #c9a86a;
+    --gold-bright: #d8bc7e;
+    --gold-soft: rgba(201, 168, 106, 0.14);
+    --cream: #ebe5d6;
+    --cream-dim: #c4bda9;
+    --text-dim: #9a9384;
+    --text-muted: #6f695c;
+    --border: rgba(201, 168, 106, 0.12);
+    --border-strong: rgba(201, 168, 106, 0.28);
+    --hairline: rgba(235, 229, 214, 0.08);
+    --hot: #d8bc7e;
+    --warm: #c9a86a;
+    --cool: #6f695c;
+    --terracotta: #c4663d;
+    --sage: #8ea886;
   }}
   * {{ box-sizing: border-box; }}
-  body {{
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue",
-                 "Segoe UI", Roboto, sans-serif;
+  html, body {{
+    margin: 0; padding: 0;
+    background: var(--bg-deep);
+    color: var(--cream);
+    font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui,
+                 'Segoe UI', Roboto, sans-serif;
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }}
+  a {{ color: var(--gold); text-decoration: none; transition: color 160ms ease; }}
+  a:hover {{ color: var(--gold-bright); }}
+
+  /* Subtle gold bloom in the very top-left so the page doesn't feel
+     like a flat black rectangle. Matches the app's splash/login glow. */
+  body::before {{
+    content: "";
+    position: fixed; inset: 0;
+    background: radial-gradient(
+      ellipse at top, var(--gold-soft) 0%,
+      rgba(201, 168, 106, 0.04) 30%,
+      transparent 60%
+    );
+    pointer-events: none;
+    z-index: 0;
   }}
   .page {{
+    position: relative; z-index: 1;
     max-width: 720px;
     margin: 0 auto;
-    padding: 32px 24px 80px 24px;
+    padding: 24px 24px 80px 24px;
   }}
+
+  /* --- Brand header (clickable home link) --- */
   .brand {{
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 22px;
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 28px;
+  }}
+  .brand-link {{
+    display: flex; align-items: center; gap: 10px;
+    color: var(--cream); font-weight: 500; font-size: 15px;
+    letter-spacing: -0.2px;
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 19px;
+  }}
+  .brand-link:hover {{ color: var(--cream); }}
+  .brand-link:hover .brand-mark {{
+    box-shadow: 0 0 0 2px var(--gold-soft);
   }}
   .brand-mark {{
-    width: 28px; height: 28px; border-radius: 7px;
-    background: var(--ink);
-    color: #fff; font-weight: 700; font-size: 14px;
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--gold) 0%, var(--gold-bright) 100%);
+    color: #1a1610; font-weight: 700; font-size: 16px;
     display: flex; align-items: center; justify-content: center;
-    font-family: Georgia, serif;
+    font-family: 'Instrument Serif', Georgia, serif;
+    line-height: 1;
+    transition: box-shadow 220ms ease;
   }}
-  .brand-name {{
-    font-family: Georgia, "Times New Roman", serif;
-    font-size: 17px; letter-spacing: -0.2px; color: var(--ink);
-  }}
-  .brand-tag {{
-    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
-    color: var(--accent); font-weight: 600; margin-left: auto;
+  .brand-eyebrow {{
+    margin-left: auto;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--gold); font-weight: 600;
   }}
 
+  /* --- Hero --- */
   .hero h1 {{
-    margin: 0 0 6px 0;
-    font-family: Georgia, "Times New Roman", serif;
-    font-size: 30px; line-height: 1.15; letter-spacing: -0.5px;
+    margin: 0 0 12px 0;
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-weight: 400;
+    font-size: 44px; line-height: 1.05; letter-spacing: -0.8px;
+    color: var(--cream);
   }}
   .pills {{
-    margin-top: 10px;
     display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 14px;
   }}
   .pill {{
-    font-size: 11px; color: var(--ink-dim);
-    background: #f0ede4; padding: 4px 10px; border-radius: 99px;
-    border: 1px solid var(--line);
+    font-size: 11px; color: var(--text-dim);
+    background: var(--bg-elev);
+    padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--border);
     letter-spacing: 0.2px;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-weight: 500;
   }}
 
+  /* --- TL;DR card --- */
   .tldr {{
-    margin: 24px 0;
-    background: #fff;
-    border: 1px solid var(--line);
-    border-left: 3px solid var(--accent);
-    border-radius: 12px;
-    padding: 18px 20px;
+    margin: 32px 0 16px 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    padding: 24px 26px;
+    position: relative;
+    overflow: hidden;
+  }}
+  .tldr::before {{
+    content: "";
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, var(--gold), var(--gold-bright));
   }}
   .tldr-eyebrow {{
-    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
-    color: var(--accent); font-weight: 700;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 2.2px; text-transform: uppercase;
+    color: var(--gold); font-weight: 600;
   }}
   .tldr-headline {{
-    margin: 6px 0 12px 0;
-    font-size: 17px; font-weight: 600; color: var(--ink);
-    line-height: 1.4;
+    margin: 8px 0 14px 0;
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 22px; font-weight: 400; color: var(--cream);
+    line-height: 1.32; letter-spacing: -0.3px;
   }}
-  .tldr ul {{ margin: 0; padding-left: 20px; font-size: 14px; color: var(--ink-dim); }}
-  .tldr li {{ margin: 4px 0; }}
+  .tldr ul {{ margin: 0; padding-left: 22px; font-size: 14px; color: var(--cream-dim); }}
+  .tldr li {{ margin: 6px 0; line-height: 1.5; }}
 
+  /* --- Section headings --- */
   h2 {{
-    margin: 32px 0 10px 0;
-    font-family: Georgia, "Times New Roman", serif;
-    font-size: 19px; color: var(--ink); letter-spacing: -0.2px;
+    margin: 40px 0 12px 0;
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-weight: 400;
+    font-size: 26px; color: var(--cream);
+    letter-spacing: -0.4px;
   }}
-  p {{ margin: 0 0 12px 0; font-size: 14px; color: var(--ink-dim); }}
-  .fallback {{ font-style: italic; color: var(--ink-mute); font-size: 13px; }}
+  p {{
+    margin: 0 0 12px 0; font-size: 14px; color: var(--cream-dim);
+    line-height: 1.6;
+  }}
+  .fallback {{
+    font-style: italic; color: var(--text-muted); font-size: 13px;
+  }}
 
-  .theme {{ margin: 14px 0; }}
-  .theme-head {{ display: flex; align-items: baseline; gap: 10px; }}
-  .theme-title {{ font-size: 15px; font-weight: 600; color: var(--ink); }}
+  /* --- Theme blocks --- */
+  .theme {{
+    margin: 18px 0;
+    padding: 16px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+  }}
+  .theme-head {{
+    display: flex; align-items: baseline; gap: 12px;
+    flex-wrap: wrap;
+  }}
+  .theme-title {{
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 18px; color: var(--cream); letter-spacing: -0.2px;
+  }}
   .theme-freq {{
-    font-size: 11px; color: var(--ink-mute); font-weight: 500;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--gold); font-weight: 600;
+    padding: 3px 8px; border: 1px solid var(--border);
+    border-radius: 99px; background: var(--gold-soft);
   }}
-  .theme-summary {{ font-size: 13px; color: var(--ink-dim); margin: 4px 0 6px 0; }}
+  .theme-summary {{
+    font-size: 14px; color: var(--cream-dim);
+    margin: 8px 0 10px 0;
+  }}
   blockquote.quote {{
-    margin: 6px 0 6px 0; padding: 8px 14px;
-    border-left: 2px solid var(--accent);
-    background: #faf7f0;
-    font-style: italic; color: var(--ink); font-size: 13px;
-    border-radius: 0 6px 6px 0;
+    margin: 8px 0 8px 0;
+    padding: 10px 14px;
+    border-left: 2px solid var(--gold);
+    background: var(--gold-soft);
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic; color: var(--cream); font-size: 15px;
+    line-height: 1.55;
+    border-radius: 0 8px 8px 0;
   }}
-  .quote-attr {{ font-size: 11px; color: var(--ink-mute); font-style: normal; }}
+  .quote-attr {{
+    font-family: 'Geist', sans-serif;
+    font-size: 11px; color: var(--text-muted);
+    font-style: normal; letter-spacing: 0.3px;
+  }}
 
+  /* --- Standout visitor cards --- */
   .standout {{
-    margin: 10px 0;
-    background: #fff;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 12px 14px;
+    margin: 12px 0;
+    background: var(--bg-card);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 14px 16px;
   }}
   .standout-head {{
     display: flex; justify-content: space-between; align-items: baseline;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }}
-  .standout-label {{ font-weight: 600; font-size: 14px; color: var(--ink); }}
-  .standout-score {{ font-size: 12px; font-weight: 700; }}
-  .tone-hot {{ color: var(--hot); }}
-  .tone-warm {{ color: var(--warm); }}
+  .standout-label {{
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 17px; color: var(--cream); letter-spacing: -0.2px;
+  }}
+  .standout-score {{
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 12px; font-weight: 700;
+  }}
+  .tone-hot {{ color: var(--gold-bright); }}
+  .tone-warm {{ color: var(--gold); }}
   .tone-cool {{ color: var(--cool); }}
-  .standout-summary {{ font-size: 13px; color: var(--ink-dim); margin: 2px 0; }}
-  .standout-status {{ font-size: 11px; color: var(--ink-mute); font-style: italic; margin: 4px 0 0 0; }}
+  .standout-summary {{
+    font-size: 13px; color: var(--cream-dim); margin: 4px 0;
+    line-height: 1.55;
+  }}
+  .standout-status {{
+    font-size: 11px; color: var(--text-muted);
+    font-style: italic; margin: 6px 0 0 0;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    letter-spacing: 0.3px;
+  }}
 
+  /* --- Next steps --- */
   ol.next-steps {{
-    margin: 6px 0 0 0; padding-left: 22px;
-    font-size: 14px; color: var(--ink-dim);
+    margin: 8px 0 0 0; padding-left: 24px;
+    font-size: 14px; color: var(--cream-dim);
+    line-height: 1.6;
   }}
-  ol.next-steps li {{ margin: 6px 0; }}
+  ol.next-steps li {{ margin: 8px 0; }}
+  ol.next-steps li::marker {{ color: var(--gold); font-weight: 600; }}
 
+  /* --- Agent card --- */
   .agent-card {{
-    margin-top: 36px; padding-top: 22px;
-    border-top: 1px solid var(--line);
+    margin-top: 44px; padding: 22px 0 26px 0;
+    border-top: 1px solid var(--hairline);
+    display: flex; align-items: center; gap: 16px;
   }}
-  .agent-row {{ display: flex; align-items: center; gap: 14px; }}
   .agent-headshot {{
     width: 56px; height: 56px; border-radius: 50%;
-    object-fit: cover; background: #eee; display: block;
+    object-fit: cover; background: var(--bg-elev);
+    display: block;
+    border: 1px solid var(--border);
   }}
-  .agent-name {{ font-weight: 600; font-size: 14px; color: var(--ink); }}
-  .agent-broker {{ font-size: 12px; color: var(--ink-mute); }}
+  .agent-name {{
+    font-weight: 500; font-size: 15px; color: var(--cream);
+    letter-spacing: -0.2px;
+  }}
+  .agent-broker {{
+    font-size: 12px; color: var(--text-dim);
+    margin-top: 2px;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    letter-spacing: 0.3px;
+  }}
 
-  .footer {{
-    margin-top: 36px; text-align: center;
-    font-size: 10px; letter-spacing: 1.5px; color: var(--ink-mute);
+  /* --- Footer CTA — pulls curious agents back to the marketing site. */
+  .cta-footer {{
+    margin-top: 32px; padding: 32px 24px;
+    background: linear-gradient(180deg, var(--bg-card), var(--bg-deep));
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    text-align: center;
+  }}
+  .cta-eyebrow {{
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 2.2px; text-transform: uppercase;
+    color: var(--gold); font-weight: 600;
+  }}
+  .cta-headline {{
+    margin: 8px 0 4px 0;
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 22px; color: var(--cream); letter-spacing: -0.3px;
+  }}
+  .cta-sub {{
+    font-size: 13px; color: var(--cream-dim); margin: 4px 0 18px 0;
+    line-height: 1.55;
+  }}
+  .cta-btn {{
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 22px;
+    background: var(--gold);
+    color: #1a1610 !important;
+    font-weight: 600; font-size: 14px;
+    border-radius: 999px;
+    letter-spacing: -0.1px;
+    transition: background 180ms ease, transform 160ms ease;
+  }}
+  .cta-btn:hover {{
+    background: var(--gold-bright);
+    transform: translateY(-1px);
+  }}
+  .cta-btn::after {{
+    content: "→";
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-weight: 500;
+  }}
+
+  .footer-mini {{
+    margin-top: 22px; text-align: center;
+    font-family: 'Geist Mono', ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 1.8px; color: var(--text-muted);
     text-transform: uppercase;
   }}
-  .footer a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
 
   @media (max-width: 480px) {{
-    .page {{ padding: 22px 18px 60px 18px; }}
-    .hero h1 {{ font-size: 26px; }}
+    .page {{ padding: 18px 16px 60px 16px; }}
+    .hero h1 {{ font-size: 34px; }}
+    .tldr {{ padding: 20px 18px; }}
+    .tldr-headline {{ font-size: 19px; }}
+    h2 {{ font-size: 22px; margin-top: 32px; }}
   }}
 </style>
 </head>
 <body>
 <div class="page">
-  <div class="brand">
-    <div class="brand-mark">F</div>
-    <div class="brand-name">Open House Copilot</div>
-    <div class="brand-tag">Open House Report</div>
-  </div>
 
-  <div class="hero">
+  <header class="brand">
+    <a class="brand-link" href="{marketing}" target="_blank" rel="noopener">
+      <span class="brand-mark">F</span>
+      <span>Open House Copilot</span>
+    </a>
+    <span class="brand-eyebrow">Open House Report</span>
+  </header>
+
+  <section class="hero">
     <h1>{_h(address)}</h1>
     <div class="pills">{pills_html}</div>
-  </div>
+  </section>
 
-  <div class="tldr">
+  <section class="tldr">
     <div class="tldr-eyebrow">TL;DR</div>
     <div class="tldr-headline">{_h(headline)}</div>
     <ul>{tldr_html}</ul>
-  </div>
+  </section>
 
   <h2>Traffic</h2>
-  <p>{traffic_summary}</p>
+  <p>{_h(traffic_summary)}</p>
 
   <h2>What stood out</h2>
   {highlights_html}
@@ -539,49 +720,133 @@ def render_report_public_html(
   {concerns_html}
 
   <h2>Price signal</h2>
-  <p>{price_signal}</p>
+  <p>{_h(price_signal)}</p>
 
   <h2>Standout visitors</h2>
   {standouts_html}
 
   <h2>My take</h2>
-  <p>{agent_take}</p>
+  <p>{_h(agent_take)}</p>
 
   <h2>Recommended next steps</h2>
   {next_steps_block}
 
-  <div class="agent-card">{agent_header}</div>
+  {agent_card_html}
 
-  <div class="footer">
-    Generated by <a href="https://openhousecopilot.com">Open House Copilot</a>
+  <section class="cta-footer">
+    <div class="cta-eyebrow">Curious?</div>
+    <div class="cta-headline">Open House Copilot</div>
+    <p class="cta-sub">AI scribe for real-estate agents. Record an open house, get per-visitor summaries, drafted follow-ups, and reports like this one.</p>
+    <a class="cta-btn" href="{marketing}" target="_blank" rel="noopener">Learn more</a>
+  </section>
+
+  <div class="footer-mini">
+    Generated by <a href="{marketing}" target="_blank" rel="noopener">Open House Copilot</a>
   </div>
+
 </div>
 </body>
 </html>"""
 
 
 def render_revoked_html() -> str:
-    """Tiny stand-alone page shown when a token is unknown or revoked.
-    Friendlier than a bare 404 — the recipient might've gotten a stale
-    link from an old email thread."""
-    return """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Link expired</title>
+    """Stand-alone page shown when a token is unknown or revoked. Same
+    dark brand as the report page so the recipient lands somewhere
+    coherent instead of a generic 404."""
+    marketing = html.escape(MARKETING_URL)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Link no longer available — Open House Copilot</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Instrument+Serif&display=swap" rel="stylesheet">
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, Helvetica, sans-serif;
-       background: #faf7f0; color: #1a1a1a; margin: 0; padding: 0;
-       display: flex; align-items: center; justify-content: center;
-       min-height: 100vh; }
-.box { max-width: 420px; margin: 24px; text-align: center; padding: 28px;
-       background: #fff; border-radius: 14px; border: 1px solid #e5e1d8; }
-h1 { font-family: Georgia, serif; font-size: 22px; margin: 0 0 6px 0; }
-p  { font-size: 14px; color: #555; line-height: 1.5; margin: 4px 0; }
-small { color: #888; font-size: 11px; letter-spacing: 1.5px;
-        text-transform: uppercase; }
-a { color: #c9a55b; text-decoration: none; font-weight: 600; }
-</style></head>
-<body><div class="box">
-  <small>OPEN HOUSE COPILOT</small>
+  :root {{
+    --bg-deep: #0a0e13;
+    --bg-card: #161c24;
+    --gold: #c9a86a;
+    --gold-bright: #d8bc7e;
+    --cream: #ebe5d6;
+    --cream-dim: #c4bda9;
+    --text-muted: #6f695c;
+    --border: rgba(201, 168, 106, 0.12);
+    --border-strong: rgba(201, 168, 106, 0.28);
+  }}
+  html, body {{
+    margin: 0; padding: 0;
+    background: var(--bg-deep);
+    color: var(--cream);
+    font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-font-smoothing: antialiased;
+  }}
+  body::before {{
+    content: "";
+    position: fixed; inset: 0;
+    background: radial-gradient(
+      ellipse at top, rgba(201, 168, 106, 0.10) 0%,
+      transparent 60%
+    );
+    pointer-events: none;
+  }}
+  .box {{
+    position: relative;
+    max-width: 440px; margin: 24px; text-align: center;
+    padding: 36px 32px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    border: 1px solid var(--border-strong);
+  }}
+  .mark {{
+    width: 38px; height: 38px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--gold), var(--gold-bright));
+    color: #1a1610; font-weight: 700; font-size: 19px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Instrument Serif', Georgia, serif;
+    margin: 0 auto 18px auto;
+  }}
+  small {{
+    color: var(--gold); font-size: 10px; letter-spacing: 2.2px;
+    text-transform: uppercase; font-weight: 600;
+    font-family: 'Geist', sans-serif;
+  }}
+  h1 {{
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-weight: 400;
+    font-size: 26px; margin: 10px 0 8px 0; color: var(--cream);
+    letter-spacing: -0.3px;
+  }}
+  p {{
+    font-size: 14px; color: var(--cream-dim);
+    line-height: 1.55; margin: 6px 0 18px 0;
+  }}
+  a.btn {{
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 20px; border-radius: 999px;
+    background: var(--gold); color: #1a1610;
+    font-weight: 600; font-size: 13px;
+    text-decoration: none;
+    transition: background 180ms ease, transform 160ms ease;
+  }}
+  a.btn:hover {{
+    background: var(--gold-bright);
+    transform: translateY(-1px);
+  }}
+  a.btn::after {{ content: "→"; }}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="mark">F</div>
+  <small>Open House Copilot</small>
   <h1>Link no longer available</h1>
   <p>This open house report link has expired or been revoked. Ask the agent who shared it for an updated link.</p>
-</div></body></html>"""
+  <a class="btn" href="{marketing}">Visit Open House Copilot</a>
+</div>
+</body>
+</html>"""
+
