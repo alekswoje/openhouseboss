@@ -6749,6 +6749,10 @@ private struct ScriptDetailSheet: View {
     // sheet is already showing. Hosting the Ask-AI prompt as a child sheet
     // lets it stack on top correctly.
     @State private var askAITarget: AgentScriptTarget?
+    // After an AI edit applies, we stash the (before, after) pair here and
+    // present ScriptDiffSheet so the agent can see exactly what changed
+    // before the detail view repaints with the new content.
+    @State private var pendingDiff: ScriptDiffPair?
 
     private var summary: ScriptSummary? {
         store.availableScripts.first(where: { $0.id == scriptId })
@@ -6835,16 +6839,32 @@ private struct ScriptDetailSheet: View {
                 AgentScriptPromptSheet(
                     target: target,
                     onCancel: { askAITarget = nil },
-                    onApplied: { _ in
+                    onApplied: { newDetail in
                         askAITarget = nil
-                        Task {
-                            await store.refreshScripts()
-                            await load()  // pull fresh step bodies after edit
+                        // Hold the pre-edit `detail` so the diff sheet can
+                        // render before/after. Don't reload yet — load()
+                        // would overwrite `detail` and erase the before
+                        // half of the diff.
+                        if let before = detail {
+                            pendingDiff = ScriptDiffPair(before: before, after: newDetail)
                         }
+                        Task { await store.refreshScripts() }
                     }
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+            }
+            .sheet(item: $pendingDiff) { pair in
+                ScriptDiffSheet(
+                    before: pair.before,
+                    after: pair.after,
+                    onClose: {
+                        pendingDiff = nil
+                        // Surface the new content on the detail view now
+                        // that the agent has acknowledged what changed.
+                        detail = pair.after
+                    }
+                )
             }
         }
         .task { await load() }
@@ -7027,6 +7047,355 @@ private struct ScriptDetailSheet: View {
         } catch {
             loadError = error.localizedDescription
         }
+    }
+}
+
+// ── Script diff sheet ───────────────────────────────────────────────────
+//
+// Shows what changed when the AI edited a script. Computed by id-matching
+// steps in the before/after lists: matched ids = modified (or untouched);
+// only-in-before = removed; only-in-after = added. Field-level rendering
+// stacks the old value (terracotta strikethrough) above the new one
+// (cream/gold) so the agent can read both at a glance.
+
+private struct ScriptDiffPair: Identifiable, Hashable {
+    let before: APIClient.ScriptDetailDTO
+    let after: APIClient.ScriptDetailDTO
+    var id: String { "\(before.id)-diff" }
+
+    static func == (lhs: ScriptDiffPair, rhs: ScriptDiffPair) -> Bool {
+        lhs.id == rhs.id
+    }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+private struct ScriptDiffSheet: View {
+    let before: APIClient.ScriptDetailDTO
+    let after: APIClient.ScriptDetailDTO
+    var onClose: () -> Void
+
+    private enum StepKind { case unchanged, modified, added, removed }
+    private struct StepDiff: Identifiable {
+        let id: String
+        let before: APIClient.ScriptDetailDTO.Step?
+        let after: APIClient.ScriptDetailDTO.Step?
+        let kind: StepKind
+        // Field-level flags so the modified renderer only highlights what
+        // actually changed instead of repainting every field of every step.
+        let labelChanged: Bool
+        let quoteChanged: Bool
+        let intentChanged: Bool
+        let sectionChanged: Bool
+    }
+
+    private var stepDiffs: [StepDiff] {
+        let beforeById = Dictionary(uniqueKeysWithValues: before.steps.map { ($0.id, $0) })
+        let afterById = Dictionary(uniqueKeysWithValues: after.steps.map { ($0.id, $0) })
+        var seen = Set<String>()
+        var out: [StepDiff] = []
+
+        // Walk `after` first so additions and modifications appear in the
+        // order they'll live in the script post-edit. Removed steps trail.
+        for a in after.steps {
+            seen.insert(a.id)
+            if let b = beforeById[a.id] {
+                let labelChanged = a.label != b.label
+                let quoteChanged = (a.quote ?? "") != (b.quote ?? "")
+                let intentChanged = (a.intent ?? "") != (b.intent ?? "")
+                let sectionChanged = (a.section ?? "") != (b.section ?? "")
+                let anyChange = labelChanged || quoteChanged || intentChanged || sectionChanged
+                out.append(StepDiff(
+                    id: a.id, before: b, after: a,
+                    kind: anyChange ? .modified : .unchanged,
+                    labelChanged: labelChanged, quoteChanged: quoteChanged,
+                    intentChanged: intentChanged, sectionChanged: sectionChanged
+                ))
+            } else {
+                out.append(StepDiff(
+                    id: a.id, before: nil, after: a, kind: .added,
+                    labelChanged: false, quoteChanged: false,
+                    intentChanged: false, sectionChanged: false
+                ))
+            }
+        }
+        for b in before.steps where !seen.contains(b.id) {
+            out.append(StepDiff(
+                id: b.id, before: b, after: nil, kind: .removed,
+                labelChanged: false, quoteChanged: false,
+                intentChanged: false, sectionChanged: false
+            ))
+        }
+        return out
+    }
+
+    private var nameChanged: Bool { before.name != after.name }
+    private var descriptionChanged: Bool { before.description != after.description }
+
+    // One-sentence summary at the top — "AI added 1 step, edited 2, removed 1"
+    // so the agent gets the gist before scrolling.
+    private var summary: String {
+        let diffs = stepDiffs
+        let added = diffs.filter { $0.kind == .added }.count
+        let removed = diffs.filter { $0.kind == .removed }.count
+        let modified = diffs.filter { $0.kind == .modified }.count
+        var parts: [String] = []
+        if added > 0 { parts.append("added \(added) step\(added == 1 ? "" : "s")") }
+        if removed > 0 { parts.append("removed \(removed) step\(removed == 1 ? "" : "s")") }
+        if modified > 0 { parts.append("edited \(modified) step\(modified == 1 ? "" : "s")") }
+        if nameChanged { parts.append("renamed the script") }
+        if descriptionChanged && !nameChanged { parts.append("updated the description") }
+        if parts.isEmpty { return "No structural changes." }
+        return "AI \(parts.joined(separator: ", "))."
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    summaryBanner
+                    if nameChanged { metadataDiff(label: "NAME", oldText: before.name, newText: after.name) }
+                    if descriptionChanged {
+                        metadataDiff(label: "DESCRIPTION", oldText: before.description, newText: after.description)
+                    }
+                    let visible = stepDiffs.filter { $0.kind != .unchanged }
+                    let unchanged = stepDiffs.filter { $0.kind == .unchanged }.count
+                    if !visible.isEmpty {
+                        VStack(spacing: 12) {
+                            ForEach(visible) { stepCard($0) }
+                        }
+                    }
+                    if unchanged > 0 {
+                        Text("\(unchanged) step\(unchanged == 1 ? "" : "s") unchanged")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .tracking(1.2)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 6)
+                    }
+                    Spacer(minLength: 20)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationTitle("What AI changed")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") { onClose() }
+                        .tint(FoyerTheme.gold)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private var summaryBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(FoyerTheme.gold)
+            Text(summary)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(FoyerTheme.cream)
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(FoyerTheme.goldSoft, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func metadataDiff(label: String, oldText: String, newText: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textMuted)
+            oldNewBlock(oldText: oldText, newText: newText, font: .system(size: 14, weight: .medium))
+        }
+        .padding(14)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func stepCard(_ d: StepDiff) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            stepHeader(d)
+            switch d.kind {
+            case .added:
+                addedStepBody(d.after!)
+            case .removed:
+                removedStepBody(d.before!)
+            case .modified:
+                modifiedStepBody(d)
+            case .unchanged:
+                EmptyView()  // never shown — filtered out above
+            }
+        }
+        .padding(14)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(stepBorderColor(d.kind), lineWidth: 1)
+        )
+    }
+
+    private func stepBorderColor(_ kind: StepKind) -> Color {
+        switch kind {
+        case .added:     return FoyerTheme.sage.opacity(0.45)
+        case .removed:   return FoyerTheme.terracotta.opacity(0.45)
+        case .modified:  return FoyerTheme.gold.opacity(0.35)
+        case .unchanged: return Color.white.opacity(0.05)
+        }
+    }
+
+    private func stepHeader(_ d: StepDiff) -> some View {
+        HStack(spacing: 8) {
+            kindBadge(d.kind)
+            Text(d.after?.label ?? d.before?.label ?? d.id)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FoyerTheme.cream)
+                .strikethrough(d.kind == .removed)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func kindBadge(_ kind: StepKind) -> some View {
+        let (text, color): (String, Color) = {
+            switch kind {
+            case .added:    return ("NEW", FoyerTheme.sage)
+            case .removed:  return ("REMOVED", FoyerTheme.terracotta)
+            case .modified: return ("EDITED", FoyerTheme.gold)
+            case .unchanged: return ("", Color.clear)
+            }
+        }()
+        return Text(text)
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .tracking(1.2)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+    }
+
+    private func addedStepBody(_ step: APIClient.ScriptDetailDTO.Step) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let q = step.quote, !q.isEmpty { quoteBlock(q, tone: .added) }
+            if let intent = step.intent, !intent.isEmpty {
+                Text(intent)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+        }
+    }
+
+    private func removedStepBody(_ step: APIClient.ScriptDetailDTO.Step) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let q = step.quote, !q.isEmpty { quoteBlock(q, tone: .removed) }
+            if let intent = step.intent, !intent.isEmpty {
+                Text(intent)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .strikethrough()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modifiedStepBody(_ d: StepDiff) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if d.labelChanged {
+                fieldDiffBlock(
+                    label: "LABEL",
+                    oldText: d.before?.label ?? "",
+                    newText: d.after?.label ?? ""
+                )
+            }
+            if d.quoteChanged {
+                fieldDiffBlock(
+                    label: "QUOTE",
+                    oldText: d.before?.quote ?? "",
+                    newText: d.after?.quote ?? ""
+                )
+            }
+            if d.intentChanged {
+                fieldDiffBlock(
+                    label: "INTENT",
+                    oldText: d.before?.intent ?? "",
+                    newText: d.after?.intent ?? ""
+                )
+            }
+            if d.sectionChanged {
+                fieldDiffBlock(
+                    label: "SECTION",
+                    oldText: d.before?.section ?? "",
+                    newText: d.after?.section ?? ""
+                )
+            }
+        }
+    }
+
+    private func fieldDiffBlock(label: String, oldText: String, newText: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(FoyerTheme.textMuted)
+            oldNewBlock(oldText: oldText, newText: newText, font: .system(size: 13))
+        }
+    }
+
+    // Stacked OLD over NEW rendering. Keeps the diff readable on a narrow
+    // iPhone screen — side-by-side would force tiny text. The OLD line gets
+    // strikethrough + terracotta tint; the NEW line gets cream + a left
+    // gold bar so the eye lands on what's current.
+    private func oldNewBlock(oldText: String, newText: String, font: Font) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !oldText.isEmpty {
+                Text(oldText)
+                    .font(font)
+                    .foregroundStyle(FoyerTheme.terracotta.opacity(0.85))
+                    .strikethrough()
+                    .lineSpacing(2)
+            }
+            if !newText.isEmpty {
+                Text(newText)
+                    .font(font)
+                    .foregroundStyle(FoyerTheme.cream)
+                    .lineSpacing(2)
+                    .padding(.leading, 8)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(FoyerTheme.gold.opacity(0.55))
+                            .frame(width: 2)
+                    }
+            }
+        }
+    }
+
+    private enum QuoteTone { case added, removed }
+    private func quoteBlock(_ text: String, tone: QuoteTone) -> some View {
+        let color: Color = tone == .added ? FoyerTheme.cream : FoyerTheme.textDim
+        let bar: Color = tone == .added ? FoyerTheme.sage : FoyerTheme.terracotta
+        return Text("\u{201C}\(text)\u{201D}")
+            .font(.system(size: 13))
+            .foregroundStyle(color)
+            .strikethrough(tone == .removed)
+            .lineSpacing(2)
+            .padding(.leading, 8)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(bar.opacity(0.55))
+                    .frame(width: 2)
+            }
     }
 }
 
