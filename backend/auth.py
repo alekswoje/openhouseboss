@@ -555,14 +555,17 @@ PROFILE_FIELDS = (
     "phone",
     "title",
     "tagline",
+    # List of strings — the agent's own past follow-up notes, used by
+    # analyze_visitor as the authoritative voice anchor so AI drafts
+    # sound like the agent rather than a generic assistant.
+    "voice_samples",
 )
 
 
 def profile_for(user_id: str) -> dict:
-    """Return {brokerage, license_number, phone, title, tagline,
-    headshot_url} — the bits the iOS profile screen renders. Always
-    returns strings (empty when unset) so the iOS form doesn't have to
-    paper over nil vs "" everywhere."""
+    """Return the bits the iOS profile screen renders. Always returns
+    typed defaults (empty string / empty list) so the iOS form doesn't
+    have to paper over nil vs "" everywhere."""
     user = get_user_by_id(user_id) or {}
     headshot = user.get("headshot_filename")
     return {
@@ -571,6 +574,7 @@ def profile_for(user_id: str) -> dict:
         "phone":          user.get("phone") or "",
         "title":          user.get("title") or "",
         "tagline":        user.get("tagline") or "",
+        "voice_samples":  list(user.get("voice_samples") or []),
         # Relative URL — the iOS client expands against Config.backendURL.
         # `?v={epoch}` cache-buster forces avatars to refresh on iOS after
         # re-upload (URLCache otherwise pins the old image for hours).
@@ -583,8 +587,8 @@ def profile_for(user_id: str) -> dict:
 
 def update_profile(user_id: str, updates: dict) -> dict:
     """Patch the editable profile fields. Unknown keys are ignored —
-    PROFILE_FIELDS is the whitelist. Empty string clears a field; nil
-    leaves it unchanged."""
+    PROFILE_FIELDS is the whitelist. Empty string / empty list clears
+    a field; nil leaves it unchanged."""
     data = _load_users()
     for u in data["users_by_google_sub"].values():
         if u["id"] == user_id:
@@ -592,6 +596,17 @@ def update_profile(user_id: str, updates: dict) -> dict:
                 if k not in updates:
                     continue
                 v = updates[k]
+                if isinstance(v, list):
+                    # voice_samples: drop blanks, cap length defensively.
+                    cleaned = [
+                        s.strip() for s in v
+                        if isinstance(s, str) and s.strip()
+                    ][:10]
+                    if cleaned:
+                        u[k] = cleaned
+                    else:
+                        u.pop(k, None)
+                    continue
                 if isinstance(v, str):
                     v = v.strip()
                 if v == "" or v is None:
@@ -601,6 +616,14 @@ def update_profile(user_id: str, updates: dict) -> dict:
             _save_users(data)
             return profile_for(user_id)
     raise HTTPException(404, "User not found")
+
+
+def voice_samples_for(user_id: str) -> list[str]:
+    """Convenience read for analyze_visitor — empty list if the agent
+    hasn't pasted any past follow-ups yet."""
+    user = get_user_by_id(user_id) or {}
+    raw = user.get("voice_samples") or []
+    return [s for s in raw if isinstance(s, str) and s.strip()]
 
 
 def headshot_path_for(user_id: str) -> Optional[Path]:

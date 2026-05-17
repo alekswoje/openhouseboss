@@ -73,12 +73,33 @@ def _template_instructions(templates: list[dict], force: bool) -> str:
     )
 
 
+def _voice_instructions(samples: list[str] | None) -> str:
+    """If the agent pasted a few of their own past follow-ups, those become
+    the dominant voice anchor — beats any general "be casual" instruction.
+    Empty / unset → we lean on the in-prompt good/bad examples alone."""
+    cleaned = [s.strip() for s in (samples or []) if s and s.strip()]
+    if not cleaned:
+        return ""
+    chunks = "\n\n".join(f"--- sample {i+1}:\n{s}" for i, s in enumerate(cleaned[:5]))
+    return (
+        "===== AGENT'S OWN PAST FOLLOW-UPS (HIGHEST AUTHORITY ON VOICE) =====\n"
+        "These are real notes this agent has sent. Match THEIR voice — their "
+        "capitalization habits, their punctuation, their level of warmth, "
+        "their typical length, the way they open and close. If their voice "
+        "conflicts with any general example above, FOLLOW THE AGENT. Do not "
+        "copy phrases verbatim; absorb the rhythm.\n\n"
+        + chunks
+        + "\n\n===== END AGENT VOICE =====\n\n"
+    )
+
+
 def analyze_visitor(
     transcript: aai.Transcript,
     visitor: Visitor,
     tags: list[Tag],
     templates: list[dict] | None = None,
     force_templates: bool = False,
+    voice_samples: list[str] | None = None,
 ) -> VisitorAnalysis:
     utterances_text = "\n".join(
         f"[{u.speaker}{' ← visitor' if u.speaker == visitor.speaker else ''}] {u.text}"
@@ -98,6 +119,7 @@ def analyze_visitor(
         _render_template_for_visitor(t, visitor) for t in (templates or [])
     ]
     template_block = _template_instructions(rendered_templates, force_templates)
+    voice_block = _voice_instructions(voice_samples)
 
     system_prompt = (
         "You help a real-estate agent follow up after an open house. You are given "
@@ -106,36 +128,80 @@ def analyze_visitor(
         "pick exactly one tag from the list, score their interest/urgency 0–100 "
         "(0=cold, 50=warm, 80+=hot/transacting soon), extract 3–5 short signal "
         "phrases (each ≤4 words — concrete facts like 'Pre-approved $1.4M', "
-        "'Close in 60 days', 'Owner 15 yrs'), and draft a SHORT follow-up email "
-        "(STRICT: max 4 sentences total, under 60 words, mobile-friendly, "
-        "ending with a single specific question or yes/no ask that converts to "
-        "a reply — e.g. 'Want me to send the comps?' or 'Open to a 15-minute call "
-        "Thursday?'). No long paragraphs, no boilerplate intro, no 'I hope this "
-        "finds you well'. Reference exactly one thing they said, then the ask. "
-        "\n\nANTI-HALLUCINATION RULES (these matter — the agent sends these "
-        "emails as-is and gets caught in a lie if you invent things):\n"
+        "'Close in 60 days', 'Owner 15 yrs'), and draft a short follow-up note "
+        "from the agent to the visitor.\n\n"
+        "===== VOICE — THIS IS THE WHOLE GAME =====\n"
+        "The draft must sound like a busy real human agent dashing off a note "
+        "between showings. NOT an AI assistant writing a polished email. If "
+        "the recipient could tell ChatGPT wrote it, you have failed.\n\n"
+        "HARD RULES:\n"
+        "- 1–3 short sentences. Under 50 words. Sometimes 1 sentence is right.\n"
+        "- Lowercase opening is fine and often better (\"hey,\" \"good meeting "
+        "you today\" — no capital H). Contractions everywhere. Fragments OK.\n"
+        "- NO formulaic close. Sometimes end with a question, sometimes don't. "
+        "Often the strongest move is to OFFER TO BACK OFF: \"no rush on your "
+        "end,\" \"i'll leave you alone til you want me back,\" \"either way "
+        "works.\" Real agents do this constantly. AI never does.\n"
+        "- Reference one specific thing they said, but don't shoehorn it. If "
+        "nothing concrete stood out, a loose acknowledgment is fine.\n\n"
+        "BANNED PHRASES (instant AI tells — never use any of these or "
+        "anything close):\n"
+        "  • \"Great meeting you\" / \"It was great meeting you\"\n"
+        "  • \"I really enjoyed\" / \"I loved hearing\"\n"
+        "  • \"I'd love to\" / \"I would love to\"\n"
+        "  • \"I hope this finds you well\" / \"I hope you're doing well\"\n"
+        "  • \"Feel free to\" / \"Please don't hesitate\"\n"
+        "  • \"I look forward to\" / \"Looking forward to hearing\"\n"
+        "  • \"Would you be open to a [N]-minute call\"\n"
+        "  • \"Let me know if\" (as a closer)\n"
+        "  • \"touch base\" / \"circle back\" / \"reach out\"\n"
+        "  • Any opener that's about YOUR feelings about the meeting\n\n"
+        "GOOD EXAMPLES (study the voice — short, human, lowercase-y, "
+        "willing to back off):\n"
+        "  ex1 (warm browser, just looking): \"hey, good meeting you today. "
+        "welcome out of redmond — that's a move. if anything in the 7s pops "
+        "up that's actually worth a look i'll send it over. no rush on your "
+        "end.\"\n"
+        "  ex2 (warm, asks something real): \"nice meeting you today. want "
+        "me to just send stuff as it comes up in your range, or wait til "
+        "you've got a sharper read on what you're after?\"\n"
+        "  ex3 (cold/short, optional close): \"hey nice meeting you. happy "
+        "to keep an eye on things in your range. otherwise i'll leave you "
+        "alone til you want me back.\"\n"
+        "  ex4 (something specific they said — kid starting school): "
+        "\"good meeting you today. heard you mention the august move for "
+        "school — if anything fitting that timeline comes up i'll flag it.\"\n"
+        "  ex5 (hot, sold visit): \"good meeting you today! you seemed "
+        "pretty into the kitchen — happy to pull a couple comps on similar "
+        "remodels in the area if it'd help you think about it.\"\n\n"
+        "BAD EXAMPLE (do NOT produce this — every line a tell):\n"
+        "  \"Hi Sarah, it was great meeting you at the open house today! I "
+        "really enjoyed hearing about your move from Redmond. Given you're "
+        "looking in the $700-800K range, I'd love to share some properties "
+        "that might catch your eye. Would you be open to a 15-minute call "
+        "Thursday to discuss your search criteria?\"\n\n"
+        "===== END VOICE =====\n\n"
+        + voice_block
+        + "ANTI-HALLUCINATION RULES (these matter — the agent sends these "
+        "notes as-is and gets caught in a lie if you invent things):\n"
         "- NEVER claim the agent has specific resources, listings, or "
         "deliverables that aren't mentioned in the transcript or the "
         "templates/offers block below. Forbidden examples: \"I have other "
         "homes in your price range\", \"I'll send you the three comps I "
         "pulled\", \"I have a unit in that neighborhood\", \"I've got a "
         "buyer for your place\", \"my colleague specializes in that area\".\n"
-        "- The ask must be a QUESTION the agent can answer with their own "
-        "real resources, not a promise of something specific. Safe: \"Want "
-        "me to look into options in your range?\" / \"Open to a quick call "
-        "Thursday?\". Unsafe: \"I'll send you the three listings I have on "
-        "the West Side.\"\n"
+        "- Promise-style asks must be open-ended — \"if anything pops up "
+        "in your range i'll send it\" is fine; \"i'll send the three "
+        "listings i have on the west side\" is not.\n"
         "- Don't invent prices, square footage, neighborhood facts, market "
         "stats, or timeline promises. If the transcript didn't say it and "
         "no template/offer covers it, don't write it.\n"
-        "- It's fine — and often best — to keep the email generic. A short "
-        "warm note + a non-specific ask is much safer than a specific "
-        "promise the agent can't keep.\n\n"
+        "- Short and generic beats specific and wrong. Always.\n\n"
         "DO NOT include any sign-off, signature line, or agent name — the "
-        "email client appends the agent's signature automatically. End the "
-        "body with the ask sentence. NEVER use bracketed placeholders like "
-        "[Agent Name], [Address], [Phone], etc. — they get sent as-is and "
-        "embarrass the agent. If you don't know a value, leave it out."
+        "email client appends the agent's signature automatically. NEVER "
+        "use bracketed placeholders like [Agent Name], [Address], [Phone], "
+        "etc. — they get sent as-is and embarrass the agent. If you don't "
+        "know a value, leave it out."
         + template_block
         + "\n\n"
         f"Visitor: {visitor.name} (Speaker {visitor.speaker})\n\n"
@@ -342,6 +408,7 @@ def refine_draft(
     mentioned_templates: list[dict] | None = None,
     available_offers: list[dict] | None = None,
     available_templates: list[dict] | None = None,
+    voice_samples: list[str] | None = None,
 ) -> str:
     """Rewrite an existing follow-up draft according to the agent's
     instruction ("too long", "add a CTA about the 1pm Saturday tour", "more
@@ -382,6 +449,7 @@ def refine_draft(
         available_offers=available_offers or [],
         available_templates=available_templates or [],
     )
+    voice_block = _voice_instructions(voice_samples)
 
     client = Anthropic()
     response = client.messages.create(
@@ -392,27 +460,39 @@ def refine_draft(
         model=FAST_MODEL,
         max_tokens=400,
         system=(
-            "You rewrite a real-estate follow-up email per the agent's "
-            "instruction. Keep it short and mobile-friendly. Default to under "
-            "4 sentences unless the agent explicitly asks for longer. End with "
-            "a single specific ask the lead can reply to. No subject line, no "
-            "greetings beyond a short hi/hello, no 'I hope this finds you well' "
-            "boilerplate. DO NOT include any sign-off, signature line, or agent "
-            "name — the email client appends the agent's signature automatically. "
-            "End the body with the ask sentence. NEVER use bracketed placeholders "
-            "like [Agent Name], [Address], [Phone], etc. — they get sent as-is "
-            "and embarrass the agent. If you don't know a value, leave it out. "
-            "\n\nANTI-HALLUCINATION: never claim the agent has specific resources "
-            "or deliverables that aren't in the context block, the templates/offers "
-            "block, or already in the current draft. Don't invent listings (\"I "
-            "have other homes in your range\"), comps, market reports, neighborhood "
-            "facts, prices, or specific tours the agent didn't mention. The ask "
-            "should be a question, not a promise of something concrete. If the "
-            "agent's instruction asks for content that isn't supported by the "
-            "context (e.g. \"mention the comps I'll send\" when no comps are in "
-            "context), keep the ask as a question (\"Want me to put together "
-            "some comps?\") rather than asserting it exists.\n\n"
-            "Return ONLY the rewritten email body as plain text — no JSON, no "
+            "You rewrite a real-estate follow-up note per the agent's "
+            "instruction. The output must sound like a busy human agent — "
+            "NOT an AI assistant. Default to 1–3 short sentences. Lowercase "
+            "openings are fine. Contractions everywhere. Fragments OK. Often "
+            "the strongest ending is to offer to back off (\"no rush,\" "
+            "\"either way,\" \"i'll leave you alone til you want me back\"); "
+            "don't force a yes/no question close unless the agent's "
+            "instruction asks for one. Reference one specific thing they "
+            "said when it helps, otherwise don't shoehorn.\n\n"
+            "BANNED PHRASES (never use): \"Great meeting you\", \"I really "
+            "enjoyed\", \"I'd love to\", \"I hope this finds you well\", "
+            "\"Feel free to\", \"I look forward to\", \"Would you be open "
+            "to a [N]-minute call\", \"touch base\", \"circle back\", "
+            "\"reach out\".\n\n"
+            "DO NOT include any sign-off, signature line, or agent name — "
+            "the email client appends the agent's signature automatically. "
+            "NEVER use bracketed placeholders like [Agent Name], [Address], "
+            "[Phone], etc. — they get sent as-is and embarrass the agent. "
+            "If you don't know a value, leave it out.\n\n"
+            "ANTI-HALLUCINATION: never claim the agent has specific "
+            "resources or deliverables that aren't in the context block, "
+            "the templates/offers block, or already in the current draft. "
+            "Don't invent listings (\"I have other homes in your range\"), "
+            "comps, market reports, neighborhood facts, prices, or specific "
+            "tours the agent didn't mention. Promise-style asks must stay "
+            "open-ended (\"if anything pops up i'll send it\"), never "
+            "asserting something specific exists. If the agent's "
+            "instruction asks for content that isn't supported by the "
+            "context (e.g. \"mention the comps I'll send\" when no comps "
+            "are in context), keep it open (\"want me to pull a few "
+            "comps?\") rather than asserting it exists.\n\n"
+            + voice_block +
+            "Return ONLY the rewritten note as plain text — no JSON, no "
             "quotes around the result, no commentary, no 'Here is the rewrite'."
         ),
         messages=[{

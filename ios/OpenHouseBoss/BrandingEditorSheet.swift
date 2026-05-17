@@ -18,6 +18,10 @@ struct BrandingEditorSheet: View {
     @State private var phone = ""
     @State private var title = ""
     @State private var tagline = ""
+    // Past follow-ups the agent has written, used by the AI as voice
+    // anchor. Stored as an editable array so the user can paste a few
+    // examples in separate boxes (mirrors how they'd think about them).
+    @State private var voiceSamples: [String] = [""]
 
     @State private var headshotUrl: String?
     @State private var pickedHeadshotImage: UIImage?
@@ -65,6 +69,7 @@ struct BrandingEditorSheet: View {
                     } footer: {
                         Text("Appears as a small italic line under your name. Example: \"Helping Seattle families find home since 2015.\"")
                     }
+                    voiceSamplesSection
                     if let err = error ?? loadError {
                         Section { Text(err).foregroundStyle(.red).font(.footnote) }
                     }
@@ -88,6 +93,54 @@ struct BrandingEditorSheet: View {
         .onChange(of: photoPickerItem) { _, item in
             guard let item else { return }
             Task { await loadAndUploadHeadshot(from: item) }
+        }
+    }
+
+    // MARK: – Voice samples section
+
+    // Editable list of past follow-ups in the agent's own voice. The
+    // backend uses these as the dominant voice anchor when drafting
+    // new AI follow-ups — without them, drafts default to the in-prompt
+    // generic-good-voice examples (better than nothing, worse than yours).
+    @ViewBuilder
+    private var voiceSamplesSection: some View {
+        Section {
+            ForEach(voiceSamples.indices, id: \.self) { idx in
+                HStack(alignment: .top, spacing: 8) {
+                    TextField(
+                        "Paste a past follow-up — exactly how you'd write it",
+                        text: Binding(
+                            get: { idx < voiceSamples.count ? voiceSamples[idx] : "" },
+                            set: { if idx < voiceSamples.count { voiceSamples[idx] = $0 } }
+                        ),
+                        axis: .vertical
+                    )
+                    .lineLimit(3...8)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    if voiceSamples.count > 1 {
+                        Button {
+                            voiceSamples.remove(at: idx)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red.opacity(0.7))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if voiceSamples.count < 5 {
+                Button {
+                    voiceSamples.append("")
+                } label: {
+                    Label("Add another", systemImage: "plus.circle")
+                        .font(.system(size: 14))
+                }
+            }
+        } header: {
+            Text("Your voice")
+        } footer: {
+            Text("Paste 2–3 follow-up messages you've actually sent — texts or emails, whatever you really write. The AI matches your phrasing, capitalization, and length when drafting new ones. The more honest, the better. Skip the polish.")
         }
     }
 
@@ -179,6 +232,9 @@ struct BrandingEditorSheet: View {
             phone = p.phone
             title = p.title
             tagline = p.tagline
+            // Always show at least one editable row so the section never
+            // collapses to just the "Add another" button on a fresh profile.
+            voiceSamples = p.voiceSamples.isEmpty ? [""] : p.voiceSamples
             headshotUrl = p.headshotUrl
         } catch {
             loadError = "Couldn't load profile: \(error.localizedDescription)"
@@ -189,13 +245,17 @@ struct BrandingEditorSheet: View {
         saving = true
         error = nil
         defer { saving = false }
+        let cleanedSamples = voiceSamples
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         do {
             let updated = try await APIClient.shared.updateProfile(
                 brokerage: brokerage.trimmingCharacters(in: .whitespaces),
                 licenseNumber: licenseNumber.trimmingCharacters(in: .whitespaces),
                 phone: phone.trimmingCharacters(in: .whitespaces),
                 title: title.trimmingCharacters(in: .whitespaces),
-                tagline: tagline.trimmingCharacters(in: .whitespacesAndNewlines)
+                tagline: tagline.trimmingCharacters(in: .whitespacesAndNewlines),
+                voiceSamples: cleanedSamples
             )
             // Refresh AuthStore so other screens that render the agent's
             // profile pick up the new fields without a manual reload.

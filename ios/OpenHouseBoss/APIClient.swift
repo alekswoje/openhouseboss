@@ -325,19 +325,21 @@ actor APIClient {
         licenseNumber: String? = nil,
         phone: String? = nil,
         title: String? = nil,
-        tagline: String? = nil
+        tagline: String? = nil,
+        voiceSamples: [String]? = nil
     ) async throws -> AgentProfile {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("me/profile"))
         req.httpMethod = "PATCH"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 10
         authorize(&req)
-        var payload: [String: String] = [:]
+        var payload: [String: Any] = [:]
         if let brokerage     { payload["brokerage"]      = brokerage }
         if let licenseNumber { payload["license_number"] = licenseNumber }
         if let phone         { payload["phone"]          = phone }
         if let title         { payload["title"]          = title }
         if let tagline       { payload["tagline"]        = tagline }
+        if let voiceSamples  { payload["voice_samples"]  = voiceSamples }
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
@@ -2124,6 +2126,10 @@ struct AgentProfile: Codable, Hashable {
     var phone: String = ""
     var title: String = ""
     var tagline: String = ""
+    // Past follow-up notes the agent wrote in their own voice. The AI
+    // uses these as the dominant voice anchor when drafting new
+    // follow-ups so they sound like the agent, not an assistant.
+    var voiceSamples: [String] = []
     // Relative URL like "/me/profile/headshot?v=1700000000" — expand
     // against Config.backendURL. nil = no headshot uploaded.
     var headshotUrl: String?
@@ -2131,8 +2137,24 @@ struct AgentProfile: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case brokerage, phone, title, tagline
         case licenseNumber = "license_number"
+        case voiceSamples = "voice_samples"
         case headshotUrl = "headshot_url"
     }
+
+    // Older cached profiles (pre-voice-samples) decode without the key —
+    // treat that as an empty list so the form binds cleanly.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        brokerage     = (try? c.decode(String.self, forKey: .brokerage))     ?? ""
+        licenseNumber = (try? c.decode(String.self, forKey: .licenseNumber)) ?? ""
+        phone         = (try? c.decode(String.self, forKey: .phone))         ?? ""
+        title         = (try? c.decode(String.self, forKey: .title))         ?? ""
+        tagline       = (try? c.decode(String.self, forKey: .tagline))       ?? ""
+        voiceSamples  = (try? c.decode([String].self, forKey: .voiceSamples)) ?? []
+        headshotUrl   = try? c.decodeIfPresent(String.self, forKey: .headshotUrl)
+    }
+
+    init() {}
 
     static let empty = AgentProfile()
 
@@ -2141,6 +2163,7 @@ struct AgentProfile: Codable, Hashable {
     var hasBranding: Bool {
         !brokerage.isEmpty || !licenseNumber.isEmpty || !phone.isEmpty
         || !title.isEmpty || !tagline.isEmpty || headshotUrl != nil
+        || !voiceSamples.isEmpty
     }
 }
 
