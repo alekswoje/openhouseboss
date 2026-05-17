@@ -369,44 +369,48 @@ struct CopilotSheet: View {
     // MARK: – Composer
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                if input.isEmpty {
-                    Text("Ask anything…")
-                        .font(.system(size: 15))
-                        .foregroundStyle(FoyerTheme.textMuted)
-                        .padding(.horizontal, 14).padding(.vertical, 12)
-                        .allowsHitTesting(false)
-                }
-                TextEditor(text: $input)
-                    .font(.system(size: 15))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .tint(FoyerTheme.gold)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 9).padding(.vertical, 4)
-                    .frame(minHeight: 44, maxHeight: 140)
-                    .focused($inputFocused)
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(FoyerTheme.bgCard)
-            )
-
+        // ChatGPT-style composer: single rounded field that starts at one
+        // line and grows up to ~5 lines, with the send button tucked into
+        // the bottom-right corner inside the field. Using TextField with an
+        // axis (iOS 16+) instead of TextEditor lets the field size itself
+        // to its content — TextEditor reports a huge intrinsic height even
+        // when empty, which is what made the old composer eat 1/3 of the
+        // screen.
+        HStack(alignment: .bottom, spacing: 0) {
+            TextField("Ask anything…", text: $input, axis: .vertical)
+                .lineLimit(1...5)
+                .font(.system(size: 15))
+                .foregroundStyle(FoyerTheme.cream)
+                .tint(FoyerTheme.gold)
+                .focused($inputFocused)
+                // Trailing pad reserves space for the inset send button so
+                // the caret never slides under it.
+                .padding(.leading, 16)
+                .padding(.trailing, 46)
+                .padding(.vertical, 11)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(FoyerTheme.bgCard)
+        )
+        .overlay(alignment: .bottomTrailing) {
             Button { Task { await send() } } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(canSend ? FoyerTheme.inkOnGold : FoyerTheme.textMuted)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 30, height: 30)
                     .background(
-                        Circle().fill(canSend ? FoyerTheme.gold : Color.white.opacity(0.08))
+                        Circle().fill(canSend ? FoyerTheme.gold : Color.white.opacity(0.10))
                     )
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
+            .padding(6)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 14)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
         .background(
             Rectangle()
                 .fill(Color.black)
