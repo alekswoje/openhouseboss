@@ -27,6 +27,7 @@ from pipeline.mock import load_mock_transcript
 from pipeline.report import (
     SessionReport,
     generate_report as _generate_report,
+    refine_report as _refine_report,
     render_report_html,
 )
 from pipeline.script_coverage import grade_against_script
@@ -2821,6 +2822,45 @@ def update_report(
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, f"Invalid report payload: {exc}")
         session["report"] = validated.model_dump()
+        meta = session.get("report_meta") or {}
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        meta["edited"] = True
+        session["report_meta"] = meta
+        _persist(session_id)
+        return {"report": session["report"], "report_meta": meta}
+
+
+@app.post("/sessions/{session_id}/report/refine")
+def refine_report(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Apply a natural-language instruction to the cached report. Haiku
+    rewrites only the fields the instruction touches and returns the
+    full structure; we overwrite the saved report. Used by iOS's
+    "Edit with AI" sheet — the agent describes what's wrong and the
+    model fixes it. Replaces the per-section TextEditor flow."""
+    instruction = (payload.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(400, "instruction is required")
+
+    session = _load_session_or_404(session_id, current_user)
+    current = session.get("report")
+    if not current:
+        raise HTTPException(409, "Report not generated yet")
+
+    # Haiku call runs outside the lock — typically 2-4s for a refine.
+    try:
+        refined = _refine_report(current, instruction)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    refined_dict = refined.model_dump()
+
+    with _sessions_lock:
+        # Re-fetch in case another writer touched the session mid-flight.
+        session = _sessions.get(session_id) or session
+        session["report"] = refined_dict
         meta = session.get("report_meta") or {}
         meta["updated_at"] = datetime.now(timezone.utc).isoformat()
         meta["edited"] = True

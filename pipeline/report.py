@@ -300,6 +300,91 @@ def generate_report(session: dict) -> SessionReport:
     return SessionReport(**parsed)
 
 
+# --- AI refine -----------------------------------------------------------
+
+REFINE_FAST_MODEL = "claude-haiku-4-5"
+
+REFINE_SYSTEM_PROMPT = """You revise an Open House Report based on the \
+real-estate agent's instruction. You receive (1) the current report as JSON \
+and (2) a short instruction from the agent. Return ONLY the modified report \
+as a JSON object — same shape, same keys, only the fields the agent's \
+instruction touches change.
+
+Critical rules:
+- Preserve EVERY key from the input — don't drop fields you weren't asked \
+to change. If the agent says "tighten the agent_take", only agent_take \
+should change; everything else is verbatim.
+- Same Fair Housing guardrails as the original: NEVER include demographic \
+descriptors; NEVER name a visitor; themes still require >=2 visitors; \
+quotes always anonymized.
+- Don't invent new themes or visitors. If the agent says "add a section \
+about XYZ" and the underlying data doesn't support it, refuse to add it \
+— either return the report unchanged or add a sensible neighboring edit.
+- Return ONLY the JSON object. No markdown fences, no commentary, no \
+"Here is the revised report:". Just the JSON."""
+
+
+def refine_report(current_report: dict, instruction: str) -> SessionReport:
+    """Apply the agent's edit instruction to an existing report. Uses
+    Haiku for the speed-tradeoff — refines typically finish in 2-4s
+    vs Sonnet's 8-12s, and the task is narrow enough that Haiku
+    handles it well.
+
+    Caller passes the current report dict (post-validation) + a free-
+    form instruction ("tighten the agent take", "make the concerns
+    less harsh", "drop the standout visitors section"). Returns a
+    validated SessionReport.
+
+    Raises ValueError if Claude returns nothing parseable. Caller is
+    expected to surface the error to the user; the existing report
+    on the session is untouched."""
+    if not (instruction or "").strip():
+        return SessionReport(**current_report)
+
+    client = Anthropic()
+    user_content = (
+        f"CURRENT REPORT (JSON):\n{json.dumps(current_report, indent=2)}\n\n"
+        f"AGENT'S INSTRUCTION: {instruction.strip()}\n\n"
+        f"Return the revised report as JSON only."
+    )
+
+    parsed: dict | None = None
+    for attempt in range(2):
+        response = client.messages.create(
+            model=REFINE_FAST_MODEL,
+            max_tokens=4000,
+            system=REFINE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_content + (
+                "" if attempt == 0 else
+                "\n\nYour previous response was not valid JSON. Return a "
+                "single JSON object only, no markdown fences, no commentary."
+            )}],
+        )
+        raw = response.content[0].text
+        try:
+            candidate = json.loads(_extract_json(raw))
+            if isinstance(candidate, dict):
+                parsed = candidate
+                break
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "Claude did not return a parseable revised report after 2 attempts. "
+            "Try a different instruction or retry."
+        )
+
+    # Defense in depth: re-scrub demographics + ensure no required field
+    # was dropped. The system prompt forbids dropping keys, but a stray
+    # Haiku response could omit one — fill from the original so callers
+    # never see a half-empty SessionReport.
+    parsed = _scrub_pii_and_demographics(parsed)
+    for key, value in current_report.items():
+        parsed.setdefault(key, value)
+    return SessionReport(**parsed)
+
+
 # --- Defensive scrubbing -------------------------------------------------
 
 

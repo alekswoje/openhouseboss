@@ -9,9 +9,49 @@ enum APIError: Error, LocalizedError {
     case unexpected(String)
     var errorDescription: String? {
         switch self {
-        case .http(let code, let body): return "HTTP \(code): \(body)"
+        case .http(let code, let body):
+            // Don't surface raw HTML (Render/Cloudflare error pages) or
+            // multi-KB JSON dumps to the user — the failed-state UI shows
+            // this string directly. Keep it short and friendly; the raw
+            // body is still logged at the call site for debugging.
+            return Self.friendlyMessage(code: code, body: body)
         case .unexpected(let m): return m
         }
+    }
+
+    private static func friendlyMessage(code: Int, body: String) -> String {
+        switch code {
+        case 502, 503, 504:
+            return "The server is having trouble reaching the open-house service. Please try again in a moment."
+        case 401, 403:
+            return "You're signed out or don't have access. Sign in again to continue."
+        case 404:
+            return "We couldn't find that session — it may have been deleted."
+        case 408, 429:
+            return "The server is busy. Please try again in a moment."
+        default: break
+        }
+        // For other 4xx/5xx, try to surface a structured error body
+        // (FastAPI returns `{"detail": "..."}`) but never raw HTML.
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"),
+           let data = trimmed.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let detail = obj["detail"] as? String, !detail.isEmpty {
+                return detail
+            }
+            if let err = obj["error"] as? String, !err.isEmpty {
+                return err
+            }
+        }
+        if trimmed.hasPrefix("<") || trimmed.isEmpty {
+            return "Request failed (HTTP \(code)). Please try again."
+        }
+        // Plain-text body — cap length so a stack trace doesn't blow up the UI.
+        let snippet = trimmed.count > 240
+            ? String(trimmed.prefix(240)) + "…"
+            : trimmed
+        return "Request failed (HTTP \(code)): \(snippet)"
     }
 }
 
@@ -184,7 +224,21 @@ actor APIClient {
             req.timeoutInterval = timeout
             authorize(&req)
             do {
-                return try await self.session.data(for: req)
+                let (data, response) = try await self.session.data(for: req)
+                if let http = response as? HTTPURLResponse,
+                   [502, 503, 504].contains(http.statusCode) {
+                    // Render / Cloudflare edge couldn't reach a healthy
+                    // worker — same transient pattern coldStartPOST handles.
+                    // GETs are idempotent so a quick retry is always safe.
+                    lastError = APIError.http(http.statusCode,
+                                              String(data: data, encoding: .utf8) ?? "")
+                    if attempt < maxAttempts - 1 {
+                        let delay = UInt64((attempt + 1) * 1_000_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
+                        continue
+                    }
+                }
+                return (data, response)
             } catch let urlErr as URLError {
                 // Retry only on the errors that look like "backend is asleep
                 // or the network just hiccuped" — not on auth/host config
@@ -982,6 +1036,27 @@ actor APIClient {
         // typically lands in 10-20s for a normal-size open house.
         req.timeoutInterval = 60
         authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ReportEnvelope.self, from: data)
+    }
+
+    // Apply a natural-language refine instruction to the report ("tighten
+    // the agent's take", "make concerns less harsh"). Haiku rewrites in
+    // ~2-4s and returns the full revised structure. Replaces the old
+    // per-section TextEditor flow — agents describe what's wrong, the
+    // model fixes it.
+    func refineReport(sessionId: String, instruction: String) async throws -> ReportEnvelope {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/report/refine"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 30
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "instruction": instruction,
+        ])
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(ReportEnvelope.self, from: data)

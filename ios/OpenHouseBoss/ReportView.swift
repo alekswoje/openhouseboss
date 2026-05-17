@@ -28,11 +28,20 @@ struct ReportView: View {
     @State private var loadError: String?
     @State private var generating = false
     @State private var generateError: String?
-    @State private var saving = false
-    @State private var saveError: String?
 
-    @State private var editing = false
-    @State private var draft: SessionReport?
+    // AI-refine state — agents tell Claude what's wrong in plain
+    // English ("tighten the agent take"); Haiku rewrites and we swap
+    // the saved report. Replaces the old per-section TextEditor flow:
+    // homeowner-facing reports need consistent voice + Fair Housing
+    // guarantees, which manual editing in tiny fields couldn't enforce.
+    @State private var showRefineSheet = false
+    @State private var refining = false
+    @State private var refineError: String?
+
+    // Tracks whether we've already auto-kicked generation in this view
+    // instance. Without it, .task firing after an iOS scene re-attach
+    // would spin a second generate while one was already in flight.
+    @State private var autoStartAttempted = false
 
     @State private var showSendSheet = false
     @State private var showRegenerateConfirm = false
@@ -75,23 +84,42 @@ struct ReportView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    BackBar(crumbs: ["Sessions", "Report"], onBack: { back() })
+                    BackBar(crumbs: ["Sessions", "Report"], onBack: { back() }) {
+                        // AI refine button — top-right, small. Only visible
+                        // once a report exists (refining nothing is a no-op).
+                        // Per the agent's spec: no manual edit, only AI-driven.
+                        if report != nil {
+                            Button { showRefineSheet = true } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("EDIT WITH AI")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .tracking(1.4)
+                                }
+                                .foregroundStyle(FoyerTheme.gold)
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(FoyerTheme.bgElev, in: Capsule())
+                                .overlay(Capsule().stroke(FoyerTheme.gold.opacity(0.4), lineWidth: 0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     header
                     content
-                    Spacer().frame(height: 160)
+                    Spacer().frame(height: 200)
                 }
                 .padding(.top, 8)
             }
 
-            if report != nil && !editing {
-                VStack(spacing: 6) {
+            if report != nil {
+                VStack(spacing: 0) {
                     if let share {
                         shareBadge(share)
+                            .padding(.bottom, 6)
                     }
                     actionBar
                 }
-            } else if editing {
-                editActionBar
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -158,7 +186,20 @@ struct ReportView: View {
                 Task { await generate(force: true) }
             }
         } message: {
-            Text("This will replace your edits with a fresh Claude-generated report.")
+            Text("This will replace the current report with a fresh Claude-generated one.")
+        }
+        .sheet(isPresented: $showRefineSheet) {
+            AIRefineSheet(
+                refining: refining,
+                error: refineError,
+                onSubmit: { instruction in
+                    Task { await refineWithAI(instruction: instruction) }
+                },
+                onRegenerate: {
+                    showRefineSheet = false
+                    showRegenerateConfirm = true
+                }
+            )
         }
     }
 
@@ -201,33 +242,58 @@ struct ReportView: View {
 
     @ViewBuilder
     private var content: some View {
-        if loading {
-            loadingCard("Loading report")
-        } else if generating {
-            loadingCard("Generating report — Claude is reading the room. ~15-25s.")
+        if loading && report == nil {
+            // Initial fetch — keep this terse; usually <1s before we
+            // either show the report or transition to the generating
+            // animation.
+            HStack(spacing: 10) {
+                ProgressView().tint(FoyerTheme.gold).scaleEffect(0.9)
+                Text("Loading…")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 80)
         } else if let err = loadError ?? generateError {
             errorCard(err)
         } else if let r = report {
-            if editing, let d = draft {
-                editingBody(d)
+            if refining {
+                // Overlay the refine loader on TOP of the report so
+                // the agent sees what's being rewritten, not a blank
+                // screen. Cheaper visual + keeps the spatial context.
+                ZStack {
+                    renderedBody(r).opacity(0.35)
+                    GeneratingAnimation(kind: .refining)
+                        .padding(.top, 60)
+                }
             } else {
                 renderedBody(r)
             }
+        } else if generating {
+            // No report yet → big centered staged loader. Auto-triggered
+            // from load() on first open so the agent never has to tap
+            // a "Generate" button.
+            GeneratingAnimation(kind: .generating)
+                .padding(.top, 40)
         } else {
-            emptyState
+            // Fallbacks — only visible when the session isn't ready
+            // enough to generate against. Most agents will skip this
+            // entirely because auto-start fires the moment status flips.
+            preGenerateFallback
         }
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 16) {
+    @ViewBuilder
+    private var preGenerateFallback: some View {
+        VStack(alignment: .leading, spacing: 14) {
             GlassSurface(cornerRadius: 18) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Eyebrow(text: "Nothing yet", color: FoyerTheme.gold)
-                    Text("Generate an open house report for the homeowner.")
-                        .font(.system(size: 16))
+                    Eyebrow(text: fallbackEyebrow, color: FoyerTheme.gold)
+                    Text(fallbackTitle)
+                        .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(FoyerTheme.cream)
                         .lineSpacing(3)
-                    Text("Claude reads the session transcript and your per-visitor notes, then drafts a one-page report: turnout, recurring themes, price reaction, standout visitors, and recommended next steps. You can edit before sending.")
+                    Text(fallbackSubtitle)
                         .font(.system(size: 13))
                         .foregroundStyle(FoyerTheme.creamDim)
                         .lineSpacing(3)
@@ -235,32 +301,30 @@ struct ReportView: View {
                 .padding(18)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Button { Task { await generate(force: false) } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Generate report")
-                }
-            }
-            .buttonStyle(FoyerPrimaryButton())
-            .disabled(effectiveSessionId == nil || effectiveStatus != "ready")
-
-            if effectiveStatus == "processing" {
-                Text("Waiting on the session to finish processing.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textMuted)
-            } else if effectiveStatus == "error" {
-                Text("This session errored out — nothing to report on.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textMuted)
-            } else if effectiveSessionId == nil {
-                Text("No active session.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.textMuted)
-            }
         }
         .padding(.horizontal, 20)
+    }
+
+    private var fallbackEyebrow: String {
+        switch effectiveStatus {
+        case "processing": return "Still processing"
+        case "error":      return "Session error"
+        default:           return "No session"
+        }
+    }
+    private var fallbackTitle: String {
+        switch effectiveStatus {
+        case "processing": return "We'll start the report the moment processing finishes."
+        case "error":      return "This session errored out — nothing to report on."
+        default:           return "Open a session to generate its report."
+        }
+    }
+    private var fallbackSubtitle: String {
+        switch effectiveStatus {
+        case "processing": return "Reports start automatically once transcription and visitor analysis land."
+        case "error":      return "Try re-analyzing the recording from the Summary screen."
+        default:           return "Reports are generated from a recorded session."
+        }
     }
 
     // MARK: – Read-only render
@@ -501,337 +565,126 @@ struct ReportView: View {
         .padding(.top, 4)
     }
 
-    // MARK: – Edit mode
 
-    @ViewBuilder
-    private func editingBody(_ d: SessionReport) -> some View {
-        let binding = Binding<SessionReport>(
-            get: { draft ?? d },
-            set: { draft = $0 }
-        )
-        VStack(alignment: .leading, spacing: 14) {
-            editField(title: "Headline", text: binding.headline, height: 80)
-            editList(title: "TL;DR bullets", items: binding.tldr)
-            editField(title: "Traffic summary", text: binding.trafficSummary, height: 90)
-            editThemes(title: "Highlights", themes: binding.highlights)
-            editThemes(title: "Concerns + objections", themes: binding.concerns)
-            editField(title: "Price signal", text: binding.priceSignal, height: 90)
-            editStandouts(visitors: binding.standoutVisitors)
-            editField(title: "My take", text: binding.agentTake, height: 120)
-            editList(title: "Recommended next steps", items: binding.nextSteps)
-            if let err = saveError {
-                Text(err)
-                    .font(.system(size: 12))
-                    .foregroundStyle(FoyerTheme.terracotta)
-            }
-        }
-        .padding(.horizontal, 20)
-    }
-
-    private func editField(title: String, text: Binding<String>, height: CGFloat) -> some View {
-        GlassSurface(cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow(text: title, color: FoyerTheme.gold)
-                TextEditor(text: text)
-                    .font(.system(size: 14))
-                    .foregroundStyle(FoyerTheme.cream)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: height)
-                    .background(FoyerTheme.bgElev.opacity(0.5),
-                                in: RoundedRectangle(cornerRadius: 8))
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func editList(title: String, items: Binding<[String]>) -> some View {
-        GlassSurface(cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Eyebrow(text: title, color: FoyerTheme.gold)
-                    Spacer()
-                    Button {
-                        items.wrappedValue.append("")
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                }
-                ForEach(items.wrappedValue.indices, id: \.self) { idx in
-                    HStack(alignment: .top, spacing: 8) {
-                        TextField("Bullet", text: items[idx], axis: .vertical)
-                            .font(.system(size: 13))
-                            .foregroundStyle(FoyerTheme.cream)
-                            .padding(8)
-                            .background(FoyerTheme.bgElev.opacity(0.5),
-                                        in: RoundedRectangle(cornerRadius: 6))
-                        Button {
-                            items.wrappedValue.remove(at: idx)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                                .font(.system(size: 16))
-                                .foregroundStyle(FoyerTheme.terracotta.opacity(0.7))
-                        }
-                        .padding(.top, 6)
-                    }
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func editThemes(title: String, themes: Binding<[ReportTheme]>) -> some View {
-        GlassSurface(cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Eyebrow(text: title, color: FoyerTheme.gold)
-                    Spacer()
-                    Button {
-                        themes.wrappedValue.append(ReportTheme(
-                            title: "New theme", frequency: 0, summary: "", quotes: []
-                        ))
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                }
-                ForEach(themes.wrappedValue.indices, id: \.self) { idx in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            TextField("Title", text: themes[idx].title)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(FoyerTheme.cream)
-                            Spacer()
-                            Stepper(
-                                "\(themes[idx].frequency.wrappedValue) visitors",
-                                value: themes[idx].frequency,
-                                in: 0...50
-                            )
-                            .labelsHidden()
-                            Text("\(themes[idx].frequency.wrappedValue) ppl")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(FoyerTheme.textMuted)
-                            Button {
-                                themes.wrappedValue.remove(at: idx)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                                    .foregroundStyle(FoyerTheme.terracotta.opacity(0.7))
-                            }
-                        }
-                        TextField("Summary", text: themes[idx].summary, axis: .vertical)
-                            .font(.system(size: 12))
-                            .foregroundStyle(FoyerTheme.creamDim)
-                    }
-                    .padding(10)
-                    .background(FoyerTheme.bgElev.opacity(0.4),
-                                in: RoundedRectangle(cornerRadius: 8))
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func editStandouts(visitors: Binding<[ReportStandoutVisitor]>) -> some View {
-        GlassSurface(cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Eyebrow(text: "Standout visitors", color: FoyerTheme.gold)
-                    Spacer()
-                    Button {
-                        visitors.wrappedValue.append(ReportStandoutVisitor(
-                            label: "New visitor", score: 0, summary: "", followUpStatus: ""
-                        ))
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(FoyerTheme.gold)
-                    }
-                }
-                ForEach(visitors.wrappedValue.indices, id: \.self) { idx in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            TextField("Label", text: visitors[idx].label)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(FoyerTheme.cream)
-                            Spacer()
-                            Stepper(
-                                "\(visitors[idx].score.wrappedValue)",
-                                value: visitors[idx].score,
-                                in: 0...100,
-                                step: 5
-                            )
-                            .labelsHidden()
-                            Text("\(visitors[idx].score.wrappedValue)/100")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(FoyerTheme.textMuted)
-                            Button {
-                                visitors.wrappedValue.remove(at: idx)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                                    .foregroundStyle(FoyerTheme.terracotta.opacity(0.7))
-                            }
-                        }
-                        TextField("Summary", text: visitors[idx].summary, axis: .vertical)
-                            .font(.system(size: 12))
-                            .foregroundStyle(FoyerTheme.creamDim)
-                        TextField("Follow-up status", text: visitors[idx].followUpStatus)
-                            .font(.system(size: 12))
-                            .italic()
-                            .foregroundStyle(FoyerTheme.textMuted)
-                    }
-                    .padding(10)
-                    .background(FoyerTheme.bgElev.opacity(0.4),
-                                in: RoundedRectangle(cornerRadius: 8))
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    // MARK: – Action bars
+    // MARK: – Action bar
+    //
+    // Layout:
+    //   ┌──────────────────────────────────────────────┐
+    //   │  [SHARED · VIEWED 5 TIMES]   ← optional badge │
+    //   │  [🔗 Link]  [⤴ PDF]          ← secondary row  │
+    //   │  [  ✉ Send to homeowner  ]   ← primary, big   │
+    //   └──────────────────────────────────────────────┘
+    // Backed by a soft material so the report scrolls underneath without
+    // visually disappearing. Edit-with-AI lives in the BackBar trailing
+    // slot per the agent's spec — out of the way until you need it.
 
     private var actionBar: some View {
-        HStack(spacing: 10) {
-            Button { startEditing() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Edit").font(.system(size: 13, weight: .semibold))
-                }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .foregroundStyle(FoyerTheme.cream)
-                .background(FoyerTheme.bgElev, in: Capsule())
-                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-
-            Button { exportPdf() } label: {
-                HStack(spacing: 6) {
-                    if exportingPdf {
-                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
-                    } else {
-                        Image(systemName: "square.and.arrow.up")
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                // Link — when a share exists, gold-tinted so the agent
+                // sees there's a live link; tap re-opens the iOS share
+                // sheet. Long-press for copy / open / revoke.
+                Button {
+                    Task { await tapShareLink() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if creatingShare {
+                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
+                        } else {
+                            Image(systemName: share == nil ? "link" : "link.circle.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        Text(share == nil ? "Share link" : "Open link")
                             .font(.system(size: 13, weight: .semibold))
                     }
-                    Text("PDF").font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .foregroundStyle(share == nil ? FoyerTheme.cream : FoyerTheme.inkOnGold)
+                    .background(
+                        share == nil
+                            ? AnyShapeStyle(FoyerTheme.bgElev)
+                            : AnyShapeStyle(LinearGradient(
+                                colors: [FoyerTheme.gold, FoyerTheme.gold.opacity(0.82)],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                              )),
+                        in: Capsule()
+                    )
+                    .overlay(Capsule().stroke(
+                        share == nil ? FoyerTheme.border : FoyerTheme.gold.opacity(0.6),
+                        lineWidth: 0.5
+                    ))
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .foregroundStyle(FoyerTheme.cream)
-                .background(FoyerTheme.bgElev, in: Capsule())
-                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .disabled(exportingPdf)
-
-            // Share link — mints (or re-opens) the public share URL.
-            // Tap once to share; long-press the badge in the bar above
-            // to revoke. The label flips from "Link" → "Shared" once a
-            // token exists so the agent knows there's a live URL out
-            // there before they tap it again.
-            Button {
-                Task { await tapShareLink() }
-            } label: {
-                HStack(spacing: 6) {
-                    if creatingShare {
-                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
-                    } else {
-                        Image(systemName: share == nil ? "link" : "link.circle.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    Text(share == nil ? "Link" : "Shared")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .foregroundStyle(share == nil ? FoyerTheme.cream : FoyerTheme.inkOnGold)
-                .background(
-                    share == nil ? FoyerTheme.bgElev : FoyerTheme.gold.opacity(0.85),
-                    in: Capsule()
-                )
-                .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .disabled(creatingShare)
-            .contextMenu {
-                if share != nil {
-                    Button("Copy link") { copyShareURL() }
-                    Button("Open link") { openShareURL() }
-                    Button("Revoke link", role: .destructive) {
-                        showRevokeConfirm = true
+                .buttonStyle(.plain)
+                .disabled(creatingShare)
+                .contextMenu {
+                    if share != nil {
+                        Button("Copy link") { copyShareURL() }
+                        Button("Open link") { openShareURL() }
+                        Button("Revoke link", role: .destructive) {
+                            showRevokeConfirm = true
+                        }
                     }
                 }
-            }
 
-            Spacer()
-
-            Button { showSendSheet = true } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Send to homeowner")
-                        .font(.system(size: 14, weight: .semibold))
-                }
-                .padding(.horizontal, 18).padding(.vertical, 12)
-                .foregroundStyle(FoyerTheme.inkOnGold)
-                .background(FoyerTheme.gold, in: Capsule())
-                .shadow(color: FoyerTheme.gold.opacity(0.4), radius: 12, y: 4)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 28)
-    }
-
-    private var editActionBar: some View {
-        HStack(spacing: 10) {
-            Button { cancelEditing() } label: {
-                Text("Cancel")
-                    .font(.system(size: 14, weight: .medium))
+                // PDF — single icon button, secondary, keeps the row
+                // balanced without competing for attention.
+                Button { exportPdf() } label: {
+                    HStack(spacing: 5) {
+                        if exportingPdf {
+                            ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
+                        } else {
+                            Image(systemName: "doc.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        Text("PDF").font(.system(size: 13, weight: .semibold))
+                    }
                     .padding(.horizontal, 18).padding(.vertical, 12)
-                    .foregroundStyle(FoyerTheme.creamDim)
+                    .foregroundStyle(FoyerTheme.cream)
                     .background(FoyerTheme.bgElev, in: Capsule())
-            }
-            .buttonStyle(.plain)
-
-            Button { showRegenerateConfirm = true } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Regenerate").font(.system(size: 13, weight: .medium))
+                    .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .foregroundStyle(FoyerTheme.creamDim)
-                .background(FoyerTheme.bgElev.opacity(0.6), in: Capsule())
+                .buttonStyle(.plain)
+                .disabled(exportingPdf)
             }
-            .buttonStyle(.plain)
 
-            Spacer()
-
-            Button { Task { await saveEdits() } } label: {
-                HStack(spacing: 8) {
-                    if saving {
-                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.inkOnGold)
-                    } else {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    Text(saving ? "Saving" : "Save edits")
-                        .font(.system(size: 14, weight: .semibold))
+            // Big primary Send. Full-width, gold, soft glow — the
+            // headline action on the screen. Single tap opens the
+            // send sheet pre-filled with the homeowner's email.
+            Button { showSendSheet = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("Send to homeowner")
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
-                .padding(.horizontal, 18).padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
                 .foregroundStyle(FoyerTheme.inkOnGold)
-                .background(FoyerTheme.gold, in: Capsule())
+                .background(
+                    LinearGradient(
+                        colors: [FoyerTheme.gold, FoyerTheme.gold.opacity(0.88)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .shadow(color: FoyerTheme.gold.opacity(0.45), radius: 18, y: 6)
             }
             .buttonStyle(.plain)
-            .disabled(saving)
         }
         .padding(.horizontal, 20)
+        .padding(.top, 14)
         .padding(.bottom, 28)
+        .background(
+            // Soft fade-into-canvas so the scrolling report doesn't
+            // poke harshly through the action bar. Material on iOS 17
+            // does the heavy lifting; the gradient hides the seam.
+            LinearGradient(
+                colors: [FoyerTheme.bgDeep.opacity(0), FoyerTheme.bgDeep.opacity(0.9), FoyerTheme.bgDeep],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
     }
 
     // Floating badge above the action bar — "SHARED · viewed 5 times"
@@ -921,17 +774,6 @@ struct ReportView: View {
         }
     }
 
-    private func startEditing() {
-        draft = report
-        editing = true
-    }
-
-    private func cancelEditing() {
-        draft = nil
-        editing = false
-        saveError = nil
-    }
-
     private func load() async {
         guard let sid = effectiveSessionId else {
             loading = false
@@ -964,6 +806,20 @@ struct ReportView: View {
             share = try? await APIClient.shared.getReportShare(sessionId: sid)
         } catch {
             loadError = error.localizedDescription
+        }
+        // Auto-start: if the session is ready and there's no cached
+        // report yet, fire generation immediately. Saves a click from
+        // the agent's flow — they tap the gold "Open house report" card
+        // and the report just starts building. autoStartAttempted
+        // guards against a re-entrancy double-fire if .task replays.
+        if !autoStartAttempted
+            && report == nil
+            && loadError == nil
+            && generating == false
+            && effectiveStatus == "ready"
+            && effectiveSessionId != nil {
+            autoStartAttempted = true
+            await generate(force: false)
         }
     }
 
@@ -1023,8 +879,6 @@ struct ReportView: View {
             let envelope = try await APIClient.shared.generateReport(sessionId: sid)
             report = envelope.report
             reportMeta = envelope.reportMeta
-            editing = false
-            draft = nil
         } catch {
             generateError = error.localizedDescription
         }
@@ -1041,19 +895,22 @@ struct ReportView: View {
         )
     }
 
-    private func saveEdits() async {
-        guard let sid = effectiveSessionId, let d = draft else { return }
-        saving = true
-        saveError = nil
-        defer { saving = false }
+    private func refineWithAI(instruction: String) async {
+        guard let sid = effectiveSessionId else { return }
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        refining = true
+        refineError = nil
+        defer { refining = false }
         do {
-            let envelope = try await APIClient.shared.updateReport(sessionId: sid, report: d)
+            let envelope = try await APIClient.shared.refineReport(
+                sessionId: sid, instruction: trimmed
+            )
             report = envelope.report
             reportMeta = envelope.reportMeta
-            editing = false
-            draft = nil
-        } catch {
-            saveError = error.localizedDescription
+            showRefineSheet = false
+        } catch let err {
+            refineError = err.localizedDescription
         }
     }
 
@@ -1091,6 +948,238 @@ struct ReportView: View {
         let fmt = RelativeDateTimeFormatter()
         fmt.unitsStyle = .short
         return fmt.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+// MARK: – Generating animation
+//
+// Shown two ways:
+//   .generating — first-open auto-start. Centered, big stage label,
+//                 brand-gold pulse, takes 10-20s for Sonnet.
+//   .refining   — overlays the existing report at lower opacity while
+//                 Haiku rewrites (~2-4s). Smaller, tighter copy.
+//
+// Stages cycle every ~3.5s so the agent always sees motion (Claude's
+// total latency is well above a single-stage attention span). Tasks
+// re-spawn on view appear; cancel themselves on disappear.
+
+private struct GeneratingAnimation: View {
+    enum Kind { case generating, refining }
+    let kind: Kind
+
+    private static let generateStages = [
+        "Reading the room…",
+        "Spotting recurring themes…",
+        "Drafting your take…",
+        "Polishing the headline…",
+        "Almost there…",
+    ]
+    private static let refineStages = [
+        "Reading your request…",
+        "Rewriting the report…",
+        "Almost done…",
+    ]
+
+    private var stages: [String] {
+        kind == .refining ? Self.refineStages : Self.generateStages
+    }
+    private var subtitle: String {
+        kind == .refining
+            ? "Haiku is editing the report — usually 2-4 seconds."
+            : "Claude is reading the session and writing the report. Usually 15-25 seconds."
+    }
+    private var titleSize: CGFloat { kind == .refining ? 22 : 28 }
+    private var orbSize: CGFloat { kind == .refining ? 14 : 22 }
+
+    @State private var stageIndex = 0
+    @State private var pulse = false
+    @State private var bloom = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                // Soft gold bloom that grows as the animation runs.
+                // Anchored behind the orb so the loader has visual mass.
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                FoyerTheme.gold.opacity(0.35),
+                                FoyerTheme.gold.opacity(0.08),
+                                .clear,
+                            ],
+                            center: .center,
+                            startRadius: 4,
+                            endRadius: bloom ? 140 : 60
+                        )
+                    )
+                    .frame(width: 240, height: 240)
+                    .blur(radius: 10)
+                    .opacity(bloom ? 1 : 0.5)
+
+                // Pulsing gold orb — the brand's heartbeat at the
+                // center of the loader. Scale + glow tied to the same
+                // value so the motion reads as one breath.
+                Circle()
+                    .fill(FoyerTheme.gold)
+                    .frame(width: orbSize, height: orbSize)
+                    .shadow(color: FoyerTheme.gold.opacity(0.7),
+                            radius: pulse ? 22 : 10, y: 0)
+                    .scaleEffect(pulse ? 1.35 : 0.85)
+                    .opacity(pulse ? 0.7 : 1.0)
+            }
+            .frame(height: 200)
+
+            // Cycling stage label. Each transition is a slide+fade so
+            // the text exchange reads as deliberate progress, not a
+            // glitch.
+            ZStack {
+                ForEach(Array(stages.enumerated()), id: \.offset) { idx, stage in
+                    if idx == stageIndex {
+                        Text(stage)
+                            .font(.system(size: titleSize, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .tracking(-0.3)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal:   .move(edge: .top).combined(with: .opacity)
+                            ))
+                    }
+                }
+            }
+            .frame(minHeight: 36)
+            .animation(.easeInOut(duration: 0.45), value: stageIndex)
+
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundStyle(FoyerTheme.textMuted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity)
+        .onAppear { startMotion() }
+    }
+
+    private func startMotion() {
+        withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) {
+            pulse = true
+        }
+        withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
+            bloom = true
+        }
+        // Drive the stage cycle from a detached Task so we don't
+        // block the main run loop. Bails out cleanly when the view
+        // disappears (Task.isCancelled handled via try? sleep).
+        Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3.5))
+                if Task.isCancelled { return }
+                stageIndex = (stageIndex + 1) % stages.count
+            }
+        }
+    }
+}
+
+// MARK: – AI Refine sheet
+//
+// Replaces the old per-section TextEditor flow per the agent's spec.
+// Agent describes what's wrong in plain English; Haiku rewrites the
+// whole report preserving everything they didn't touch.
+
+private struct AIRefineSheet: View {
+    let refining: Bool
+    let error: String?
+    var onSubmit: (String) -> Void
+    var onRegenerate: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var instruction: String = ""
+    @FocusState private var focused: Bool
+
+    // Quick-pick chips for common refinements — saves typing, primes
+    // the agent on what the model can actually do well. Tapping one
+    // pastes into the editor so it's still editable before submit.
+    private let presets: [String] = [
+        "Tighten the agent take",
+        "Make the headline punchier",
+        "Soften the concerns",
+        "Drop the standout visitors section",
+        "Lengthen the next steps",
+        "Less salesy, more honest",
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ZStack(alignment: .topLeading) {
+                        if instruction.isEmpty {
+                            Text("Tell me what's wrong. \"Tighten the agent take,\" \"add a note about price,\" \"sound less salesy.\"")
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 8).padding(.leading, 4)
+                        }
+                        TextEditor(text: $instruction)
+                            .frame(minHeight: 120)
+                            .focused($focused)
+                    }
+                } header: {
+                    Text("What should change?")
+                } footer: {
+                    Text("Haiku rewrites the report based on your instruction — usually 2-4 seconds. Fields you don't mention stay exactly as they are.")
+                }
+                Section("Quick edits") {
+                    ForEach(presets, id: \.self) { p in
+                        Button { instruction = p } label: {
+                            HStack {
+                                Text(p)
+                                Spacer()
+                                Image(systemName: "arrow.up.left")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+                if let error {
+                    Section { Text(error).foregroundStyle(.red).font(.footnote) }
+                }
+                Section {
+                    Button(role: .destructive) {
+                        onRegenerate()
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Regenerate from scratch")
+                            Spacer()
+                        }
+                    }
+                } footer: {
+                    Text("Throws away the current report and starts over with a fresh Claude generation.")
+                }
+            }
+            .navigationTitle("Edit with AI")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        onSubmit(instruction)
+                    } label: {
+                        HStack(spacing: 4) {
+                            if refining { ProgressView().scaleEffect(0.7) }
+                            Text(refining ? "Rewriting…" : "Rewrite")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .disabled(refining || instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .onAppear { focused = true }
+        }
     }
 }
 
