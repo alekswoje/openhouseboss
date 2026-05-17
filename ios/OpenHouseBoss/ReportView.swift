@@ -51,14 +51,19 @@ struct ReportView: View {
     @State private var showShare = false
     @State private var exportingPdf = false
 
-    // Public share link — minted on first tap of "Share link", revoked
-    // via the trash button in the share sheet. Drives the badge that
-    // appears in the action bar once a link exists.
+    // Public share link — minted lazily on first tap of "Copy link".
+    // The primary affordance copies the URL to the clipboard (one tap,
+    // no system sheet between the agent and a paste). The long-press
+    // context menu still has Share via iOS sheet / Open / Revoke.
     @State private var share: ReportShare?
     @State private var creatingShare = false
     @State private var shareError: String?
     @State private var showShareLink = false
     @State private var showRevokeConfirm = false
+    // Brief "Link copied" toast that floats above the action bar after
+    // the agent taps Copy. Auto-dismisses after ~1.8s so it doesn't
+    // linger; tap again for a fresh confirmation.
+    @State private var copiedToast = false
 
     private var effectiveSessionId: String? {
         sessionId ?? store.session?.id
@@ -581,47 +586,67 @@ struct ReportView: View {
     private var actionBar: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                // Link — when a share exists, gold-tinted so the agent
-                // sees there's a live link; tap re-opens the iOS share
-                // sheet. Long-press for copy / open / revoke.
+                // Copy link — single tap copies the public URL to the
+                // clipboard (mints one if it doesn't exist yet). Gold-
+                // tinted once a link is live so the agent can see there
+                // IS something out there. Long-press for the share
+                // sheet / open / revoke / re-mint options.
                 Button {
-                    Task { await tapShareLink() }
+                    Task { await tapCopyLink() }
                 } label: {
                     HStack(spacing: 6) {
                         if creatingShare {
                             ProgressView().scaleEffect(0.7).tint(FoyerTheme.cream)
+                        } else if copiedToast {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14, weight: .semibold))
                         } else {
-                            Image(systemName: share == nil ? "link" : "link.circle.fill")
+                            Image(systemName: share == nil ? "link" : "doc.on.doc.fill")
                                 .font(.system(size: 14, weight: .semibold))
                         }
-                        Text(share == nil ? "Share link" : "Open link")
+                        Text(copiedToast ? "Copied" : "Copy link")
                             .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .foregroundStyle(share == nil ? FoyerTheme.cream : FoyerTheme.inkOnGold)
+                    .foregroundStyle(
+                        copiedToast || share != nil
+                            ? FoyerTheme.inkOnGold
+                            : FoyerTheme.cream
+                    )
                     .background(
-                        share == nil
-                            ? AnyShapeStyle(FoyerTheme.bgElev)
-                            : AnyShapeStyle(LinearGradient(
+                        (copiedToast || share != nil)
+                            ? AnyShapeStyle(LinearGradient(
                                 colors: [FoyerTheme.gold, FoyerTheme.gold.opacity(0.82)],
                                 startPoint: .topLeading, endPoint: .bottomTrailing
-                              )),
+                              ))
+                            : AnyShapeStyle(FoyerTheme.bgElev),
                         in: Capsule()
                     )
                     .overlay(Capsule().stroke(
-                        share == nil ? FoyerTheme.border : FoyerTheme.gold.opacity(0.6),
+                        (copiedToast || share != nil) ? FoyerTheme.gold.opacity(0.6) : FoyerTheme.border,
                         lineWidth: 0.5
                     ))
                 }
                 .buttonStyle(.plain)
                 .disabled(creatingShare)
+                .animation(.easeOut(duration: 0.18), value: copiedToast)
                 .contextMenu {
+                    Button { Task { await tapCopyLink() } } label: {
+                        Label("Copy link", systemImage: "doc.on.doc")
+                    }
                     if share != nil {
-                        Button("Copy link") { copyShareURL() }
-                        Button("Open link") { openShareURL() }
-                        Button("Revoke link", role: .destructive) {
+                        Button { showShareLink = true } label: {
+                            Label("Share via…", systemImage: "square.and.arrow.up")
+                        }
+                        Button { openShareURL() } label: {
+                            Label("Open link", systemImage: "arrow.up.right.square")
+                        }
+                        Button(role: .destructive) {
                             showRevokeConfirm = true
+                        } label: {
+                            Label("Revoke link", systemImage: "trash")
                         }
                     }
                 }
@@ -688,12 +713,11 @@ struct ReportView: View {
     }
 
     // Floating badge above the action bar — "SHARED · viewed 5 times"
-    // with a tap target that opens the share sheet (so re-sharing or
-    // copying the link is one tap, not two). Long-press → context menu
-    // for revoke / copy / open.
+    // with a tap target that re-copies the link. Long-press → context
+    // menu for share via iOS sheet / open / revoke.
     private func shareBadge(_ s: ReportShare) -> some View {
         Button {
-            showShareLink = true
+            Task { await tapCopyLink() }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "link")
@@ -710,10 +734,19 @@ struct ReportView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Copy link") { copyShareURL() }
-            Button("Open link") { openShareURL() }
-            Button("Revoke link", role: .destructive) {
+            Button { Task { await tapCopyLink() } } label: {
+                Label("Copy link", systemImage: "doc.on.doc")
+            }
+            Button { showShareLink = true } label: {
+                Label("Share via…", systemImage: "square.and.arrow.up")
+            }
+            Button { openShareURL() } label: {
+                Label("Open link", systemImage: "arrow.up.right.square")
+            }
+            Button(role: .destructive) {
                 showRevokeConfirm = true
+            } label: {
+                Label("Revoke link", systemImage: "trash")
             }
         }
         .padding(.horizontal, 20)
@@ -823,20 +856,31 @@ struct ReportView: View {
         }
     }
 
-    private func tapShareLink() async {
+    private func tapCopyLink() async {
         guard let sid = effectiveSessionId else { return }
-        creatingShare = true
-        shareError = nil
-        defer { creatingShare = false }
-        do {
-            // First-time creation lazily mints the token; subsequent
-            // taps return the existing one. Either way, end state is
-            // the same: share is non-nil + share sheet opens.
-            let s = try await APIClient.shared.createReportShare(sessionId: sid)
-            share = s
-            showShareLink = true
-        } catch let err {
-            shareError = err.localizedDescription
+        // First-tap path: mint the link, then copy. Subsequent taps:
+        // skip the round-trip (URL already in hand) and just re-copy.
+        if share == nil {
+            creatingShare = true
+            shareError = nil
+            defer { creatingShare = false }
+            do {
+                share = try await APIClient.shared.createReportShare(sessionId: sid)
+            } catch let err {
+                shareError = err.localizedDescription
+                return
+            }
+        }
+        guard let url = share?.url else { return }
+        UIPasteboard.general.string = url
+        // Tap haptic + brief in-button confirmation. ~1.8s gives the
+        // agent enough time to register the change without lingering;
+        // re-tapping retriggers it (UIPasteboard write is idempotent).
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        copiedToast = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1800))
+            if copiedToast { copiedToast = false }
         }
     }
 

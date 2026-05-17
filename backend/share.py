@@ -36,13 +36,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# Resolved separately from BACKEND_BASE so the user can later point a
-# custom domain (openhousecopilot.com) at the backend and have shareable
-# URLs use the pretty domain without a code change.
+# Default to the public brand domain. The static site at
+# openhousecopilot.com forwards /r/* → this backend's /r/{token} via
+# `web/_redirects` (Render static-site convention; Netlify/Vercel use
+# the same file). When that's not configured (local dev, broken
+# routing) override SHARE_BASE_URL via env var.
 SHARE_BASE_URL = (
     os.environ.get("SHARE_BASE_URL")
-    or os.environ.get("BACKEND_BASE_URL")
-    or "https://openhouseboss-api.onrender.com"
+    or "https://openhousecopilot.com"
 ).rstrip("/")
 
 _INDEX_DIR = Path("sessions") / "_auth"

@@ -1,0 +1,9 @@
+# Render / Netlify / Vercel static-site rewrite rules.
+#
+# Open House Report public share links live at https://openhousecopilot.com/r/{token}
+# but are actually served by the FastAPI backend at
+# https://openhouseboss-api.onrender.com/r/{token}. This rewrite forwards
+# the request (status=200 = transparent rewrite, NOT a redirect — the
+# browser stays on openhousecopilot.com and Open Graph link previews
+# unfurl with the pretty domain).
+/r/*  https://openhouseboss-api.onrender.com/r/:splat  200
