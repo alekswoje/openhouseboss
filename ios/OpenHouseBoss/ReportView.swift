@@ -147,6 +147,11 @@ struct ReportView: View {
         if r.visitorCount > 0 {
             parts.append("\(r.visitorCount) visitor\(r.visitorCount == 1 ? "" : "s")")
         }
+        // Weather chip — only when we have a real Open-Meteo reading
+        // (geocoded to the property, not city-level).
+        if !r.weatherLabel.isEmpty {
+            parts.append(r.weatherLabel)
+        }
         return parts.joined(separator: " · ").uppercased()
     }
 
@@ -834,6 +839,16 @@ struct ReportView: View {
         generating = true
         generateError = nil
         defer { generating = false }
+        // Geocode + push lat/lon to the backend BEFORE kicking off the
+        // Claude report — so the report's metadata stamping sees the
+        // weather block. The geocode is ~1s (Apple) + Open-Meteo is ~1s,
+        // adding ~2s to the total generate time (Claude is the slow
+        // path at ~15s anyway). Best-effort: any failure here just
+        // means the report renders without a weather chip.
+        let addressToGeocode = store.session?.address
+            ?? report?.address
+            ?? ""
+        await enrichWeatherIfPossible(sessionId: sid, address: addressToGeocode)
         do {
             let envelope = try await APIClient.shared.generateReport(sessionId: sid)
             report = envelope.report
@@ -843,6 +858,17 @@ struct ReportView: View {
         } catch {
             generateError = error.localizedDescription
         }
+    }
+
+    private func enrichWeatherIfPossible(sessionId: String, address: String) async {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let coord = await Geocoder.coordinate(forAddress: trimmed) else { return }
+        _ = try? await APIClient.shared.setSessionCoordinate(
+            sessionId: sessionId,
+            latitude: coord.latitude,
+            longitude: coord.longitude
+        )
     }
 
     private func saveEdits() async {

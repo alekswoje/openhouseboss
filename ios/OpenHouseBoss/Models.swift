@@ -58,6 +58,17 @@ struct Session: Codable, Hashable, Identifiable {
     // edits are preserved via PATCH /report and a separate report_meta blob.
     var report: SessionReport?
     var reportMeta: ReportMeta?
+    // Geocoded property location — used only to drive backend weather
+    // enrichment. iOS resolves these via CLGeocoder (Geocoder.swift)
+    // and POSTs to /sessions/{id}/coordinate before generating the report.
+    // Optional: some addresses don't geocode; the session still works.
+    var latitude: Double?
+    var longitude: Double?
+    // Weather observation at the session's midpoint, geocoded to the
+    // property. Populated by the backend's Open-Meteo enrichment.
+    // Optional — sessions without lat/lon (or recorded before Phase 4)
+    // just don't have a weather block.
+    var weather: SessionWeather?
 
     enum CodingKeys: String, CodingKey {
         case id, status, address, name, error, result, report
@@ -70,32 +81,68 @@ struct Session: Codable, Hashable, Identifiable {
         case homeownerEmail = "homeowner_email"
         case homeownerName = "homeowner_name"
         case reportMeta = "report_meta"
+        case latitude, longitude, weather
     }
 }
 
-// Pairing code minted by POST /live/codes. Shown to the agent in LiveView
-// so the companion device can type it into openhousecopilot.com/#/live.
-struct LiveCode: Codable, Hashable {
-    let code: String         // 6-digit numeric, e.g. "472913"
-    let expiresAt: String    // ISO-8601 — used to dim the affordance once
-                              // the code is past its 4-hour TTL.
+// Open-Meteo observation for the property at the session midpoint. All
+// fields optional — the backend nulls individual readings when
+// Open-Meteo's coverage has a gap at the requested hour.
+struct SessionWeather: Codable, Hashable {
+    var tempF: Double?
+    var conditionCode: Int?
+    var conditionLabel: String?
+    var windMph: Double?
+    var humidityPct: Double?
+    var precipitationIn: Double?
+    var cloudCoverPct: Double?
+    var observedAt: String?
+    var fetchedAt: String?
+    var source: String?
 
     enum CodingKeys: String, CodingKey {
-        case code
-        case expiresAt = "expires_at"
+        case source
+        case tempF = "temp_f"
+        case conditionCode = "condition_code"
+        case conditionLabel = "condition_label"
+        case windMph = "wind_mph"
+        case humidityPct = "humidity_pct"
+        case precipitationIn = "precipitation_in"
+        case cloudCoverPct = "cloud_cover_pct"
+        case observedAt = "observed_at"
+        case fetchedAt = "fetched_at"
     }
 
-    var formatted: String {
-        // Render "472-913" so the agent can read it aloud / the companion
-        // user can type it without losing their place.
-        guard code.count == 6 else { return code }
-        let mid = code.index(code.startIndex, offsetBy: 3)
-        return "\(code[..<mid])-\(code[mid...])"
+    // "Partly cloudy · 72°F" — what the iOS report header / Insights
+    // row renders. Returns nil when there's nothing presentable.
+    var displayLabel: String? {
+        var bits: [String] = []
+        if let label = conditionLabel, !label.isEmpty {
+            bits.append(label)
+        }
+        if let t = tempF {
+            bits.append("\(Int(t.rounded()))°F")
+        }
+        return bits.isEmpty ? nil : bits.joined(separator: " · ")
     }
 
-    var expiresDate: Date? {
-        ISO8601DateFormatter.fractionalSeconds.date(from: expiresAt)
-            ?? ISO8601DateFormatter().date(from: expiresAt)
+    // Glyph that pairs with the condition. Coarse buckets matching
+    // pipeline/weather._WMO_LABELS so the icon set stays consistent
+    // across the app.
+    var sfSymbol: String {
+        guard let c = conditionCode else { return "thermometer" }
+        switch c {
+        case 0:        return "sun.max.fill"
+        case 1...3:    return "cloud.sun.fill"
+        case 45, 48:   return "cloud.fog.fill"
+        case 51...57:  return "cloud.drizzle.fill"
+        case 61...67:  return "cloud.rain.fill"
+        case 71...77:  return "cloud.snow.fill"
+        case 80...82:  return "cloud.heavyrain.fill"
+        case 85, 86:   return "cloud.snow.fill"
+        case 95...99:  return "cloud.bolt.rain.fill"
+        default:       return "cloud.fill"
+        }
     }
 }
 
@@ -690,6 +737,11 @@ struct SessionReport: Codable, Hashable {
     var groupCountEstimate: Int = 0
     var agentName: String = ""
     var generatedAt: String = ""
+    // Weather chip — "Partly cloudy, 72°F". Empty when the session had
+    // no lat/lon or Open-Meteo had no observation for that hour.
+    var weatherLabel: String = ""
+    var weatherTempF: Double?
+    var weatherCondition: String = ""
 
     enum CodingKeys: String, CodingKey {
         case headline, tldr, highlights, concerns, address
@@ -704,6 +756,9 @@ struct SessionReport: Codable, Hashable {
         case groupCountEstimate = "group_count_estimate"
         case agentName = "agent_name"
         case generatedAt = "generated_at"
+        case weatherLabel = "weather_label"
+        case weatherTempF = "weather_temp_f"
+        case weatherCondition = "weather_condition"
     }
 }
 

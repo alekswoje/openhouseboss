@@ -490,23 +490,6 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
-    // MARK: – Live companion (second-device coaching view)
-    //
-    // The agent device only owns code minting; the companion-side calls
-    // (redeem, read session, request check-in) all live in the web app.
-
-    func mintLiveCode(sessionId: String) async throws -> LiveCode {
-        var req = URLRequest(url: Config.backendURL.appendingPathComponent("live/codes"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 15
-        authorize(&req)
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": sessionId])
-        let (data, response) = try await coldStartPOST(request: req)
-        try validate(response: response, data: data)
-        return try JSONDecoder().decode(LiveCode.self, from: data)
-    }
-
     // GET /scripts — presets + user-created.
     func listScripts() async throws -> [ScriptSummary] {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent("scripts"))
@@ -1092,6 +1075,36 @@ actor APIClient {
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, response) = try await self.session.data(for: req)
         try validate(response: response, data: data)
+    }
+
+    // Stamp the geocoded property location on a session. Backend uses
+    // these immediately to pull point-resolution weather from Open-Meteo.
+    // Called by ReportView before generate() so the weather chip is in
+    // place by the time the report renders. Best-effort — geocode
+    // failures upstream just skip this call entirely.
+    @discardableResult
+    func setSessionCoordinate(
+        sessionId: String,
+        latitude: Double,
+        longitude: Double
+    ) async throws -> SessionWeather? {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/coordinate"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Open-Meteo lookup happens server-side inside this call. Bump
+        // to 15s so a slow Open-Meteo doesn't surface as a UI error.
+        req.timeoutInterval = 15
+        authorize(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "latitude": latitude,
+            "longitude": longitude,
+        ])
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        struct Resp: Codable { let weather: SessionWeather? }
+        return (try? JSONDecoder().decode(Resp.self, from: data))?.weather
     }
 
     // MARK: – Lead CRM (notes, tasks, history, schedule)

@@ -81,6 +81,12 @@ class SessionReport(BaseModel):
     group_count_estimate: int = 0
     agent_name: str = ""
     generated_at: str = ""                 # ISO timestamp
+    # Weather at the session midpoint, geocoded to the property. All
+    # optional — sessions with no geocode or no Open-Meteo observation
+    # for that hour leave these blank and the report just omits the chip.
+    weather_label: str = ""                # "Partly cloudy, 72°F"
+    weather_temp_f: float | None = None
+    weather_condition: str = ""
 
 
 # --- Prompt construction -------------------------------------------------
@@ -439,6 +445,10 @@ def render_report_html(
         )
         if report.group_count_estimate > 0:
             meta_bits.append(f"~{report.group_count_estimate} groups")
+    # Weather chip — only when we have a real Open-Meteo reading
+    # (geocoded to the property, not city-level).
+    if report.weather_label:
+        meta_bits.append(_h(report.weather_label))
     meta_line = " · ".join(meta_bits)
 
     tldr_html = "".join(

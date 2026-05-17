@@ -24,6 +24,7 @@
 		75B80CF41E60950CFD1B894F /* VisitorDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AF9EB1C202D2DA5DB88A1EC /* VisitorDetailView.swift */; };
 		7B880972808B12F311F66774 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7639E9BFDB5C581D58043144 /* SampleData.swift */; };
 		8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 486C86D53F7F13F83881027C /* FollowupView.swift */; };
+		8896C6E367CE7E21D6588748 /* Geocoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31508EAA55E7963BAE28CEC5 /* Geocoder.swift */; };
 		994CB8138326823ECA807674 /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8C2198C2100222C0B0990A /* InsightsView.swift */; };
 		9D444B6AC2E2DA852776D5EB /* RecordingActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059742BE4DC8DE3BC37C3420 /* RecordingActivityAttributes.swift */; };
 		9F99468A8A85EE024AFE3903 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C2623D371CC35BE5C79E0F /* SessionStore.swift */; };
@@ -76,6 +77,7 @@
 		22C2623D371CC35BE5C79E0F /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		25D32F3E4331A6FDAB99CF10 /* StopRecordingIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopRecordingIntent.swift; sourceTree = "<group>"; };
 		2AF9EB1C202D2DA5DB88A1EC /* VisitorDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisitorDetailView.swift; sourceTree = "<group>"; };
+		31508EAA55E7963BAE28CEC5 /* Geocoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Geocoder.swift; sourceTree = "<group>"; };
 		3988A31ECC5ABDE712E61764 /* OpenHouseBossWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenHouseBossWidgetsBundle.swift; sourceTree = "<group>"; };
 		3E09E1623EFE0883D025F4D0 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		45A14FF6B9071E2F1778CD44 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				486C86D53F7F13F83881027C /* FollowupView.swift */,
 				B6DB7C9D6CA21742ED702246 /* foyer-loading.gif */,
 				B24B8C774159A0F354B9176D /* FoyerBrand.swift */,
+				31508EAA55E7963BAE28CEC5 /* Geocoder.swift */,
 				9A1B4C8EF2B8FD62DEFE6CFA /* HomeView.swift */,
 				0B8C2198C2100222C0B0990A /* InsightsView.swift */,
 				C2439F818B3BA7E17C75CF63 /* IPadAgentApp.swift */,
@@ -269,6 +272,7 @@
 				AA19024C60B17597536B6CED /* DevMode.swift in Sources */,
 				8266A248BC38687FE5CA3F6B /* FollowupView.swift in Sources */,
 				A8CC3AF05D4BE251321536C7 /* FoyerBrand.swift in Sources */,
+				8896C6E367CE7E21D6588748 /* Geocoder.swift in Sources */,
 				DE0DCCA672B3A89AA92D9225 /* HomeView.swift in Sources */,
 				36A2F83B5677D376932A1CB0 /* IPadAgentApp.swift in Sources */,
 				994CB8138326823ECA807674 /* InsightsView.swift in Sources */,

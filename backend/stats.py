@@ -220,6 +220,14 @@ def _derive_stats(session: dict, user_id: str) -> Optional[dict]:
     report_generated = bool(session.get("report"))
     report_sent = bool(report_meta.get("sent_at"))
 
+    # Weather — from the session's enriched weather block (or null when
+    # no geocode / no Open-Meteo data). Lets Insights eventually answer
+    # "do open houses do better when it's sunny" without re-reading
+    # session.json on every query.
+    weather = session.get("weather") or {}
+    weather_temp_f = weather.get("temp_f")
+    weather_summary = (weather.get("condition_label") or "")[:64] or None
+
     return {
         "session_id":              session_id,
         "user_id":                 user_id,
@@ -244,9 +252,8 @@ def _derive_stats(session: dict, user_id: str) -> Optional[dict]:
         "followups_sent_count":    followups,
         "report_generated":        report_generated,
         "report_sent":             report_sent,
-        # Weather columns left null until Phase 4 wires Open-Meteo.
-        "weather_temp_f":          None,
-        "weather_summary":         None,
+        "weather_temp_f":          float(weather_temp_f) if weather_temp_f is not None else None,
+        "weather_summary":         weather_summary,
         "updated_at":              datetime.now(timezone.utc),
     }
 
