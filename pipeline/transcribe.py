@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import assemblyai as aai
@@ -66,7 +67,10 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
             speakers_expected=speakers_expected,
         )
         transcriber = aai.Transcriber(config=config)
+        t_aai = time.monotonic()
         transcript = transcriber.transcribe(str(upload_path))
+        aai_s = time.monotonic() - t_aai
+        print(f"[aai] transcribe wall-time: {aai_s:.1f}s", flush=True)
         if transcript.error:
             raise RuntimeError(f"AssemblyAI error: {transcript.error}")
         # Claude post-correction: fix speaker swaps on rapid back-and-forth
@@ -75,7 +79,9 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
         # invents speaker labels, the original AAI utterances are kept.
         # Disable via DIARIZATION_REFINE_ENABLED=false on Render.
         try:
+            t_refine = time.monotonic()
             transcript = refine_diarization(transcript)
+            print(f"[diarization-refine] wall-time: {time.monotonic() - t_refine:.1f}s", flush=True)
         except Exception as e:
             print(f"[diarization-refine] failed, keeping raw AAI output: {e}", flush=True)
         # Privacy: once we have the refined transcript in memory, there's
