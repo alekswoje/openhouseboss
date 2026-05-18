@@ -370,6 +370,9 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
 struct SessionsTabContent: View {
     @Environment(AppRouter.self) private var router
     @State private var store = SessionStore.shared
+    @State private var showLocalRecordingsSheet = false
+    // Recomputed when the sheet opens so the user always sees current state.
+    @State private var localRecordings: [SessionStore.LocalRecordingInfo] = []
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -389,6 +392,25 @@ struct SessionsTabContent: View {
             await store.refreshSessions()
             await store.refreshScripts()
         }
+        .sheet(isPresented: $showLocalRecordingsSheet) {
+            LocalRecordingsPicker(
+                recordings: localRecordings,
+                onPick: { info in
+                    showLocalRecordingsSheet = false
+                    store.uploadLocalRecording(at: info.url, address: nil, name: nil)
+                    router.path = [.summary]
+                },
+                onDismiss: { showLocalRecordingsSheet = false }
+            )
+        }
+    }
+
+    // Local recordings folders that aren't the one being recorded right now.
+    // Used by the Home banner — when this is non-empty the agent can recover
+    // any prior recording whose upload failed or never happened.
+    private var orphanedLocalRecordings: [SessionStore.LocalRecordingInfo] {
+        let activeName = AudioRecorder.shared.chunksDirectoryName
+        return store.listLocalRecordings().filter { $0.id != activeName }
     }
 
     // Primary action — the whole reason an agent opens this tab during an
@@ -497,6 +519,10 @@ struct SessionsTabContent: View {
             if store.unfinishedRecording != nil {
                 unfinishedRecordingBanner
             }
+            let orphans = orphanedLocalRecordings
+            if !orphans.isEmpty {
+                localRecordingsBanner(count: orphans.count, largestBytes: orphans.map(\.totalBytes).max() ?? 0)
+            }
             if let err = store.listError {
                 errorState(err)
             } else if store.pastSessions.isEmpty && !store.listLoading {
@@ -505,6 +531,52 @@ struct SessionsTabContent: View {
                 buckets
             }
         }
+    }
+
+    // Surfaced whenever Documents/Recordings contains a chunk folder that
+    // isn't the active recording. Covers two cases the iPhone path used to
+    // drop on the floor: (a) End-Session upload timed out before a backend
+    // session was even created, so there's no Re-analyze button and no
+    // InFlightRecording either; (b) older builds that didn't write the
+    // InFlightRecording at all. Tapping opens a picker with the size + date
+    // for each recording so the agent can re-upload the right one.
+    private func localRecordingsBanner(count: Int, largestBytes: Int64) -> some View {
+        Button {
+            localRecordings = orphanedLocalRecordings
+            showLocalRecordingsSheet = true
+        } label: {
+            GlassSurface(cornerRadius: 14, strong: true) {
+                HStack(spacing: 12) {
+                    Image(systemName: "tray.and.arrow.up.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Eyebrow(text: "Recordings on this device", color: FoyerTheme.gold)
+                        Text("\(count) recording\(count == 1 ? "" : "s") not yet uploaded · largest \(formatBytes(largestBytes)). Tap to recover.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineSpacing(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: bytes)
     }
 
     // Surfaced on launch when the app finds an InFlightRecording with
@@ -750,6 +822,109 @@ struct SessionsTabContent: View {
         let f = DateFormatter()
         f.dateFormat = "EEE MMM d"
         return f.string(from: Date()).uppercased()
+    }
+}
+
+// MARK: – Local recordings recovery picker
+
+// Sheet driven by the Home "Recordings on this device" banner. Lists every
+// chunks folder under Documents/Recordings/ that isn't the live one, with
+// size + date so the agent can identify the right one and re-upload. Each
+// row's Upload button calls SessionStore.uploadLocalRecording, which adopts
+// the chunks and routes a full-depth tick through the standard processing
+// flow → Summary view.
+private struct LocalRecordingsPicker: View {
+    let recordings: [SessionStore.LocalRecordingInfo]
+    var onPick: (SessionStore.LocalRecordingInfo) -> Void
+    var onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FoyerTheme.bgDeep.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Pick a recording to upload. Each one is the raw audio captured on this device — the most recent is at the top.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 8)
+                        ForEach(recordings) { info in
+                            row(info)
+                                .padding(.horizontal, 20)
+                        }
+                        if recordings.isEmpty {
+                            Text("No local recordings found.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(FoyerTheme.textDim)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 16)
+                        }
+                        Spacer().frame(height: 40)
+                    }
+                    .padding(.top, 8)
+                }
+            }
+            .navigationTitle("Local recordings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", action: onDismiss)
+                        .foregroundStyle(FoyerTheme.gold)
+                }
+            }
+        }
+    }
+
+    private func row(_ info: SessionStore.LocalRecordingInfo) -> some View {
+        Button { onPick(info) } label: {
+            GlassSurface(cornerRadius: 14) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(info.id)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .lineLimit(1)
+                        HStack(spacing: 8) {
+                            Text(formattedDate(info.modifiedAt))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                            Text("·")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(FoyerTheme.textMuted)
+                            Text("\(info.chunkCount) chunks · \(formattedSize(info.totalBytes))".uppercased())
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(FoyerTheme.textMuted)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Text("Upload")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(FoyerTheme.gold, in: Capsule())
+                }
+                .padding(14)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func formattedDate(_ d: Date?) -> String {
+        guard let d else { return "—" }
+        let f = DateFormatter()
+        f.dateFormat = "MMM d · h:mm a"
+        return f.string(from: d).uppercased()
+    }
+
+    private func formattedSize(_ bytes: Int64) -> String {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: bytes)
     }
 }
 

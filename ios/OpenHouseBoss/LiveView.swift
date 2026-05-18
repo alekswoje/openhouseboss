@@ -62,8 +62,15 @@ struct LiveView: View {
             guard !recorder.isRecording else { return }
             let granted = await recorder.requestPermission()
             if granted {
-                do { try recorder.startRecording() }
-                catch { /* surface via UI if needed */ }
+                do {
+                    try recorder.startRecording()
+                    // Stamp an InFlightRecording on disk so the Home-tab
+                    // "Unfinished recording" banner picks this up if the
+                    // upload at End Session times out or the app dies
+                    // mid-session. iPad's snapshot loop does this already;
+                    // this is the iPhone equivalent.
+                    SessionStore.shared.noteRecordingStartedForRecovery()
+                } catch { /* surface via UI if needed */ }
             } else {
                 permissionDenied = true
             }

@@ -195,6 +195,11 @@ final class SessionStore {
                     self?.session = initial
                     self?.phase = .processing
                 }
+                // Backend session now exists — stamp the InFlightRecording
+                // (written by LiveView at recording start) with the id so the
+                // Recover banner can route to /snapshot if it ever resurfaces
+                // before pollUntilDone returns.
+                await MainActor.run { self?.updateInFlightBackendId(initial.id) }
                 let final = try await APIClient.shared.pollUntilDone(id: initial.id)
                 Log.net("pollUntilDone ← \(final.status), visitors=\(final.result?.visitors.count ?? 0)")
                 await MainActor.run {
@@ -203,6 +208,11 @@ final class SessionStore {
                         self?.phase = .failed(final.error ?? "Unknown error")
                     } else {
                         self?.phase = .ready
+                        // Successful end-to-end → drop the InFlightRecording
+                        // so the Home banner doesn't keep surfacing it. The
+                        // chunks dir stays on disk (the "Local recordings"
+                        // picker on Home is the last-resort escape hatch).
+                        self?.markInFlightCleanlyEnded()
                     }
                 }
                 await self?.refreshSessions()
@@ -711,6 +721,21 @@ final class SessionStore {
     // In-flight recording persistence + recovery + continue-recording
     // ============================================================
 
+    // Public entry point used by the iPhone LiveView the moment recording
+    // starts, so the Home-tab "Unfinished recording" banner can catch a
+    // crash or upload timeout. The iPad's startLiveSnapshotLoop writes its
+    // own InFlightRecording — this is the equivalent for the iPhone path
+    // (which uses uploadAndProcess at End Session instead of the snapshot
+    // loop).
+    func noteRecordingStartedForRecovery() {
+        writeInFlightRecord(
+            address: pendingAddress,
+            name: pendingName,
+            scriptId: pendingScriptId ?? defaultScriptId,
+            expected: pendingSpeakersExpected
+        )
+    }
+
     private func writeInFlightRecord(
         address: String?, name: String?, scriptId: String?, expected: Int?
     ) {
@@ -867,6 +892,36 @@ final class SessionStore {
         }
         return out.sorted { (a, b) in
             (a.modifiedAt ?? .distantPast) > (b.modifiedAt ?? .distantPast)
+        }
+    }
+
+    // Re-attach a local chunks directory and upload it as a brand-new
+    // session. Used by the Home "Local recordings" picker — surfaces every
+    // recording on disk regardless of whether an InFlightRecording or a
+    // backend session ever existed for it. The agent picks one, we adopt
+    // the chunks, route through snapshotTick (which POSTs /sessions when
+    // session is nil), and transition into the standard processing flow.
+    func uploadLocalRecording(at dirURL: URL, address: String?, name: String?) {
+        guard !liveSnapshotInFlight else { return }
+        let chunks = AudioRecorder.scanChunks(in: dirURL)
+        guard !chunks.isEmpty else {
+            liveSnapshotError = "No chunk files found in \(dirURL.lastPathComponent)."
+            return
+        }
+        AudioRecorder.shared.adoptExistingChunks(dir: dirURL, urls: chunks)
+
+        session = nil
+        phase = .processing
+        liveSnapshotError = nil
+        pollTask?.cancel()
+        let addr = address
+        let nick = name
+        let script = defaultScriptId
+        pollTask = Task { [weak self] in
+            await self?.snapshotTick(
+                address: addr, name: nick, expected: nil,
+                scriptId: script, guests: [], depth: .full, isFinal: true
+            )
         }
     }
 
