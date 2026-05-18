@@ -5,6 +5,13 @@ AssemblyAI bills per audio second processed. Running the audio through
 Silero VAD here lets us strip the silent stretches before uploading,
 typically dropping the billable duration by 50–80%.
 
+Silero is a *voice* activity detector — it's trained to reject
+non-speech audio including music, so instrumental playing in the
+background generally won't survive the trim. Conversational speech
+scores 0.7–0.95 against the model; music + ambient noise sits well
+below. Use VAD_THRESHOLD to tune (default 0.5, the upstream
+recommended production value).
+
 We deliberately keep this lightweight: the bundled silero_vad.onnx is
 loaded with onnxruntime (no torch dependency), and m4a decoding is done
 via PyAV so we don't need ffmpeg on the system path. The exported audio
@@ -17,6 +24,7 @@ this, two visitors taking turns can collapse into a single speaker label.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import wave
@@ -218,11 +226,24 @@ class TrimResult:
     trimmed: bool  # False if we left the file untouched (no segments, decode failure, etc.)
 
 
+def _resolve_threshold(explicit: float | None) -> float:
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("VAD_THRESHOLD", "").strip()
+    if not raw:
+        return 0.5
+    try:
+        v = float(raw)
+    except ValueError:
+        return 0.5
+    return max(0.1, min(0.95, v))
+
+
 def trim_silence(
     audio_path: Path,
     out_path: Path,
     *,
-    threshold: float = 0.4,
+    threshold: float | None = None,
     min_speech_ms: int = 200,
     min_silence_ms: int = 400,
     speech_pad_ms: int = 150,
@@ -230,11 +251,18 @@ def trim_silence(
 ) -> TrimResult:
     """Trim silence from `audio_path`, writing a mono 16 kHz wav to `out_path`.
 
+    `threshold` is the per-window speech probability cutoff. Default is
+    0.5 (silero's own recommended production value) — voice typically
+    scores 0.7–0.95, so 0.5 keeps a safety margin against false negatives
+    on speech while rejecting most music and ambient noise. Override via
+    the VAD_THRESHOLD env var without a redeploy.
+
     On any failure (decode error, no speech detected, etc.) we copy the
     original file to `out_path` and return `trimmed=False` so the caller
     can still ship audio to AssemblyAI — losing the trim is an acceptable
     degradation, losing the recording is not.
     """
+    threshold = _resolve_threshold(threshold)
     t0 = time.monotonic()
     samples = _decode_to_mono_16k(audio_path)
     decode_s = time.monotonic() - t0
@@ -247,6 +275,21 @@ def trim_silence(
     t1 = time.monotonic()
     probs = _run_silero(samples)
     silero_s = time.monotonic() - t1
+    # Probability distribution of the windows that beat the noise floor.
+    # If music is leaking through, we'd see a mass of windows scoring
+    # 0.4–0.7 here; clear speech sits 0.7+. Use this to tune VAD_THRESHOLD
+    # against real recordings without guessing.
+    loud = probs[probs > 0.0]
+    if loud.size:
+        p50 = float(np.percentile(loud, 50))
+        p90 = float(np.percentile(loud, 90))
+        above_05 = int(np.sum(loud >= 0.5))
+        above_07 = int(np.sum(loud >= 0.7))
+        print(
+            f"[vad] threshold={threshold} prob_dist (loud windows={loud.size}): "
+            f"p50={p50:.2f} p90={p90:.2f} ≥0.5={above_05} ≥0.7={above_07}",
+            flush=True,
+        )
     print(
         f"[vad] timings: decode={decode_s:.1f}s silero={silero_s:.1f}s "
         f"audio_len={original_seconds:.0f}s",
