@@ -9665,16 +9665,20 @@ private struct IPadSessionDetail: View {
                     if let deleteError {
                         errorCard(deleteError)
                     }
-                    // While the finalize tick is in flight, the partial-
-                    // recording banner gets replaced by a processing card so
-                    // the user sees continuous feedback during the multi-
-                    // minute upload + analysis pass. The card stays visible
-                    // even if the user navigates away and back, since we
-                    // also derive it from store.liveSnapshotInFlight for
-                    // this session.
+                    // Recovery affordances. Priority order:
+                    //   1. Finalize tick in flight → show the Finalizing
+                    //      card (spinner + ETA + any error).
+                    //   2. Server already chewing on this session
+                    //      (status=processing) → the existing processingNote
+                    //      handles it below; don't show the rescue banner
+                    //      since the work is in progress and double UI just
+                    //      confuses the agent.
+                    //   3. Otherwise, if the session is partial
+                    //      (is_live=true), surface the rescue banner so the
+                    //      agent can re-upload the full audio.
                     if isFinalizingForThisSession {
                         finalizingCard
-                    } else if session.isLive == true {
+                    } else if session.status != "processing", session.isLive == true {
                         partialRecordingBanner(session)
                     }
                     playbackBar
@@ -9713,6 +9717,17 @@ private struct IPadSessionDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .task(id: sessionId) { await load() }
+        // While the backend is still chewing on this session, poll every
+        // 10s so the agent sees the result land without manually pull-to-
+        // refreshing. The task auto-cancels when the view disappears or
+        // when sessionId changes (the .id keys the task to both).
+        .task(id: "\(sessionId)|\(session?.status ?? "")") {
+            while !Task.isCancelled, session?.status == "processing" {
+                try? await Task.sleep(for: .seconds(10))
+                if Task.isCancelled { return }
+                await load()
+            }
+        }
         .onDisappear { player.stop() }
         .alert("Delete this session?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -10403,14 +10418,31 @@ private struct IPadSessionDetail: View {
                 Text("Still processing")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(FoyerTheme.cream)
-                Text("Voices are being separated. Check back in a minute.")
+                Text(processingDetail)
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
         }
         .padding(16)
         .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    // Tailor the wait copy to the recording length. Diarization on long
+    // audio is the bottleneck — agents see 5–15 min for a 2hr session —
+    // so a flat "check back in a minute" feels misleading. Use the
+    // playback duration once we have it; fall back to the generic line.
+    private var processingDetail: String {
+        let dur = player.duration
+        if dur > 30 * 60 {
+            let mins = Int(dur / 60)
+            return "Separating voices across \(mins) min of audio + drafting per-visitor analysis. Typically 5–15 minutes for recordings this long."
+        }
+        if dur > 5 * 60 {
+            return "Separating voices and drafting per-visitor analysis. Usually under 2 minutes."
+        }
+        return "Voices are being separated. Check back in a minute."
     }
 
     private func errorCard(_ msg: String) -> some View {

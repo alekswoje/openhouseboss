@@ -47,6 +47,10 @@ targets:
         # folder structure (which would churn the .pbxproj). The target
         # stays "OpenHouseBoss" internally; users see "Open House Copilot".
         CFBundleDisplayName: "Open House Copilot"
+        # App only uses HTTPS/TLS (Apple's standard encryption) — no custom
+        # crypto, no proprietary algorithms. Declaring exempt here so App
+        # Store Connect doesn't prompt for export-compliance docs per build.
+        ITSAppUsesNonExemptEncryption: false
         # All networking goes to https://openhouseboss-api.onrender.com — no
         # cleartext exceptions needed. NSAllowsArbitraryLoads=true was a
         # leftover from local-dev (`http://<mac-lan-ip>:8000`); App Review
