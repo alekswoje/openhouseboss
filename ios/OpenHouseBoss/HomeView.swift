@@ -265,20 +265,36 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
 
         private func ensureInstalled() {
             guard window != nil, let scroll = findScroll() else { return }
-            // Already attached to this scroll view with a live gate? Done.
+            let pan = scroll.panGestureRecognizer
+
+            // Already attached to this scroll view with a live gate? Just
+            // re-assert the failure relationship and we're done. UIKit
+            // dedupes identical require(toFail:) pairs.
             if attachedScroll === scroll,
                let g = attachedGate,
                scroll.gestureRecognizers?.contains(where: { $0 === g }) == true {
+                pan.require(toFail: g)
                 return
             }
-            // Detach any stale gate from a previous scroll view.
-            if let oldGate = attachedGate, let oldScroll = attachedScroll {
+
+            // Clean up any stale DirectionGates left behind by previous
+            // ProbeView instances (e.g. after SwiftUI rebuilds the
+            // hierarchy during navigation). Without this we'd accumulate
+            // gates each time and waste cycles in their touch handlers.
+            for r in (scroll.gestureRecognizers ?? []) {
+                if let stale = r as? DirectionGate, stale !== attachedGate {
+                    scroll.removeGestureRecognizer(stale)
+                }
+            }
+            if let oldGate = attachedGate, let oldScroll = attachedScroll,
+               oldScroll !== scroll {
                 oldScroll.removeGestureRecognizer(oldGate)
             }
+
             let gate = DirectionGate(target: nil, action: nil)
-            gate.pagerPan = scroll.panGestureRecognizer
+            gate.pagerPan = pan
             scroll.addGestureRecognizer(gate)
-            scroll.panGestureRecognizer.require(toFail: gate)
+            pan.require(toFail: gate)
             attachedScroll = scroll
             attachedGate = gate
         }
@@ -293,9 +309,15 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
         }
     }
 
-    final class DirectionGate: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
+    final class DirectionGate: UIGestureRecognizer, UIGestureRecognizerDelegate {
         weak var pagerPan: UIPanGestureRecognizer?
+        private var startPoint: CGPoint = .zero
         private var decided = false
+        // True while we have the pager disabled. We disable on a vertical
+        // verdict and only re-enable when the touch sequence ends, so
+        // UIKit can't replay the same touches into the pager between our
+        // disable and a too-quick re-enable.
+        private var disabledPager = false
 
         override init(target: Any?, action: Selector?) {
             super.init(target: target, action: action)
@@ -308,42 +330,59 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
         override func reset() {
             super.reset()
             decided = false
+            restorePagerIfNeeded()
+        }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            super.touchesBegan(touches, with: event)
+            guard let touch = touches.first, let v = view else { return }
+            startPoint = touch.location(in: v)
+            decided = false
         }
 
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
             super.touchesMoved(touches, with: event)
-            guard !decided, let v = view else { return }
-            let t = translation(in: v)
-            let vel = velocity(in: v)
-            // Mix translation (more stable for slow drags) with velocity
-            // (decisive for fast flicks). The 6× factor scales translation
-            // (small in points) into roughly the same range as velocity
-            // (points / second).
-            let dx = max(abs(vel.x), abs(t.x) * 6)
-            let dy = max(abs(vel.y), abs(t.y) * 6)
+            guard !decided, let touch = touches.first, let v = view else { return }
+            let cur = touch.location(in: v)
+            let dx = cur.x - startPoint.x
+            let dy = cur.y - startPoint.y
             // Wait for a meaningful first step before deciding direction.
-            guard dx > 8 || dy > 8 else { return }
+            // Plain UIGestureRecognizer doesn't auto-advance state, so we
+            // stay in .possible — keeping the pager's require(toFail:)
+            // wait condition active — until we explicitly fail.
+            guard max(abs(dx), abs(dy)) > 8 else { return }
             decided = true
-            if dx <= dy * 1.5, let pp = pagerPan {
-                // Not horizontal-dominant — cancel the pager mid-touch by
-                // toggling isEnabled. UIKit transitions the recognizer to
-                // .cancelled, dropping the current touch sequence; the
-                // inner vertical scroll can then claim it without contest.
+            if abs(dx) <= abs(dy) * 1.5, let pp = pagerPan {
+                // Not horizontal-dominant — disable the pager for the
+                // remainder of this touch sequence so the inner vertical
+                // scroll's pan can claim it without contest. We re-enable
+                // in touchesEnded / touchesCancelled / reset.
                 pp.isEnabled = false
-                pp.isEnabled = true
+                disabledPager = true
             }
-            // Either way we fail ourselves — we only observe, never claim.
+            // Either way we fail ourselves — we only observe, never claim
+            // the gesture. Failing here releases the pager's require()
+            // wait so a horizontal swipe can begin on the next event.
             state = .failed
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
             super.touchesEnded(touches, with: event)
-            if state != .failed { state = .failed }
+            restorePagerIfNeeded()
+            if state == .possible { state = .failed }
         }
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
             super.touchesCancelled(touches, with: event)
-            if state != .failed { state = .failed }
+            restorePagerIfNeeded()
+            if state == .possible { state = .failed }
+        }
+
+        private func restorePagerIfNeeded() {
+            if disabledPager {
+                pagerPan?.isEnabled = true
+                disabledPager = false
+            }
         }
 
         // Allow recognition alongside anything else so we don't block the
