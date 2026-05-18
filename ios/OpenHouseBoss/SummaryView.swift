@@ -14,6 +14,11 @@ struct SummaryView: View {
     @State private var showRenameSheet = false
     @State private var renameText: String = ""
     @State private var continueError: String?
+    // "Finalize from device audio" picker — only opened when we can't auto-
+    // match a local chunks dir to the current session (no InFlightRecording
+    // or it points at a different sessionId).
+    @State private var showFinalizePicker = false
+    @State private var finalizeRecordings: [SessionStore.LocalRecordingInfo] = []
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -167,14 +172,97 @@ struct SummaryView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch store.phase {
-        case .idle, .uploading, .processing:
-            processingCard
-        case .failed(let msg):
-            errorCard(msg)
-        case .ready:
-            visitorList
+        VStack(alignment: .leading, spacing: 14) {
+            // "This recording wasn't fully uploaded" rescue banner. Shown
+            // whenever the loaded session is still flagged is_live (the
+            // final-depth tick at End Session never landed) — gives the
+            // agent a one-tap path to upload the full audio that's still
+            // on this device. Hidden while we're actively processing so
+            // we don't fight the spinner.
+            if shouldShowFinalizeBanner { finalizeBanner }
+            switch store.phase {
+            case .idle, .uploading, .processing:
+                processingCard
+            case .failed(let msg):
+                errorCard(msg)
+            case .ready:
+                visitorList
+            }
         }
+        .sheet(isPresented: $showFinalizePicker) {
+            LocalRecordingsPickerSheet(
+                recordings: finalizeRecordings,
+                onPick: { info in
+                    showFinalizePicker = false
+                    if let id = store.session?.id {
+                        store.recoverFromLocalChunks(sessionId: id, dirURL: info.url)
+                    } else {
+                        store.uploadLocalRecording(at: info.url, address: nil, name: nil)
+                    }
+                },
+                onDismiss: { showFinalizePicker = false }
+            )
+        }
+    }
+
+    // True when the loaded session was uploaded by the snapshot loop but
+    // the final-depth tick never landed (server still has is_live=true), or
+    // when we landed in the failed phase with a session id. Both states are
+    // "partial — we can finish this with the local audio".
+    private var shouldShowFinalizeBanner: Bool {
+        if case .uploading = store.phase { return false }
+        if case .processing = store.phase { return false }
+        if store.session?.isLive == true { return true }
+        if case .failed = store.phase, store.session?.id != nil { return true }
+        return false
+    }
+
+    private var finalizeBanner: some View {
+        GlassSurface(cornerRadius: 14, strong: true) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "tray.and.arrow.up.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                    Eyebrow(text: "Recording not finalized", color: FoyerTheme.gold)
+                    Spacer()
+                }
+                Text("The end-of-session upload didn't finish, so this session only has audio through the last successful snapshot. Upload the full audio from this device to finalize it.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(2)
+                Button { finalizeTapped() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Finalize from device audio")
+                    }
+                }
+                .buttonStyle(FoyerPrimaryButton())
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+    }
+
+    // Resolve which local chunks folder belongs to this session and kick
+    // off the re-upload. Preference order:
+    //   1. InFlightRecording on disk whose backendSessionId matches → trust
+    //      it directly, no picker.
+    //   2. Otherwise present the LocalRecordingsPicker so the agent picks
+    //      the right folder from the date/size list.
+    private func finalizeTapped() {
+        let all = store.listLocalRecordings()
+        if let sessionId = store.session?.id,
+           let record = SessionStore.loadInFlightForRecovery(),
+           record.backendSessionId == sessionId,
+           let match = all.first(where: { $0.id == record.localChunksDirName }) {
+            store.recoverFromLocalChunks(sessionId: sessionId, dirURL: match.url)
+            return
+        }
+        finalizeRecordings = all
+        showFinalizePicker = true
     }
 
     // Local playback bar — only shown when we have an audioURL on hand.

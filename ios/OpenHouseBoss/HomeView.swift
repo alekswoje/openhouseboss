@@ -393,7 +393,7 @@ struct SessionsTabContent: View {
             await store.refreshScripts()
         }
         .sheet(isPresented: $showLocalRecordingsSheet) {
-            LocalRecordingsPicker(
+            LocalRecordingsPickerSheet(
                 recordings: localRecordings,
                 onPick: { info in
                     showLocalRecordingsSheet = false
@@ -832,8 +832,9 @@ struct SessionsTabContent: View {
 // size + date so the agent can identify the right one and re-upload. Each
 // row's Upload button calls SessionStore.uploadLocalRecording, which adopts
 // the chunks and routes a full-depth tick through the standard processing
-// flow → Summary view.
-private struct LocalRecordingsPicker: View {
+// flow → Summary view. Also reused by SummaryView's "Finalize from device
+// audio" rescue path when no InFlightRecording auto-resolves the folder.
+struct LocalRecordingsPickerSheet: View {
     let recordings: [SessionStore.LocalRecordingInfo]
     var onPick: (SessionStore.LocalRecordingInfo) -> Void
     var onDismiss: () -> Void

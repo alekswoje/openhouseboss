@@ -721,6 +721,14 @@ final class SessionStore {
     // In-flight recording persistence + recovery + continue-recording
     // ============================================================
 
+    // Public peek at the on-disk InFlightRecording. Used by SummaryView's
+    // "Finalize from device audio" rescue to map a session id back to the
+    // chunks folder that produced it (so the agent doesn't have to pick
+    // from a list when we already know the answer).
+    static func loadInFlightForRecovery() -> InFlightRecording? {
+        Self.loadInFlight()
+    }
+
     // Public entry point used by the iPhone LiveView the moment recording
     // starts, so the Home-tab "Unfinished recording" banner can catch a
     // crash or upload timeout. The iPad's startLiveSnapshotLoop writes its
