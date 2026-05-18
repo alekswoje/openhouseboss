@@ -9659,6 +9659,15 @@ private struct IPadSessionDetail: View {
                     if let deleteError {
                         errorCard(deleteError)
                     }
+                    // Banner for sessions where the End-Session upload didn't
+                    // finalize. The light snapshot loop left status=ready, but
+                    // is_live=true means the backend only has audio through
+                    // the last successful tick. Surfaced here (not buried in
+                    // the reanalyze footer) so the agent sees the recovery
+                    // path before they start re-analyzing partial audio.
+                    if session.isLive == true {
+                        partialRecordingBanner(session)
+                    }
                     playbackBar
                     if reanalyzing {
                         processingNote
@@ -10460,6 +10469,82 @@ private struct IPadSessionDetail: View {
         .buttonStyle(.plain)
     }
 
+    // Top-of-screen rescue banner for partial sessions (is_live=true). The
+    // primary action — "Finalize from device audio" — auto-maps the session
+    // to its chunks folder via the InFlightRecording on disk and re-uploads
+    // the full audio at depth=full so the backend re-runs diarization +
+    // per-visitor analysis across the entire recording. Falls back to the
+    // existing RecoverFromChunksSheet picker when the auto-map misses (e.g.
+    // the InFlightRecording was cleared or never written).
+    private func partialRecordingBanner(_ session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.up.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("RECORDING NOT FINALIZED")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.6)
+                    .foregroundStyle(FoyerTheme.gold)
+                Spacer()
+            }
+            Text("The end-of-session upload didn't finish — this session only has audio through the last successful snapshot. Upload the full audio from this device to finalize it and re-run diarization on the whole recording.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            if let extra = recoverError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                Button { finalizeFromDeviceTapped() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Finalize from device audio")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(FoyerTheme.inkOnGold)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(FoyerTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Button { showRecoverSheet = true } label: {
+                    Text("Pick a different folder")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.gold.opacity(0.45), lineWidth: 0.5))
+    }
+
+    // Best-effort one-tap: if the on-disk InFlightRecording points at this
+    // session, trust it and route directly to recoverFromLocalChunks.
+    // Otherwise open the picker so the agent picks the right folder by
+    // date + size.
+    private func finalizeFromDeviceTapped() {
+        recoverError = nil
+        if let record = SessionStore.loadInFlightForRecovery(),
+           record.backendSessionId == sessionId {
+            let dir = AudioRecorder.recordingsDirectory
+                .appendingPathComponent(record.localChunksDirName, isDirectory: true)
+            if FileManager.default.fileExists(atPath: dir.path) {
+                store.recoverFromLocalChunks(sessionId: sessionId, dirURL: dir)
+                return
+            }
+        }
+        showRecoverSheet = true
+    }
+
     @MainActor
     private func reanalyze() async {
         guard let id = session?.id else { return }
@@ -10531,10 +10616,12 @@ private struct IPadSessionDetail: View {
                 .buttonStyle(.plain)
                 .disabled(reanalyzing)
             }
-            // Surfaced only when the session is in an error state — for a
-            // ready session the audio on the backend is the source of truth
-            // and re-uploading from local chunks would just overwrite it.
-            if session?.status == "error" {
+            // Show the chunks-recovery escape hatch in any state where local
+            // audio could be more complete than the backend's: errored
+            // sessions (snapshot loop never shipped a clean concat) AND
+            // partial is_live=true sessions (the End-Session final tick
+            // timed out so the backend only has the last light pass).
+            if session?.status == "error" || session?.isLive == true {
                 recoverFromChunksButton
             }
         }
