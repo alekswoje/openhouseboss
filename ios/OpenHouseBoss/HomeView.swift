@@ -174,17 +174,25 @@ extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
 // Without this, a downward swipe with a small lateral drift can swing the
 // pager to the next tab instead of scrolling the inner vertical list.
 //
-// Strategy: wrap the outer horizontal UIScrollView's pan gesture delegate.
-// `gestureRecognizerShouldBegin` is intercepted to reject pans whose
-// initial velocity is more vertical than horizontal — the pager simply
-// never starts in that case, so the inner vertical scroll picks up the
-// gesture as it would for any other touch. All other delegate methods
-// pass through to the scroll view's own implementation.
+// Strategy: install our own UIPanGestureRecognizer on the outer horizontal
+// UIScrollView and configure the pager's pan to `require(toFail:)` ours.
+// Our gate observes the first ~8 points of motion in `touchesMoved`:
+//   • If the swipe is decisively horizontal, the gate simply fails and the
+//     pager's pan is free to begin → tab switch.
+//   • Otherwise, the gate toggles the pager pan's `isEnabled` to cancel it
+//     mid-touch, then fails. The inner vertical scroll's pan recognizer is
+//     then unopposed and picks up the gesture.
+//
+// We never transition to .began, so we never claim the gesture and never
+// compete with the inner scroll's pan recognizer. Unlike a delegate-wrap,
+// the gate is an object UIKit cannot reset on us during navigation or
+// scene-foreground transitions — it lives in the scroll view's
+// `gestureRecognizers` array until we remove it.
 private struct HorizontalDominanceGate: UIViewRepresentable {
-    // Bumped whenever the navigation stack changes. The actual value is
-    // unused — its only job is to force SwiftUI to invoke updateUIView,
-    // which re-asserts our pan delegate after a push/pop that may have
-    // knocked it off.
+    // Bumped whenever the navigation stack changes. The value is unused —
+    // its only job is to force SwiftUI to invoke updateUIView, which
+    // re-asserts the gate after a push/pop in case SwiftUI has rebuilt
+    // the underlying UIScrollView.
     var nudge: Int = 0
 
     func makeUIView(context: Context) -> UIView {
@@ -198,7 +206,8 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
     }
 
     final class ProbeView: UIView {
-        private let proxy = PanDelegateProxy()
+        private var attachedGate: DirectionGate?
+        private weak var attachedScroll: UIScrollView?
         private var lifecycleObservers: [NSObjectProtocol] = []
 
         override func didMoveToWindow() {
@@ -211,12 +220,9 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.ensureInstalled() }
         }
 
-        // Called from updateUIView when the navigation stack changes, and
-        // from app/scene lifecycle notifications. The pop or foreground
-        // animation may still be running, so we re-check on the next
-        // runloop and again after a short delay to catch the post-animation
-        // state where the scroll view has settled and a stale delegate
-        // would otherwise win.
+        // Called from updateUIView (navigation changes) and lifecycle
+        // notifications. Re-check immediately and again after the
+        // transition animation settles.
         func reassertSoon() {
             DispatchQueue.main.async { [weak self] in self?.ensureInstalled() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -224,11 +230,6 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
             }
         }
 
-        // Re-verify on every layout pass. UIKit/SwiftUI can reset the
-        // scroll view's pan-gesture delegate during navigation transitions
-        // (e.g. pushing/popping a session detail), which would silently
-        // drop our directional filter. Re-asserting on layout keeps it
-        // attached without needing notifications or display links.
         override func layoutSubviews() {
             super.layoutSubviews()
             ensureInstalled()
@@ -236,10 +237,6 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
 
         private func installLifecycleObservers() {
             guard lifecycleObservers.isEmpty else { return }
-            // Catch app-foreground / scene-activation. After the app is
-            // backgrounded and reopened, SwiftUI sometimes rebuilds parts
-            // of the hierarchy or otherwise nils out the pan delegate
-            // before our usual hooks have a chance to fire.
             let names: [NSNotification.Name] = [
                 UIApplication.didBecomeActiveNotification,
                 UIScene.willEnterForegroundNotification,
@@ -268,16 +265,22 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
 
         private func ensureInstalled() {
             guard window != nil, let scroll = findScroll() else { return }
-            let pan = scroll.panGestureRecognizer
-            guard pan.delegate !== proxy else { return }
-            // Always set the scroll view as the proxy's fallback. UIKit's
-            // canonical setup is pan.delegate === scrollView; if the
-            // delegate has been reset to nil or to a stale (dealloc'd
-            // sibling) proxy during a lifecycle transition, deferring to
-            // the scroll view itself is still the correct behavior and
-            // preserves built-in nested-scroll handling.
-            proxy.fallback = scroll as? UIGestureRecognizerDelegate
-            pan.delegate = proxy
+            // Already attached to this scroll view with a live gate? Done.
+            if attachedScroll === scroll,
+               let g = attachedGate,
+               scroll.gestureRecognizers?.contains(where: { $0 === g }) == true {
+                return
+            }
+            // Detach any stale gate from a previous scroll view.
+            if let oldGate = attachedGate, let oldScroll = attachedScroll {
+                oldScroll.removeGestureRecognizer(oldGate)
+            }
+            let gate = DirectionGate(target: nil, action: nil)
+            gate.pagerPan = scroll.panGestureRecognizer
+            scroll.addGestureRecognizer(gate)
+            scroll.panGestureRecognizer.require(toFail: gate)
+            attachedScroll = scroll
+            attachedGate = gate
         }
 
         private func findScroll() -> UIScrollView? {
@@ -290,77 +293,66 @@ private struct HorizontalDominanceGate: UIViewRepresentable {
         }
     }
 
-    final class PanDelegateProxy: NSObject, UIGestureRecognizerDelegate {
-        weak var fallback: UIGestureRecognizerDelegate?
+    final class DirectionGate: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
+        weak var pagerPan: UIPanGestureRecognizer?
+        private var decided = false
 
-        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-            if let pan = g as? UIPanGestureRecognizer {
-                let v = pan.velocity(in: pan.view)
-                let t = pan.translation(in: pan.view)
-                // Use translation when available (more stable than velocity
-                // at the moment shouldBegin fires for slow drags), but fall
-                // back to velocity for fast flicks where translation is
-                // still small.
-                let dx = max(abs(v.x), abs(t.x) * 6)
-                let dy = max(abs(v.y), abs(t.y) * 6)
-                // Only let the pager claim a gesture that is clearly
-                // horizontal-dominant. Requiring dx > 1.5 * dy limits tab
-                // swipes to roughly within 34° of horizontal — anything
-                // steeper (including ordinary diagonal scroll drift) falls
-                // through so the inner vertical scroll takes the gesture.
-                if dx <= dy * 1.5 {
-                    return false
-                }
-            }
-            return fallback?.gestureRecognizerShouldBegin?(g) ?? true
+        override init(target: Any?, action: Selector?) {
+            super.init(target: target, action: action)
+            self.delegate = self
+            self.cancelsTouchesInView = false
+            self.delaysTouchesBegan = false
+            self.delaysTouchesEnded = false
         }
 
+        override func reset() {
+            super.reset()
+            decided = false
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+            super.touchesMoved(touches, with: event)
+            guard !decided, let v = view else { return }
+            let t = translation(in: v)
+            let vel = velocity(in: v)
+            // Mix translation (more stable for slow drags) with velocity
+            // (decisive for fast flicks). The 6× factor scales translation
+            // (small in points) into roughly the same range as velocity
+            // (points / second).
+            let dx = max(abs(vel.x), abs(t.x) * 6)
+            let dy = max(abs(vel.y), abs(t.y) * 6)
+            // Wait for a meaningful first step before deciding direction.
+            guard dx > 8 || dy > 8 else { return }
+            decided = true
+            if dx <= dy * 1.5, let pp = pagerPan {
+                // Not horizontal-dominant — cancel the pager mid-touch by
+                // toggling isEnabled. UIKit transitions the recognizer to
+                // .cancelled, dropping the current touch sequence; the
+                // inner vertical scroll can then claim it without contest.
+                pp.isEnabled = false
+                pp.isEnabled = true
+            }
+            // Either way we fail ourselves — we only observe, never claim.
+            state = .failed
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+            super.touchesEnded(touches, with: event)
+            if state != .failed { state = .failed }
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+            super.touchesCancelled(touches, with: event)
+            if state != .failed { state = .failed }
+        }
+
+        // Allow recognition alongside anything else so we don't block the
+        // inner scroll view's pan while we're waiting to decide direction.
         func gestureRecognizer(
             _ g: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
-            return fallback?.gestureRecognizer?(
-                g, shouldRecognizeSimultaneouslyWith: other
-            ) ?? false
-        }
-
-        func gestureRecognizer(
-            _ g: UIGestureRecognizer,
-            shouldRequireFailureOf other: UIGestureRecognizer
-        ) -> Bool {
-            return fallback?.gestureRecognizer?(
-                g, shouldRequireFailureOf: other
-            ) ?? false
-        }
-
-        func gestureRecognizer(
-            _ g: UIGestureRecognizer,
-            shouldBeRequiredToFailBy other: UIGestureRecognizer
-        ) -> Bool {
-            return fallback?.gestureRecognizer?(
-                g, shouldBeRequiredToFailBy: other
-            ) ?? false
-        }
-
-        func gestureRecognizer(
-            _ g: UIGestureRecognizer,
-            shouldReceive touch: UITouch
-        ) -> Bool {
-            return fallback?.gestureRecognizer?(g, shouldReceive: touch) ?? true
-        }
-
-        func gestureRecognizer(
-            _ g: UIGestureRecognizer,
-            shouldReceive press: UIPress
-        ) -> Bool {
-            return fallback?.gestureRecognizer?(g, shouldReceive: press) ?? true
-        }
-
-        func gestureRecognizer(
-            _ g: UIGestureRecognizer,
-            shouldReceive event: UIEvent
-        ) -> Bool {
-            return fallback?.gestureRecognizer?(g, shouldReceive: event) ?? true
+            return true
         }
     }
 }
