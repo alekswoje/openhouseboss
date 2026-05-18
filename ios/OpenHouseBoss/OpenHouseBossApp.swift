@@ -283,6 +283,9 @@ struct SplashView: View {
 struct LoginView: View {
     @State private var auth = AuthStore.shared
     @State private var isSigningIn = false
+    // Drives the secondary email/password sheet — exists for App Store
+    // reviewers and demo-day sign-ins (see DemoSignInSheet below).
+    @State private var showDemoSignIn = false
 
     // Choreography flags — each one drives one of the staggered animations.
     @State private var bloom = false
@@ -354,6 +357,9 @@ struct LoginView: View {
             }
         }
         .onAppear { runIntroAnimation() }
+        .sheet(isPresented: $showDemoSignIn) {
+            DemoSignInSheet()
+        }
     }
 
     // The staggered intro. Delays are tuned so each motion picks up where
@@ -408,6 +414,21 @@ struct LoginView: View {
             .disabled(isSigningIn || auth.loading)
             .opacity(isSigningIn || auth.loading ? 0.65 : 1)
 
+            // Secondary email + password path. Visually subdued so the
+            // primary call to action stays the Continue-with-Google
+            // button, but always present so App Review and demo-day
+            // attendees can sign in without the Google OAuth dance.
+            Button {
+                showDemoSignIn = true
+            } label: {
+                Text("Sign in with email")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .underline()
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+
             Text("BY CONTINUING, YOU AGREE TO OPEN HOUSE COPILOT'S TERMS · AGENTS ONLY")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .tracking(1.4)
@@ -430,6 +451,150 @@ struct LoginView: View {
         Task {
             await auth.signInWithGoogle(presentationAnchor: anchor)
             await MainActor.run { isSigningIn = false }
+        }
+    }
+}
+
+// MARK: – Demo (email + password) sign-in sheet
+//
+// Presented from LoginView's "Sign in with email" link. Hits the backend's
+// /auth/demo endpoint, which validates against server-side DEMO_EMAIL /
+// DEMO_PASSWORD env vars. Exists primarily so App Store reviewers can get
+// into the app without Google's OAuth screen (which sometimes prompts
+// "this app isn't verified" walls on fresh review machines) and so we
+// can hand TestFlight beta testers a single shared credential.
+struct DemoSignInSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var auth = AuthStore.shared
+
+    @State private var email: String = ""
+    @State private var password: String = ""
+    @State private var isSubmitting = false
+    @FocusState private var focused: Field?
+    enum Field { case email, password }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FoyerTheme.bgDeep.ignoresSafeArea()
+                VStack(spacing: 22) {
+                    VStack(spacing: 10) {
+                        FoyerBrandMark(size: 56, cornerRadius: 14)
+                        Text("Sign in with email")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text("For App Store reviewers and beta testers. Most agents should use Continue with Google.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                    }
+                    .padding(.top, 24)
+
+                    VStack(spacing: 12) {
+                        labeledField("Email") {
+                            TextField("", text: $email, prompt: Text("you@example.com")
+                                .foregroundColor(FoyerTheme.textMuted))
+                                .textContentType(.emailAddress)
+                                .keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                                .focused($focused, equals: .email)
+                                .submitLabel(.next)
+                                .onSubmit { focused = .password }
+                        }
+                        labeledField("Password") {
+                            SecureField("", text: $password, prompt: Text("•••••••••")
+                                .foregroundColor(FoyerTheme.textMuted))
+                                .textContentType(.password)
+                                .focused($focused, equals: .password)
+                                .submitLabel(.go)
+                                .onSubmit { Task { await submit() } }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+
+                    if let err = auth.lastError {
+                        Text(err)
+                            .font(.system(size: 12))
+                            .foregroundStyle(FoyerTheme.terracotta)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    }
+
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSubmitting || auth.loading {
+                                ProgressView().tint(FoyerTheme.inkOnGold).scaleEffect(0.85)
+                            }
+                            Text(isSubmitting || auth.loading ? "Signing in…" : "Sign in")
+                                .font(.system(size: 16, weight: .semibold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(FoyerTheme.inkOnGold)
+                        .background(FoyerTheme.gold, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
+                    .disabled(submitDisabled)
+                    .opacity(submitDisabled ? 0.5 : 1)
+
+                    Spacer()
+                }
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+            }
+            .onAppear {
+                // Wipe any error left over from a previous failed Google
+                // attempt so the email sheet opens clean.
+                auth.lastError = nil
+                focused = .email
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var submitDisabled: Bool {
+        isSubmitting || auth.loading
+            || email.trimmingCharacters(in: .whitespaces).isEmpty
+            || password.isEmpty
+    }
+
+    private func submit() async {
+        guard !submitDisabled else { return }
+        isSubmitting = true
+        await auth.signInWithDemo(
+            email: email.trimmingCharacters(in: .whitespaces),
+            password: password
+        )
+        await MainActor.run { isSubmitting = false }
+        // If the sign-in succeeded, AuthStore.currentUser is now non-nil
+        // and RootView will dismiss this sheet by swapping the whole
+        // tree to the signed-in stack — no manual dismiss() needed.
+    }
+
+    @ViewBuilder
+    private func labeledField<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.2)
+                .foregroundStyle(FoyerTheme.textMuted)
+            content()
+                .foregroundStyle(FoyerTheme.cream)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .background(FoyerTheme.cream.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 10))
         }
     }
 }

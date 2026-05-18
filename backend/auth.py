@@ -42,6 +42,14 @@ GOOGLE_WEB_CLIENT_SECRET = os.environ.get("GOOGLE_WEB_CLIENT_SECRET", "")
 GOOGLE_IOS_CLIENT_ID = os.environ.get("GOOGLE_IOS_CLIENT_ID", "")
 BACKEND_JWT_SECRET = os.environ.get("BACKEND_JWT_SECRET", "dev-secret-do-not-use-in-prod")
 
+# Demo (email + password) sign-in. Exists primarily so App Store reviewers
+# can get into the app without Google OAuth — Google's consent screen on a
+# fresh reviewer machine sometimes hits "this app isn't verified" walls and
+# bricks the review. Disabled (returns 503) when either env var is unset
+# so a stray production deploy can't accidentally expose a back door.
+DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "").strip().lower()
+DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "")
+
 BACKEND_BASE = os.environ.get(
     "BACKEND_BASE_URL", "https://openhouseboss-api.onrender.com"
 ).rstrip("/")
@@ -114,6 +122,50 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
         if u["id"] == user_id:
             return u
     return None
+
+
+def authenticate_demo(email: str, password: str) -> dict:
+    """Email + password login for App Store reviewers and TestFlight demos.
+
+    Validates against DEMO_EMAIL / DEMO_PASSWORD env vars (both must be
+    set, else 503 — see env handling in this module). The "user" is stored
+    in the same users_by_google_sub bucket under a synthetic sub of
+    `demo:<email>` so the rest of the codebase (sessions, profile, etc.)
+    treats it exactly like a real Google-backed account.
+    """
+    if not DEMO_EMAIL or not DEMO_PASSWORD:
+        raise HTTPException(503, "Demo login is not configured on this server")
+    if (email or "").strip().lower() != DEMO_EMAIL:
+        raise HTTPException(401, "Invalid demo credentials")
+    # Constant-time compare to avoid leaking the password length / prefix
+    # through timing — the credential is shared with App Review so it's
+    # not catastrophic if it leaks, but no reason to be sloppy either.
+    import hmac as _hmac
+    if not _hmac.compare_digest(password or "", DEMO_PASSWORD):
+        raise HTTPException(401, "Invalid demo credentials")
+
+    synthetic_sub = f"demo:{DEMO_EMAIL}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    data = _load_users()
+    user = data["users_by_google_sub"].get(synthetic_sub)
+    if user is None:
+        import uuid as _uuid
+        user = {
+            "id": str(_uuid.uuid4()),
+            "google_sub": synthetic_sub,
+            "email": DEMO_EMAIL,
+            "name": "App Review Demo",
+            "picture": None,
+            "created_at": now_iso,
+            "last_login_at": now_iso,
+        }
+        data["users_by_google_sub"][synthetic_sub] = user
+        if not data.get("first_user_id"):
+            data["first_user_id"] = user["id"]
+    else:
+        user["last_login_at"] = now_iso
+    _save_users(data)
+    return user
 
 
 def first_user_id() -> Optional[str]:

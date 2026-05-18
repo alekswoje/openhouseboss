@@ -291,6 +291,23 @@ actor APIClient {
         return try JSONDecoder().decode(AuthUser.self, from: data)
     }
 
+    // POST /auth/demo {email, password} → {token}. Returns the JWT only;
+    // the caller is expected to follow up with fetchMe() to populate the
+    // profile, matching the Google sign-in flow. Uses coldStartPOST so a
+    // transient 502 doesn't immediately fail the sign-in attempt.
+    func exchangeDemoCredentials(email: String, password: String) async throws -> String {
+        struct Body: Encodable { let email: String; let password: String }
+        struct Resp: Decodable { let token: String }
+
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/demo"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(Body(email: email, password: password))
+        let (data, response) = try await coldStartPOST(request: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Resp.self, from: data).token
+    }
+
     // MARK: – Insights (cross-session stats dashboard)
 
     // GET /me/insights?period=week|month|year|all → aggregated dashboard
@@ -2103,6 +2120,48 @@ final class AuthStore {
         Keychain.remove(Self.tokenKey)
         Self.cacheUser(nil)
         currentUser = nil
+    }
+
+    // Email + password sign-in — exists so App Store reviewers (and any
+    // demo-day attendees) can skip the Google OAuth web flow. Hits the
+    // backend's /auth/demo endpoint, which validates against server-side
+    // DEMO_EMAIL / DEMO_PASSWORD env vars. The post-sign-in flow is
+    // identical to Google: store the JWT in Keychain, fetch /auth/me,
+    // populate currentUser.
+    func signInWithDemo(email: String, password: String) async {
+        await MainActor.run {
+            self.lastError = nil
+            self.loading = true
+        }
+        do {
+            let token = try await APIClient.shared.exchangeDemoCredentials(
+                email: email, password: password
+            )
+            try Keychain.set(token, for: Self.tokenKey)
+            let user = try await APIClient.shared.fetchMe()
+            await MainActor.run {
+                self.currentUser = user
+                Self.cacheUser(user)
+                self.loading = false
+            }
+        } catch {
+            Keychain.remove(Self.tokenKey)
+            await MainActor.run {
+                self.currentUser = nil
+                Self.cacheUser(nil)
+                self.loading = false
+                // Surface a friendlier message than the raw HTTP body for
+                // the most common case — wrong credentials. Everything
+                // else falls through to the underlying error description.
+                if case let APIError.http(status, _) = error, status == 401 {
+                    self.lastError = "Email or password didn't match."
+                } else if case let APIError.http(status, _) = error, status == 503 {
+                    self.lastError = "Demo sign-in isn't enabled on this server."
+                } else {
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
     }
 }
 

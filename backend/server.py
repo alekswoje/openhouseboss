@@ -407,6 +407,32 @@ def google_ios(payload: dict):
     }
 
 
+@app.post("/auth/demo")
+def auth_demo(payload: dict):
+    """Email + password sign-in used by App Store reviewers and demo days.
+
+    The credential pair is configured via DEMO_EMAIL / DEMO_PASSWORD on the
+    server — see auth_lib.authenticate_demo for the constant-time compare
+    and the 503 behaviour when the env vars aren't set. Returns the same
+    {token, user} shape as /auth/google/ios so iOS can reuse the post-auth
+    code path verbatim.
+    """
+    email = (payload.get("email") or "").strip()
+    password = payload.get("password") or ""
+    user = auth_lib.authenticate_demo(email, password)
+    if auth_lib.first_user_id() == user["id"]:
+        auth_lib.migrate_orphan_sessions_to(user["id"], SESSIONS_DIR)
+    return {
+        "token": auth_lib.mint_session_jwt(user),
+        "user": {
+            "id": user["id"],
+            "email": user.get("email"),
+            "name": user.get("name"),
+            "picture": user.get("picture"),
+        },
+    }
+
+
 # --------------------------------------------------------------------------
 # Gmail send — separate OAuth grant for the agent's sender account
 # --------------------------------------------------------------------------
