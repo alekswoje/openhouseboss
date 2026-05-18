@@ -9640,6 +9640,12 @@ private struct IPadSessionDetail: View {
     // the agent can pick the matching one and we re-upload the local audio.
     @State private var showRecoverSheet = false
     @State private var recoverError: String?
+    // True from the moment the user taps "Finalize from device audio" (or
+    // picks a folder from the recovery sheet) until the snapshot tick
+    // completes. Replaces the partial-recording banner with a processing
+    // card so the agent gets continuous feedback during the multi-minute
+    // upload + analysis pass.
+    @State private var finalizing = false
 
     private var audioURL: URL {
         Config.backendURL
@@ -9659,13 +9665,16 @@ private struct IPadSessionDetail: View {
                     if let deleteError {
                         errorCard(deleteError)
                     }
-                    // Banner for sessions where the End-Session upload didn't
-                    // finalize. The light snapshot loop left status=ready, but
-                    // is_live=true means the backend only has audio through
-                    // the last successful tick. Surfaced here (not buried in
-                    // the reanalyze footer) so the agent sees the recovery
-                    // path before they start re-analyzing partial audio.
-                    if session.isLive == true {
+                    // While the finalize tick is in flight, the partial-
+                    // recording banner gets replaced by a processing card so
+                    // the user sees continuous feedback during the multi-
+                    // minute upload + analysis pass. The card stays visible
+                    // even if the user navigates away and back, since we
+                    // also derive it from store.liveSnapshotInFlight for
+                    // this session.
+                    if isFinalizingForThisSession {
+                        finalizingCard
+                    } else if session.isLive == true {
                         partialRecordingBanner(session)
                     }
                     playbackBar
@@ -9743,6 +9752,7 @@ private struct IPadSessionDetail: View {
                 store: store,
                 onRecovered: {
                     showRecoverSheet = false
+                    finalizing = true
                     // The store now owns a .processing phase + a session
                     // stub for sessionId; re-pull from the backend once the
                     // snapshot tick lands so this detail view re-renders
@@ -9758,6 +9768,18 @@ private struct IPadSessionDetail: View {
                 },
                 onError: { msg in recoverError = msg }
             )
+        }
+        // Watch the snapshot pipeline so the finalizing card flips back to
+        // the rendered session once the tick lands. liveSnapshotInFlight is
+        // set true at the start of snapshotTick and cleared in a defer
+        // block, so a true→false transition while we're finalizing means
+        // the tick completed (success or fail) — refresh + clear the flag.
+        .onChange(of: store.liveSnapshotInFlight) { oldValue, newValue in
+            guard finalizing, oldValue, !newValue else { return }
+            Task {
+                await load()
+                await MainActor.run { finalizing = false }
+            }
         }
     }
 
@@ -10538,11 +10560,58 @@ private struct IPadSessionDetail: View {
             let dir = AudioRecorder.recordingsDirectory
                 .appendingPathComponent(record.localChunksDirName, isDirectory: true)
             if FileManager.default.fileExists(atPath: dir.path) {
+                finalizing = true
                 store.recoverFromLocalChunks(sessionId: sessionId, dirURL: dir)
                 return
             }
         }
         showRecoverSheet = true
+    }
+
+    // True when there's an active snapshot tick whose target is this
+    // session id. Combines the local flag (set the instant the user taps
+    // Finalize, before the store mutates) with the store-side observation
+    // (so the card persists across tab switches or back/forth navigation
+    // while the upload runs).
+    private var isFinalizingForThisSession: Bool {
+        if finalizing { return true }
+        if store.liveSnapshotInFlight, store.session?.id == sessionId { return true }
+        return false
+    }
+
+    // Replaces the banner the moment a finalize starts. Stays put through
+    // the entire upload + diarization + analysis pass — clears when the
+    // store reports liveSnapshotInFlight has flipped back to false, at
+    // which point we reload the session detail so the new visitor list +
+    // drafts paint in.
+    private var finalizingCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .tint(FoyerTheme.gold)
+                    .scaleEffect(0.9)
+                Text("FINALIZING")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.6)
+                    .foregroundStyle(FoyerTheme.gold)
+                Spacer()
+            }
+            Text("Uploading the full audio and re-running diarization + per-visitor analysis. This can take a few minutes on a long recording — you can leave this page and come back.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            if let extra = store.liveSnapshotError {
+                Text(extra)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(FoyerTheme.gold.opacity(0.45), lineWidth: 0.5))
     }
 
     @MainActor
