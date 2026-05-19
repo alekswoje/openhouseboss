@@ -145,6 +145,12 @@ def authenticate_demo(email: str, password: str) -> dict:
         raise HTTPException(401, "Invalid demo credentials")
 
     synthetic_sub = f"demo:{DEMO_EMAIL}"
+    # Demo user's display name. Used for the "Good evening, {first word}"
+    # welcome line and email signature — pick something that reads as a
+    # real agent rather than "App Review Demo" (which renders as
+    # "Good evening, App"). Apple reviewers signing in with these creds
+    # will see this name; it's intentionally generic-looking.
+    demo_name = "Aleks Wojewoda"
     now_iso = datetime.now(timezone.utc).isoformat()
     data = _load_users()
     user = data["users_by_google_sub"].get(synthetic_sub)
@@ -154,7 +160,7 @@ def authenticate_demo(email: str, password: str) -> dict:
             "id": str(_uuid.uuid4()),
             "google_sub": synthetic_sub,
             "email": DEMO_EMAIL,
-            "name": "App Review Demo",
+            "name": demo_name,
             "picture": None,
             "created_at": now_iso,
             "last_login_at": now_iso,
@@ -163,6 +169,10 @@ def authenticate_demo(email: str, password: str) -> dict:
         if not data.get("first_user_id"):
             data["first_user_id"] = user["id"]
     else:
+        # Always refresh the demo name on login so an older record
+        # created before the name change picks it up without a manual
+        # purge of users.json on the server.
+        user["name"] = demo_name
         user["last_login_at"] = now_iso
     _save_users(data)
     return user

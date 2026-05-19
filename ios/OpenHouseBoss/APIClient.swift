@@ -63,6 +63,13 @@ enum APIError: Error, LocalizedError {
 enum Keychain {
     enum Error: Swift.Error { case osError(OSStatus) }
 
+    // Unsigned simulator builds can fail SecItemAdd with -34018
+    // (errSecMissingEntitlement) even though the same code works fine on
+    // signed device builds. To unblock App Store screenshot capture from
+    // the sim, fall back to UserDefaults when the keychain rejects us.
+    // Guarded behind `targetEnvironment(simulator)` so the fallback is
+    // compile-stripped from device builds — real users always go through
+    // the Keychain path.
     static func set(_ value: String, for key: String) throws {
         let data = Data(value.utf8)
         let query: [String: Any] = [
@@ -75,7 +82,12 @@ enum Keychain {
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
-        if status != errSecSuccess { throw Error.osError(status) }
+        if status == errSecSuccess { return }
+#if targetEnvironment(simulator)
+        UserDefaults.standard.set(value, forKey: "_kcfallback_\(key)")
+#else
+        throw Error.osError(status)
+#endif
     }
 
     static func get(_ key: String) -> String? {
@@ -88,8 +100,14 @@ enum Keychain {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if status == errSecSuccess, let data = item as? Data {
+            return String(data: data, encoding: .utf8)
+        }
+#if targetEnvironment(simulator)
+        return UserDefaults.standard.string(forKey: "_kcfallback_\(key)")
+#else
+        return nil
+#endif
     }
 
     static func remove(_ key: String) {
@@ -99,6 +117,9 @@ enum Keychain {
             kSecAttrAccount as String: key,
         ]
         SecItemDelete(query as CFDictionary)
+#if targetEnvironment(simulator)
+        UserDefaults.standard.removeObject(forKey: "_kcfallback_\(key)")
+#endif
     }
 }
 
