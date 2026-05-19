@@ -7103,7 +7103,6 @@ private struct ScriptDiffSheet: View {
 
     private var stepDiffs: [StepDiff] {
         let beforeById = Dictionary(uniqueKeysWithValues: before.steps.map { ($0.id, $0) })
-        let afterById = Dictionary(uniqueKeysWithValues: after.steps.map { ($0.id, $0) })
         var seen = Set<String>()
         var out: [StepDiff] = []
 
@@ -9882,7 +9881,7 @@ private struct IPadSessionDetail: View {
     }
 
     private func reportSubtitle(hasReport: Bool, meta: ReportMeta?) -> String {
-        if let sentAt = meta?.sentAt, let to = meta?.sentTo {
+        if meta?.sentAt != nil, let to = meta?.sentTo {
             return "Sent to \(to)"
             + (meta?.edited == true ? " · edited" : "")
         }

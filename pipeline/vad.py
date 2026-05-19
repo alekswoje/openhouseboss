@@ -62,30 +62,46 @@ def _get_session() -> ort.InferenceSession:
     return _session
 
 
-def _decode_to_mono_16k(audio_path: Path) -> np.ndarray:
-    """Decode an m4a/wav/mp3 file into mono float32 PCM at 16 kHz."""
+def _decode_to_float32_file(audio_path: Path, out_pcm: Path) -> int:
+    """Decode m4a/wav/mp3 → mono float32 PCM @ 16 kHz, streamed to `out_pcm`.
+
+    Returns the total sample count written. Critical: this NEVER holds the
+    full decoded audio in memory — every frame is written to disk as it's
+    decoded, so peak RSS is bounded by one PyAV frame (~1024 samples,
+    a few KB). The old all-in-memory implementation peaked at
+    ~460 MB on a 2-hour file and got OOM-killed on the Render Starter
+    plan (512 MB limit) before any other pipeline step ran.
+    """
     container = av.open(str(audio_path))
+    samples_written = 0
     try:
         stream = next(s for s in container.streams if s.type == "audio")
         resampler = av.audio.resampler.AudioResampler(
             format="flt", layout="mono", rate=_SAMPLE_RATE
         )
-        chunks: list[np.ndarray] = []
-        for frame in container.decode(stream):
-            for out in resampler.resample(frame):
-                chunks.append(out.to_ndarray().reshape(-1))
-        for out in resampler.resample(None):
-            chunks.append(out.to_ndarray().reshape(-1))
+        with open(out_pcm, "wb") as f:
+            for frame in container.decode(stream):
+                for out in resampler.resample(frame):
+                    arr = out.to_ndarray().reshape(-1).astype(np.float32, copy=False)
+                    f.write(arr.tobytes())
+                    samples_written += arr.size
+            for out in resampler.resample(None):
+                arr = out.to_ndarray().reshape(-1).astype(np.float32, copy=False)
+                f.write(arr.tobytes())
+                samples_written += arr.size
     finally:
         container.close()
-    if not chunks:
-        return np.zeros(0, dtype=np.float32)
-    return np.concatenate(chunks).astype(np.float32, copy=False)
+    return samples_written
 
 
-def _run_silero(audio: np.ndarray) -> np.ndarray:
+def _run_silero(audio: np.memmap | np.ndarray, n_samples: int) -> np.ndarray:
     """Slide the 512-sample window through `audio`, returning per-window
     speech probabilities (one float per window, in [0, 1]).
+
+    `audio` is expected to be a numpy memmap of float32 PCM (or a small
+    in-memory array). We sweep through windows sequentially so the OS
+    pages in only the bytes we're reading — peak resident memory stays
+    bounded even for hours-long files.
 
     Open-house recordings are 70–90% dead air. Each silero inference call
     has fixed Python/ONNX dispatch overhead, so a 2-hour file means
@@ -100,28 +116,44 @@ def _run_silero(audio: np.ndarray) -> np.ndarray:
     sr = np.array(_SAMPLE_RATE, dtype=np.int64)
     state = np.zeros((2, 1, 128), dtype=np.float32)
     context = np.zeros((1, _CONTEXT_SAMPLES), dtype=np.float32)
-    n_windows = len(audio) // _WINDOW_SAMPLES
+    n_windows = n_samples // _WINDOW_SAMPLES
     probs = np.empty(n_windows, dtype=np.float32)
-
-    # RMS energy per window in one numpy op — way cheaper than running
-    # silero. Threshold chosen well below the level where any real human
-    # voice picked up by a phone mic registers; near-silent room tone
-    # sits around 0.001–0.003, and conversational speech is 0.02–0.2.
-    windows_2d = audio[: n_windows * _WINDOW_SAMPLES].reshape(n_windows, _WINDOW_SAMPLES)
-    rms = np.sqrt(np.mean(windows_2d * windows_2d, axis=1))
     quiet_threshold = 0.005
+
+    # Streaming RMS pre-filter. We compute per-window RMS in 1-minute
+    # chunks so we never materialize the full PCM as a dense numpy
+    # array — 2 hours @ 16 kHz float32 = ~460 MB, which OOM-kills a
+    # 512 MB Render worker. With 1-minute chunks, peak is ~3.8 MB.
+    chunk_windows = (_SAMPLE_RATE * 60) // _WINDOW_SAMPLES  # 1875
+    rms = np.empty(n_windows, dtype=np.float32)
+    w_idx = 0
+    while w_idx < n_windows:
+        take = min(chunk_windows, n_windows - w_idx)
+        start = w_idx * _WINDOW_SAMPLES
+        end = start + take * _WINDOW_SAMPLES
+        chunk = np.asarray(audio[start:end], dtype=np.float32)
+        chunk_2d = chunk.reshape(take, _WINDOW_SAMPLES)
+        rms[w_idx : w_idx + take] = np.sqrt(np.mean(chunk_2d * chunk_2d, axis=1))
+        w_idx += take
 
     silero_calls = 0
     for i in range(n_windows):
-        window = windows_2d[i : i + 1]
         if rms[i] < quiet_threshold:
             # Skip silero inference but still advance the context tail so
             # the next loud-window call sees the correct preroll samples.
             # Recurrent state is left untouched; silero's gate naturally
             # decays toward "no speech" across silent stretches anyway.
             probs[i] = 0.0
+            start = i * _WINDOW_SAMPLES
+            window = np.asarray(
+                audio[start : start + _WINDOW_SAMPLES], dtype=np.float32
+            ).reshape(1, -1)
             context = window[:, -_CONTEXT_SAMPLES:]
             continue
+        start = i * _WINDOW_SAMPLES
+        window = np.asarray(
+            audio[start : start + _WINDOW_SAMPLES], dtype=np.float32
+        ).reshape(1, -1)
         inp = np.concatenate([context, window], axis=1)
         out, state = sess.run(None, {"input": inp, "state": state, "sr": sr})
         probs[i] = float(out[0, 0])
@@ -263,61 +295,91 @@ def trim_silence(
     degradation, losing the recording is not.
     """
     threshold = _resolve_threshold(threshold)
-    t0 = time.monotonic()
-    samples = _decode_to_mono_16k(audio_path)
-    decode_s = time.monotonic() - t0
-    original_seconds = len(samples) / _SAMPLE_RATE
-    # Tiny clips aren't worth the round trip — likely a dropped recording.
-    if original_seconds < 1.0:
-        shutil.copy(audio_path, out_path)
-        return TrimResult(original_seconds, original_seconds, 0, trimmed=False)
 
-    t1 = time.monotonic()
-    probs = _run_silero(samples)
-    silero_s = time.monotonic() - t1
-    # Probability distribution of the windows that beat the noise floor.
-    # If music is leaking through, we'd see a mass of windows scoring
-    # 0.4–0.7 here; clear speech sits 0.7+. Use this to tune VAD_THRESHOLD
-    # against real recordings without guessing.
-    loud = probs[probs > 0.0]
-    if loud.size:
-        p50 = float(np.percentile(loud, 50))
-        p90 = float(np.percentile(loud, 90))
-        above_05 = int(np.sum(loud >= 0.5))
-        above_07 = int(np.sum(loud >= 0.7))
+    # Decode → on-disk float32 PCM tempfile, then mmap it for processing.
+    # This keeps the entire VAD pipeline streaming: peak RSS is bounded
+    # by one frame during decode + one minute during RMS chunked compute,
+    # never the full audio. On a Render Starter worker (512 MB) the old
+    # in-memory implementation got OOM-killed on 2hr files before
+    # printing a single log line — that's why earlier finalize attempts
+    # silently disappeared with the snapshot endpoint returning 200 but
+    # no [vad] output ever appearing.
+    pcm_fd, pcm_path_str = tempfile.mkstemp(prefix="vad_pcm_", suffix=".f32")
+    os.close(pcm_fd)
+    pcm_path = Path(pcm_path_str)
+    try:
+        t0 = time.monotonic()
+        n_samples = _decode_to_float32_file(audio_path, pcm_path)
+        decode_s = time.monotonic() - t0
+        original_seconds = n_samples / _SAMPLE_RATE
+        if original_seconds < 1.0:
+            shutil.copy(audio_path, out_path)
+            return TrimResult(original_seconds, original_seconds, 0, trimmed=False)
+
+        # mmap is read-only and lazy — pages get read in only as we
+        # access them and evicted under memory pressure.
+        if n_samples == 0:
+            shutil.copy(audio_path, out_path)
+            return TrimResult(original_seconds, original_seconds, 0, trimmed=False)
+        samples = np.memmap(pcm_path, dtype=np.float32, mode="r", shape=(n_samples,))
+
+        t1 = time.monotonic()
+        probs = _run_silero(samples, n_samples)
+        silero_s = time.monotonic() - t1
+        loud = probs[probs > 0.0]
+        if loud.size:
+            p50 = float(np.percentile(loud, 50))
+            p90 = float(np.percentile(loud, 90))
+            above_05 = int(np.sum(loud >= 0.5))
+            above_07 = int(np.sum(loud >= 0.7))
+            print(
+                f"[vad] threshold={threshold} prob_dist (loud windows={loud.size}): "
+                f"p50={p50:.2f} p90={p90:.2f} ≥0.5={above_05} ≥0.7={above_07}",
+                flush=True,
+            )
         print(
-            f"[vad] threshold={threshold} prob_dist (loud windows={loud.size}): "
-            f"p50={p50:.2f} p90={p90:.2f} ≥0.5={above_05} ≥0.7={above_07}",
+            f"[vad] timings: decode={decode_s:.1f}s silero={silero_s:.1f}s "
+            f"audio_len={original_seconds:.0f}s",
             flush=True,
         )
-    print(
-        f"[vad] timings: decode={decode_s:.1f}s silero={silero_s:.1f}s "
-        f"audio_len={original_seconds:.0f}s",
-        flush=True,
-    )
-    segments = _probs_to_segments(
-        probs,
-        len(samples),
-        threshold=threshold,
-        min_speech_samples=int(min_speech_ms * _SAMPLE_RATE / 1000),
-        min_silence_samples=int(min_silence_ms * _SAMPLE_RATE / 1000),
-        pad_samples=int(speech_pad_ms * _SAMPLE_RATE / 1000),
-    )
-    if not segments:
-        shutil.copy(audio_path, out_path)
-        return TrimResult(original_seconds, original_seconds, 0, trimmed=False)
+        segments = _probs_to_segments(
+            probs,
+            n_samples,
+            threshold=threshold,
+            min_speech_samples=int(min_speech_ms * _SAMPLE_RATE / 1000),
+            min_silence_samples=int(min_silence_ms * _SAMPLE_RATE / 1000),
+            pad_samples=int(speech_pad_ms * _SAMPLE_RATE / 1000),
+        )
+        if not segments:
+            shutil.copy(audio_path, out_path)
+            return TrimResult(original_seconds, original_seconds, 0, trimmed=False)
 
-    spacer = np.zeros(int(spacer_ms * _SAMPLE_RATE / 1000), dtype=np.float32)
-    parts: list[np.ndarray] = []
-    for i, seg in enumerate(segments):
-        if i > 0:
-            parts.append(spacer)
-        parts.append(samples[seg.start:seg.end])
-    trimmed = np.concatenate(parts)
-    _write_wav(trimmed, out_path)
-    return TrimResult(
-        original_seconds=original_seconds,
-        trimmed_seconds=len(trimmed) / _SAMPLE_RATE,
-        segments=len(segments),
-        trimmed=True,
-    )
+        # Stream the trimmed output. Writing one segment at a time —
+        # never materialize the full trimmed array in memory either.
+        spacer_pcm16 = np.zeros(
+            int(spacer_ms * _SAMPLE_RATE / 1000), dtype=np.int16
+        ).tobytes()
+        total_written = 0
+        with wave.open(str(out_path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(_SAMPLE_RATE)
+            for i, seg in enumerate(segments):
+                if i > 0:
+                    w.writeframes(spacer_pcm16)
+                    total_written += len(spacer_pcm16) // 2
+                chunk = np.asarray(samples[seg.start:seg.end], dtype=np.float32)
+                pcm16 = np.clip(chunk * 32767.0, -32768, 32767).astype(np.int16)
+                w.writeframes(pcm16.tobytes())
+                total_written += pcm16.size
+        return TrimResult(
+            original_seconds=original_seconds,
+            trimmed_seconds=total_written / _SAMPLE_RATE,
+            segments=len(segments),
+            trimmed=True,
+        )
+    finally:
+        try:
+            pcm_path.unlink(missing_ok=True)
+        except OSError:
+            pass

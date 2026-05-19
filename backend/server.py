@@ -1408,9 +1408,11 @@ async def snapshot_session(
     # Replace the in-flight audio with whatever the client just uploaded.
     # We accept the entire concatenated audio so far (diarization needs the
     # full history to keep speaker labels consistent across snapshots).
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(400, "Empty audio upload")
+    #
+    # Stream the body to disk in 64 KB chunks instead of `await audio.read()`
+    # which would slurp the entire body (40+ MB on long finalize uploads)
+    # into RAM — on a 512 MB Render worker that's enough to push us over
+    # the limit when combined with the VAD/PyAV decode that runs next.
     audio_path: Optional[Path] = None
     for candidate in session_dir.iterdir():
         if candidate.suffix.lower() in {".m4a", ".mp4", ".wav", ".mp3", ".aac"}:
@@ -1418,7 +1420,11 @@ async def snapshot_session(
             break
     if audio_path is None:
         audio_path = session_dir / (audio.filename or "audio.m4a")
-    audio_path.write_bytes(audio_bytes)
+    import shutil as _shutil
+    with open(audio_path, "wb") as out:
+        _shutil.copyfileobj(audio.file, out, length=64 * 1024)
+    if audio_path.stat().st_size == 0:
+        raise HTTPException(400, "Empty audio upload")
 
     with _sessions_lock:
         _sessions[session_id].update({

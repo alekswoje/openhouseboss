@@ -5,6 +5,17 @@ import Observation
 import UIKit
 import UserNotifications
 
+// Escape hatch for Swift 6 strict concurrency when we need to ferry a
+// reference type (like AVAssetExportSession) through a @Sendable closure.
+// Only use when the underlying type is effectively thread-safe by API
+// contract — here, the export session's completion closure runs on
+// AVFoundation's own queue, so the capture is safe in practice even
+// though the compiler can't prove it.
+private struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
 @MainActor
 @Observable
 final class AudioRecorder {
@@ -669,17 +680,36 @@ final class AudioRecorder {
         }
         export.outputURL = out
         export.outputFileType = .m4a
-        // AVFoundation 18 (iOS 18+) added an async export API. We're targeting
-        // iOS 17 minimums, so fall back to the deprecated completion handler
-        // wrapped in a CheckedContinuation.
-        return await withCheckedContinuation { cont in
-            export.exportAsynchronously {
-                if export.status == .completed {
-                    cont.resume(returning: out)
-                } else {
-                    let nsErr = export.error as NSError?
-                    Log.warn("concatenatedURL: export \(export.status.rawValue) — \(nsErr?.localizedDescription ?? "no error") (domain=\(nsErr?.domain ?? "?"), code=\(nsErr?.code ?? -1), chunks=\(insertedCount)/\(chunks.count))")
-                    cont.resume(returning: nil)
+        // AVFoundation 18 (iOS 18+) added a non-deprecated async export API
+        // that doesn't need a closure capture. We're targeting iOS 17
+        // minimums, so fall back to the deprecated completion handler
+        // wrapped in a CheckedContinuation on older OSes. The fallback
+        // closure captures `export` (non-Sendable to Swift 6's checker)
+        // so we route it through an UncheckedSendableBox — the export
+        // object is only touched on AVFoundation's own queue, which is
+        // safe in practice.
+        if #available(iOS 18.0, *) {
+            do {
+                try await export.export(to: out, as: .m4a)
+                return out
+            } catch {
+                let nsErr = error as NSError
+                Log.warn("concatenatedURL: export failed — \(nsErr.localizedDescription) (domain=\(nsErr.domain), code=\(nsErr.code), chunks=\(insertedCount)/\(chunks.count))")
+                return nil
+            }
+        } else {
+            let box = UncheckedSendableBox(export)
+            let chunkCount = chunks.count
+            return await withCheckedContinuation { cont in
+                box.value.exportAsynchronously {
+                    let session = box.value
+                    if session.status == .completed {
+                        cont.resume(returning: out)
+                    } else {
+                        let nsErr = session.error as NSError?
+                        Log.warn("concatenatedURL: export \(session.status.rawValue) — \(nsErr?.localizedDescription ?? "no error") (domain=\(nsErr?.domain ?? "?"), code=\(nsErr?.code ?? -1), chunks=\(insertedCount)/\(chunkCount))")
+                        cont.resume(returning: nil)
+                    }
                 }
             }
         }

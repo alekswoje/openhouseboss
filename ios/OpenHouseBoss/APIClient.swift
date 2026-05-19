@@ -1245,12 +1245,16 @@ actor APIClient {
     // URL to the rendered HTML report. iOS loads this in a WKWebView for
     // the PDF export flow (WKWebView → UIPrintPageRenderer → PDF data).
     // Includes the JWT as a header — we pass an authenticated URLRequest
-    // to the webview rather than the bare URL.
-    func reportHtmlRequest(sessionId: String) -> URLRequest {
+    // to the webview rather than the bare URL. Nonisolated (pure builder,
+    // no actor state) so SwiftUI views can call it synchronously — same
+    // pattern as audioFetchRequest above.
+    nonisolated func reportHtmlRequest(sessionId: String) -> URLRequest {
         var req = URLRequest(url: Config.backendURL.appendingPathComponent(
             "sessions/\(sessionId)/report.html"
         ))
-        authorize(&req)
+        if let token = Keychain.get(AuthStore.tokenKey) {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         return req
     }
 
