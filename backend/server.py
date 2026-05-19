@@ -2661,6 +2661,7 @@ def _start_scheduled_worker():
     global _worker_thread
     if _worker_thread is None or not _worker_thread.is_alive():
         _hydrate_sessions_from_disk()
+        _heal_stuck_processing_sessions()
         _worker_thread = threading.Thread(
             target=_scheduled_send_worker, daemon=True, name="scheduled-send-worker"
         )
@@ -3367,6 +3368,39 @@ def _hydrate_sessions_from_disk() -> None:
                 _sessions[entry.name] = json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
                 pass
+
+
+def _heal_stuck_processing_sessions() -> None:
+    """At worker startup, any session still flagged status=processing is
+    orphaned — the background thread that was supposed to update it died
+    when the previous worker died (OOM-kill, deploy, manual restart, etc).
+    Demote those sessions so the iOS UI doesn't render a "Still processing"
+    spinner forever:
+
+      - If the session already has a partial result (e.g. a prior light
+        snapshot pass succeeded), keep that and demote to "ready" with
+        is_live preserved — the agent can re-finalize from device audio.
+      - Otherwise mark as "error" with a clear reason so the iOS error
+        card surfaces a path forward.
+    """
+    healed = 0
+    with _sessions_lock:
+        for session_id, s in list(_sessions.items()):
+            if s.get("status") != "processing":
+                continue
+            if s.get("result"):
+                s["status"] = "ready"
+            else:
+                s["status"] = "error"
+                s["error"] = (
+                    "The processing job was interrupted (the worker may have "
+                    "restarted or run out of memory). Re-upload the audio "
+                    "from your device to retry."
+                )
+            healed += 1
+            _persist(session_id)
+    if healed:
+        print(f"[startup] healed {healed} stuck-processing session(s)", flush=True)
 
 
 @app.get("/sessions")
