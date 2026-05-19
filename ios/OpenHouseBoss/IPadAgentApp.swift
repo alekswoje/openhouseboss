@@ -1851,99 +1851,168 @@ private struct IPadKiosk: View {
     @ViewBuilder
     private var listingPane: some View {
         if let listing {
-            ZStack(alignment: .bottomLeading) {
-                listingImage(listing)
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.4), .black.opacity(0.88)],
-                    startPoint: .top, endPoint: .bottom
-                )
-
-                VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
-                    HStack(spacing: 7) {
-                        Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
-                        Text("Open house")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(FoyerTheme.gold)
-                            .tracking(0.4)
-                    }
-                    Text(listing.address)
-                        .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .tracking(isCompact ? -0.5 : -1.2)
-                        .lineLimit(2)
-                    if !listing.neighborhood.isEmpty {
-                        Text(listing.neighborhood)
-                            .font(.system(size: isCompact ? 15 : 22, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.85))
-                    }
-                    HStack(alignment: .firstTextBaseline) {
-                        if !listing.displayPrice.isEmpty {
-                            Text(listing.displayPrice)
-                                .font(.system(size: isCompact ? 20 : 34, weight: .semibold))
-                                .foregroundStyle(FoyerTheme.gold)
-                                .tracking(-0.5)
-                        }
-                        Spacer()
-                        Text(listing.displaySpecs)
-                            .font(.system(size: isCompact ? 12 : 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
-                    .padding(.top, 6)
-                }
-                .padding(isCompact ? 20 : 44)
+            if let data = listing.photoData, let img = UIImage(data: data) {
+                listingPaneWithPhoto(listing, image: img)
+            } else {
+                // Most listings imported via the MLS-sheet flow won't ship
+                // a hero photo, so the no-photo case has to feel like a
+                // first-class design rather than a fallback. Rich gradient
+                // backdrop, soft warm wash in the top-right, large faded
+                // house mark in the lower-right corner — typography does
+                // the work the photo would have.
+                listingPaneNoPhoto(listing)
             }
-            .clipped()
         } else {
-            // No listing — show a calm welcome panel. The Foyer brand mark
-            // is intentionally dropped here because the back arrow lives in
-            // the same top-left corner and they'd visually collide.
-            ZStack(alignment: .bottomLeading) {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.10, green: 0.12, blue: 0.16),
-                        Color(red: 0.03, green: 0.04, blue: 0.06),
-                    ],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
-                    HStack(spacing: 7) {
-                        Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
-                        Text("Welcome")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(FoyerTheme.gold)
-                            .tracking(0.4)
-                    }
-                    Text("Come on in.")
-                        .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .tracking(isCompact ? -0.5 : -1.2)
-                    Text("Sign in below so we can\nfollow up after the tour.")
-                        .font(.system(size: isCompact ? 14 : 18, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineSpacing(4)
-                }
-                .padding(isCompact ? 20 : 44)
-            }
-            .clipped()
+            listingPaneWelcome
         }
     }
 
-    @ViewBuilder
-    private func listingImage(_ listing: Listing) -> some View {
-        if let data = listing.photoData, let img = UIImage(data: data) {
-            Image(uiImage: img)
+    private func listingPaneWithPhoto(_ listing: Listing, image: UIImage) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .clipped()
-        } else {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.4), .black.opacity(0.88)],
+                startPoint: .top, endPoint: .bottom
+            )
+            listingTextOverlay(listing, ruled: false)
+                .padding(isCompact ? 20 : 44)
+        }
+        .clipped()
+    }
+
+    private func listingPaneNoPhoto(_ listing: Listing) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            // Deep, slightly violet-tinted gradient — reads as "evening
+            // light" rather than "missing image."
             LinearGradient(
                 colors: [
-                    Color(red: 0.10, green: 0.12, blue: 0.16),
-                    Color(red: 0.03, green: 0.04, blue: 0.06),
+                    Color(red: 0.05, green: 0.06, blue: 0.09),
+                    Color(red: 0.10, green: 0.12, blue: 0.18),
+                    Color(red: 0.04, green: 0.05, blue: 0.07),
                 ],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
+            // Warm gold wash radiating from the top-right corner — gives
+            // the pane a directional light source.
+            RadialGradient(
+                colors: [FoyerTheme.gold.opacity(0.16), .clear],
+                center: .topTrailing,
+                startRadius: 10,
+                endRadius: isCompact ? 320 : 600
+            )
+            // Architectural watermark, low-contrast so it reads as texture
+            // rather than competing for attention with the address.
+            decorativeHouseMark
+            listingTextOverlay(listing, ruled: true)
+                .padding(isCompact ? 20 : 44)
         }
+        .clipped()
+    }
+
+    private var decorativeHouseMark: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Image(systemName: "house.lodge")
+                    .font(.system(size: isCompact ? 220 : 420, weight: .ultraLight))
+                    .foregroundStyle(.white.opacity(0.05))
+                    .offset(x: isCompact ? 70 : 130, y: isCompact ? 60 : 120)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func listingTextOverlay(_ listing: Listing, ruled: Bool) -> some View {
+        VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
+            HStack(spacing: 7) {
+                Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
+                Text("Open house")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                    .tracking(0.4)
+            }
+            Text(listing.address)
+                .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
+                .foregroundStyle(.white)
+                .tracking(isCompact ? -0.5 : -1.2)
+                .lineLimit(2)
+            if !listing.neighborhood.isEmpty {
+                Text(listing.neighborhood)
+                    .font(.system(size: isCompact ? 15 : 22, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            if ruled {
+                Rectangle()
+                    .fill(FoyerTheme.gold.opacity(0.55))
+                    .frame(width: isCompact ? 56 : 96, height: 1)
+                    .padding(.top, isCompact ? 4 : 10)
+                    .padding(.bottom, isCompact ? 0 : 4)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                if !listing.displayPrice.isEmpty {
+                    Text(listing.displayPrice)
+                        .font(.system(size: isCompact ? (ruled ? 22 : 20) : (ruled ? 36 : 34), weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .tracking(-0.5)
+                }
+                Spacer()
+                Text(listing.displaySpecs)
+                    .font(.system(size: isCompact ? 12 : 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            .padding(.top, ruled ? 0 : 6)
+        }
+    }
+
+    private var listingPaneWelcome: some View {
+        // No listing yet — same "evening light" treatment as the no-photo
+        // case so the kiosk reads as intentional, not unfinished. The Foyer
+        // brand mark is intentionally dropped here because the back arrow
+        // lives in the same top-left corner and they'd visually collide.
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.06, blue: 0.09),
+                    Color(red: 0.10, green: 0.12, blue: 0.18),
+                    Color(red: 0.04, green: 0.05, blue: 0.07),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            RadialGradient(
+                colors: [FoyerTheme.gold.opacity(0.16), .clear],
+                center: .topTrailing,
+                startRadius: 10,
+                endRadius: isCompact ? 320 : 600
+            )
+            decorativeHouseMark
+            VStack(alignment: .leading, spacing: isCompact ? 10 : 16) {
+                HStack(spacing: 7) {
+                    Circle().fill(FoyerTheme.gold).frame(width: 6, height: 6)
+                    Text("Welcome")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.gold)
+                        .tracking(0.4)
+                }
+                Text("Come on in.")
+                    .font(.system(size: isCompact ? 30 : 60, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .tracking(isCompact ? -0.5 : -1.2)
+                Rectangle()
+                    .fill(FoyerTheme.gold.opacity(0.55))
+                    .frame(width: isCompact ? 56 : 96, height: 1)
+                    .padding(.top, isCompact ? 4 : 10)
+                Text("Sign in below so we can\nfollow up after the tour.")
+                    .font(.system(size: isCompact ? 14 : 18, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineSpacing(4)
+            }
+            .padding(isCompact ? 20 : 44)
+        }
+        .clipped()
     }
 
     private var formPane: some View {
@@ -3418,64 +3487,29 @@ private struct IPadLeads: View {
             )
             .id("\(row.id):\(currentBody.hashValue)")
 
-            HStack(spacing: 10) {
-                let state = v.leadState?.status ?? .drafted
-                if state == .sent {
-                    stateAction("Mark replied", icon: "checkmark.circle", color: FoyerTheme.sage) {
-                        Task { await transition(v, session: session, to: .replied) }
+            // Two rows on iPhone (compact width), one row on iPad — four
+            // capsules in a single row get shrink-wrapped to unreadable
+            // multi-line fragments at iPhone widths.
+            if isCompact {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        leftActions(for: v, session: session)
+                        Spacer(minLength: 0)
                     }
-                } else if state == .drafted {
-                    stateAction("Mark replied", icon: "checkmark.circle", color: FoyerTheme.sage) {
-                        Task { await transition(v, session: session, to: .replied) }
-                    }
-                }
-                if state != .archived {
-                    stateAction("Archive", icon: "archivebox", color: FoyerTheme.creamDim) {
-                        Task { await transition(v, session: session, to: .archived) }
-                    }
-                } else {
-                    stateAction("Restore", icon: "tray.and.arrow.up", color: FoyerTheme.gold) {
-                        Task { await transition(v, session: session, to: .drafted) }
+                    HStack(spacing: 10) {
+                        Spacer(minLength: 0)
+                        rightActions(for: v, session: session)
                     }
                 }
-                Spacer()
-                let sending = (sendingId == v.id)
-                Button {
-                    if let row = current { scheduleForLead = row }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Schedule")
-                            .font(.system(size: 13, weight: .medium))
-                    }
-                    .foregroundStyle(FoyerTheme.creamDim)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(Color(white: 0.07), in: Capsule())
+                .padding(.top, 2)
+            } else {
+                HStack(spacing: 10) {
+                    leftActions(for: v, session: session)
+                    Spacer()
+                    rightActions(for: v, session: session)
                 }
-                .disabled(sending)
-                .buttonStyle(.plain)
-                Button { Task { await markSent(v, session: session) } } label: {
-                    HStack(spacing: 8) {
-                        if sending {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                                .tint(FoyerTheme.inkOnGold)
-                        } else {
-                            Image(systemName: "paperplane.fill")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        Text(sending ? "Sending…" : "Send")
-                            .font(.system(size: 14, weight: .semibold))
-                    }
-                    .foregroundStyle(FoyerTheme.inkOnGold)
-                    .padding(.horizontal, 18).padding(.vertical, 11)
-                    .background(FoyerTheme.gold, in: Capsule())
-                }
-                .disabled(sending)
-                .buttonStyle(.plain)
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
 
             if let sendError {
                 Text(sendError)
@@ -3496,12 +3530,77 @@ private struct IPadLeads: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 11, weight: .medium))
-                Text(text).font(.system(size: 13, weight: .medium))
+                Text(text)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(color)
             .padding(.horizontal, 14).padding(.vertical, 9)
             .background(color.opacity(0.12), in: Capsule())
         }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func leftActions(for v: VisitorResult, session: Session) -> some View {
+        let state = v.leadState?.status ?? .drafted
+        if state == .sent || state == .drafted {
+            stateAction("Mark replied", icon: "checkmark.circle", color: FoyerTheme.sage) {
+                Task { await transition(v, session: session, to: .replied) }
+            }
+        }
+        if state != .archived {
+            stateAction("Archive", icon: "archivebox", color: FoyerTheme.creamDim) {
+                Task { await transition(v, session: session, to: .archived) }
+            }
+        } else {
+            stateAction("Restore", icon: "tray.and.arrow.up", color: FoyerTheme.gold) {
+                Task { await transition(v, session: session, to: .drafted) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rightActions(for v: VisitorResult, session: Session) -> some View {
+        let sending = (sendingId == v.id)
+        Button {
+            if let row = current { scheduleForLead = row }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .medium))
+                Text("Schedule")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(Color(white: 0.07), in: Capsule())
+        }
+        .disabled(sending)
+        .buttonStyle(.plain)
+        Button { Task { await markSent(v, session: session) } } label: {
+            HStack(spacing: 8) {
+                if sending {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .tint(FoyerTheme.inkOnGold)
+                } else {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(sending ? "Sending…" : "Send")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(FoyerTheme.inkOnGold)
+            .padding(.horizontal, 18).padding(.vertical, 11)
+            .background(FoyerTheme.gold, in: Capsule())
+        }
+        .disabled(sending)
         .buttonStyle(.plain)
     }
 

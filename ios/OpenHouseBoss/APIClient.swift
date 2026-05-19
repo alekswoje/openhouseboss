@@ -904,7 +904,10 @@ actor APIClient {
     }
 
     struct MLSProperty: Codable {
-        let listing_id: String
+        // Optional because the PDF/photo parser (/listing/parse) may
+        // not find an MLS# on the sheet. The autocomplete-backed
+        // /mls/property/{id} endpoint always returns one.
+        let listing_id: String?
         let address: String?
         let city: String?
         let state: String?
@@ -951,6 +954,26 @@ actor APIClient {
         req.timeoutInterval = 10
         authorize(&req)
         let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(MLSProperty.self, from: data)
+    }
+
+    // Claude-extracted listing record from an uploaded MLS detail sheet
+    // (PDF) or screenshot. Returns the same shape as mlsProperty so the
+    // iOS form can reuse the existing applyFullProperty fill handler.
+    // Claude usually responds in 6-15s, so the timeout is generous.
+    func parseListingSheet(fileData: Data, filename: String, contentType: String) async throws -> MLSProperty {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("listing/parse"))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 60
+        authorize(&req)
+        var body = Data()
+        body.appendForm(boundary: boundary, name: "file", filename: filename,
+                        contentType: contentType, data: fileData)
+        body.append("--\(boundary)--\r\n")
+        let (data, response) = try await uploadWithRetry(req, body: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(MLSProperty.self, from: data)
     }

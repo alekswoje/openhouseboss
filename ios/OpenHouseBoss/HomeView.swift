@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // MARK: – HomeShell — paged ScrollView with live-tracking tab underline
 
@@ -1633,6 +1634,14 @@ struct ListingEditView: View {
     @State private var selectedListingId: String?
     @State private var isFetchingDetail = false
 
+    // MLS-sheet import (PDF or photo). Lets agents whose MLS isn't
+    // licensed for the autocomplete feed seed the form from a one-shot
+    // upload. Claude extracts on the backend and we reuse the same
+    // applyFullProperty fill handler.
+    @State private var isMLSImporterPresented = false
+    @State private var isParsingSheet = false
+    @State private var parseError: String?
+
     var body: some View {
         ZStack(alignment: .bottom) {
             FoyerTheme.bgDeep.ignoresSafeArea()
@@ -1688,6 +1697,13 @@ struct ListingEditView: View {
             if selectedListingId != nil {
                 mlsFilledBadge
             }
+            mlsImportButton
+            if let err = parseError {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             textField("Neighborhood", text: $neighborhood, placeholder: "Issaquah Highlands")
             numericField("Price ($)", text: $price, placeholder: "850000")
             HStack(spacing: 10) {
@@ -1697,6 +1713,95 @@ struct ListingEditView: View {
             numericField("Square feet", text: $sqft, placeholder: "1510")
         }
         .padding(.horizontal, 20)
+    }
+
+    private var mlsImportButton: some View {
+        Button {
+            parseError = nil
+            isMLSImporterPresented = true
+        } label: {
+            HStack(spacing: 8) {
+                if isParsingSheet {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.7)
+                        .tint(FoyerTheme.gold)
+                } else {
+                    Image(systemName: "doc.text.viewfinder")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                Text(isParsingSheet ? "Reading sheet…" : "Import from MLS sheet (PDF or photo)")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(FoyerTheme.gold)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(FoyerTheme.gold.opacity(0.10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(FoyerTheme.gold.opacity(0.35), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isParsingSheet)
+        .fileImporter(
+            isPresented: $isMLSImporterPresented,
+            allowedContentTypes: [.pdf, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            handleMLSSheetSelected(result)
+        }
+    }
+
+    private func handleMLSSheetSelected(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        Task { @MainActor in
+            isParsingSheet = true
+            parseError = nil
+            defer { isParsingSheet = false }
+            // Files outside the app sandbox (iCloud, Files app) need
+            // explicit security-scoped access while we read them.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                parseError = "Couldn't read that file."
+                return
+            }
+            let (mime, name) = mlsSheetMimeType(for: url)
+            do {
+                let full = try await APIClient.shared.parseListingSheet(
+                    fileData: data, filename: name, contentType: mime)
+                applyFullProperty(full)
+                // Mark as auto-filled — hides further autocomplete and
+                // shows the badge. We don't need a real listing_id
+                // (Claude may not have found one); any non-nil sentinel
+                // does the job.
+                selectedListingId = full.listing_id ?? "parsed-\(UUID().uuidString)"
+                focused = false
+            } catch {
+                parseError = "Couldn't read that sheet. Try a clearer photo or the PDF version."
+            }
+        }
+    }
+
+    private func mlsSheetMimeType(for url: URL) -> (String, String) {
+        let name = url.lastPathComponent
+        switch url.pathExtension.lowercased() {
+        case "pdf":         return ("application/pdf", name)
+        case "png":         return ("image/png", name)
+        case "heic", "heif":return ("image/heic", name)
+        case "webp":        return ("image/webp", name)
+        case "gif":         return ("image/gif", name)
+        default:            return ("image/jpeg", name)
+        }
     }
 
     private var suggestionsList: some View {

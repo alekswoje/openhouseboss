@@ -3550,6 +3550,45 @@ def mls_property(
     return slim
 
 
+# 8 MB cap on the upload. NWMLS detail sheets are ~200 KB PDFs; photos
+# from iPhone HEIC come in around 2-3 MB. Anything bigger is almost
+# certainly the agent uploading the wrong file (the listing photo
+# package instead of the sheet).
+_LISTING_SHEET_MAX_BYTES = 8 * 1024 * 1024
+
+
+@app.post("/listing/parse")
+async def listing_parse(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Extract a structured listing record from an MLS detail sheet
+    (PDF) or a screenshot/photo of the listing page. Lets agents whose
+    MLS isn't licensed for the Grid feed still seed Foyer with the
+    home they're hosting.
+
+    Response matches the shape of /mls/property/{id} so the iOS New
+    Listing form can fill itself via the existing applyFullProperty
+    handler; richer fields the form doesn't render today (HOA, schools,
+    listing-agent contact, ...) ride along under `extras`."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty upload")
+    if len(raw) > _LISTING_SHEET_MAX_BYTES:
+        raise HTTPException(413, f"File too large (>{_LISTING_SHEET_MAX_BYTES // (1024*1024)} MB)")
+
+    from pipeline import mls_parse
+    try:
+        parsed = mls_parse.parse_sheet(raw, file.content_type or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        # Claude API timeouts, JSON parse failures — anything else.
+        raise HTTPException(502, f"MLS sheet extraction failed: {exc}")
+
+    return parsed
+
+
 @app.get("/mls/status")
 def mls_status(current_user: dict = Depends(auth_lib.get_current_user)):
     """Replication health for the admin/debug surface."""
