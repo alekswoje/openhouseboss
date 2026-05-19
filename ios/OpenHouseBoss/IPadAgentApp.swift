@@ -9717,14 +9717,27 @@ private struct IPadSessionDetail: View {
                 }
                 Spacer().frame(height: 60)
             }
-            .frame(maxWidth: 880, alignment: .leading)
+            // iPad: cap reading-line width at 880 and align leading
+            // inside a full-width container. iPhone: skip the 880 cap —
+            // on compact the inner .frame(maxWidth: 880) sometimes
+            // reports an intrinsic width above the viewport into the
+            // enclosing ScrollView, which then allows a horizontal pan
+            // (the page visibly drifts sideways during a normal scroll).
+            // A single .frame(maxWidth: .infinity) keeps the content
+            // pegged to the viewport width.
+            .frame(maxWidth: isCompact ? .infinity : 880, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, isCompact ? 16 : 44)
             .padding(.top, isCompact ? 14 : 28)
             .padding(.bottom, isCompact ? 32 : 120)
+            // Probe lives inside the scroll content so its superview
+            // chain reaches the UIScrollView. Placing it as a .background
+            // outside the ScrollView made the chain skip past the scroll
+            // view entirely, so the lock never attached. A 0×0 invisible
+            // view is enough to anchor the install.
+            .background(VerticalOnlyScrollLock().frame(width: 0, height: 0))
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .background(VerticalOnlyScrollLock())
         .refreshable { await load() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
@@ -10816,6 +10829,8 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
     final class ProbeView: UIView {
         private let proxy = PanDelegateProxy()
         private var actionHooked = false
+        private var observingOffset = false
+        private var clampingOffset = false
         private weak var attachedScroll: UIScrollView?
 
         override func didMoveToWindow() {
@@ -10828,8 +10843,19 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
             lockEnclosingScroll()
         }
 
+        deinit {
+            detachObserver()
+        }
+
         private func lockEnclosingScroll() {
             guard window != nil, let scroll = findScroll() else { return }
+
+            // If we've switched scroll views (shouldn't happen, but cover
+            // it), detach KVO from the old one first.
+            if attachedScroll !== scroll {
+                detachObserver()
+            }
+
             scroll.isDirectionalLockEnabled = true
             scroll.alwaysBounceHorizontal = false
             scroll.showsHorizontalScrollIndicator = false
@@ -10848,15 +10874,43 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
             if attachedScroll !== scroll || !actionHooked {
                 pan.addTarget(self, action: #selector(panChanged(_:)))
                 actionHooked = true
-                attachedScroll = scroll
             }
+            if !observingOffset {
+                scroll.addObserver(self, forKeyPath: "contentOffset", options: .new, context: nil)
+                observingOffset = true
+            }
+            attachedScroll = scroll
         }
 
+        private func detachObserver() {
+            if observingOffset, let s = attachedScroll {
+                s.removeObserver(self, forKeyPath: "contentOffset")
+            }
+            observingOffset = false
+        }
+
+        // First check siblings + descendants in the window if the simple
+        // superview walk doesn't find anything — `.background()` placement
+        // makes the chain ambiguous, and we'd rather over-search once than
+        // silently no-op.
         private func findScroll() -> UIScrollView? {
             var v: UIView? = superview
             while let cur = v {
                 if let s = cur as? UIScrollView { return s }
                 v = cur.superview
+            }
+            // Fallback: search any UIScrollView ancestor's subtree, working
+            // out from our own window root.
+            if let root = window {
+                return firstScrollView(in: root)
+            }
+            return nil
+        }
+
+        private func firstScrollView(in view: UIView) -> UIScrollView? {
+            if let s = view as? UIScrollView, s.contentSize.height > 0 { return s }
+            for sub in view.subviews {
+                if let s = firstScrollView(in: sub) { return s }
             }
             return nil
         }
@@ -10869,6 +10923,27 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
             if scroll.contentOffset.x != 0 {
                 scroll.contentOffset.x = 0
             }
+        }
+
+        // Final defense: KVO on contentOffset. If anything moves x off
+        // zero — pan, programmatic, animation — we snap it back on the
+        // same runloop tick. The clampingOffset flag avoids re-entrancy
+        // when our own clamp triggers another KVO callback.
+        override func observeValue(
+            forKeyPath keyPath: String?,
+            of object: Any?,
+            change: [NSKeyValueChangeKey: Any]?,
+            context: UnsafeMutableRawPointer?
+        ) {
+            guard !clampingOffset,
+                  keyPath == "contentOffset",
+                  let scroll = object as? UIScrollView,
+                  scroll === attachedScroll,
+                  scroll.contentOffset.x != 0
+            else { return }
+            clampingOffset = true
+            scroll.contentOffset.x = 0
+            clampingOffset = false
         }
     }
 
