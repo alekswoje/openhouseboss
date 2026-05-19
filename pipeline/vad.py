@@ -252,11 +252,28 @@ def _write_wav(samples: np.ndarray, out_path: Path) -> None:
 
 
 @dataclass(frozen=True)
+class TimelineMap:
+    """One contiguous speech segment in both the original audio and the
+    trimmed output. Lets callers rewrite utterance timestamps from the
+    trimmed timeline back to the original timeline (so e.g. an open-house
+    transcript correctly shows that Carla spoke at minute 47 instead of
+    at minute 11 because that's where she landed after silence removal)."""
+    trimmed_start_ms: int   # offset in the trimmed wav
+    trimmed_end_ms: int     # exclusive
+    original_start_ms: int  # offset in the original audio
+    original_end_ms: int    # exclusive
+
+
+@dataclass(frozen=True)
 class TrimResult:
     original_seconds: float
     trimmed_seconds: float
     segments: int
     trimmed: bool  # False if we left the file untouched (no segments, decode failure, etc.)
+    # When trimmed=True, an ordered list of segment mappings so the caller
+    # can convert trimmed-audio timestamps back to original-audio timestamps.
+    # Empty when trimmed=False (no remap needed).
+    timeline: list[TimelineMap] = None  # type: ignore[assignment]
 
 
 def _resolve_threshold(explicit: float | None) -> float:
@@ -357,10 +374,14 @@ def trim_silence(
 
         # Stream the trimmed output. Writing one segment at a time —
         # never materialize the full trimmed array in memory either.
+        # Also build the timeline map so the caller can remap utterance
+        # timestamps from trimmed-time back to original-time.
         spacer_pcm16 = np.zeros(
             int(spacer_ms * _SAMPLE_RATE / 1000), dtype=np.int16
         ).tobytes()
+        spacer_ms_actual = (len(spacer_pcm16) // 2) * 1000 // _SAMPLE_RATE
         total_written = 0
+        timeline: list[TimelineMap] = []
         with wave.open(str(out_path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
@@ -369,18 +390,57 @@ def trim_silence(
                 if i > 0:
                     w.writeframes(spacer_pcm16)
                     total_written += len(spacer_pcm16) // 2
+                trim_start_ms = total_written * 1000 // _SAMPLE_RATE
+                orig_start_ms = seg.start * 1000 // _SAMPLE_RATE
+                orig_end_ms = seg.end * 1000 // _SAMPLE_RATE
                 chunk = np.asarray(samples[seg.start:seg.end], dtype=np.float32)
                 pcm16 = np.clip(chunk * 32767.0, -32768, 32767).astype(np.int16)
                 w.writeframes(pcm16.tobytes())
                 total_written += pcm16.size
+                trim_end_ms = total_written * 1000 // _SAMPLE_RATE
+                timeline.append(TimelineMap(
+                    trimmed_start_ms=trim_start_ms,
+                    trimmed_end_ms=trim_end_ms,
+                    original_start_ms=orig_start_ms,
+                    original_end_ms=orig_end_ms,
+                ))
         return TrimResult(
             original_seconds=original_seconds,
             trimmed_seconds=total_written / _SAMPLE_RATE,
             segments=len(segments),
             trimmed=True,
+            timeline=timeline,
         )
     finally:
         try:
             pcm_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def remap_to_original_ms(trimmed_ms: int, timeline: list[TimelineMap] | None) -> int:
+    """Convert a timestamp on the trimmed audio back to the original audio.
+
+    With no timeline (VAD wasn't applied), returns the input unchanged.
+    A timestamp inside a kept segment maps linearly. A timestamp that lands
+    in a 500ms spacer between two segments clamps to the end of the
+    preceding segment — utterance starts inside a spacer don't really
+    happen since AAI doesn't transcribe pure silence, but we clamp
+    defensively so the result is always monotonic.
+    """
+    if not timeline:
+        return trimmed_ms
+    if trimmed_ms <= timeline[0].trimmed_start_ms:
+        return timeline[0].original_start_ms
+    for i, tm in enumerate(timeline):
+        if tm.trimmed_start_ms <= trimmed_ms < tm.trimmed_end_ms:
+            return tm.original_start_ms + (trimmed_ms - tm.trimmed_start_ms)
+        # If we're past this segment but before the next one starts, we're
+        # inside a spacer — clamp to this segment's original end.
+        next_start = (
+            timeline[i + 1].trimmed_start_ms if i + 1 < len(timeline) else None
+        )
+        if next_start is not None and tm.trimmed_end_ms <= trimmed_ms < next_start:
+            return tm.original_end_ms
+    # Past the last segment — clamp to its end.
+    return timeline[-1].original_end_ms

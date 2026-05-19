@@ -149,16 +149,7 @@ struct IPadAgentApp: View {
                     LiveSessionBar(
                         store: store,
                         recorder: AudioRecorder.shared,
-                        onOpen: {
-                            // Tapping the bar should land on whichever
-                            // surface is currently "live": recording → Record
-                            // tab; otherwise → Kiosk.
-                            if AudioRecorder.shared.isRecording {
-                                selectTab(.record)
-                            } else {
-                                selectTab(.kiosk)
-                            }
-                        },
+                        onOpen: { openLiveContext() },
                         onStopRecording: { stopRecording() }
                     )
                     .padding(.horizontal, 16)
@@ -367,6 +358,24 @@ struct IPadAgentApp: View {
         selectTab(.record)
     }
 
+    // Tap target for the sticky LiveSessionBar. Routes to whichever surface
+    // is actually "live" right now: recording → Record tab; a session in
+    // upload/processing → that session's detail; otherwise (only queued
+    // kiosk guests with no session yet) → Kiosk. Previously this always
+    // fell through to Kiosk when not recording, which landed the agent on
+    // an empty kiosk while a session was processing.
+    private func openLiveContext() {
+        if AudioRecorder.shared.isRecording {
+            selectTab(.record)
+            return
+        }
+        if let id = store.session?.id {
+            viewingPastSession = id
+            return
+        }
+        selectTab(.kiosk)
+    }
+
     private func selectTab(_ t: Tab) {
         viewingPastSession = nil
         // Clear any session pre-filter when the user explicitly taps a tab in
@@ -450,13 +459,7 @@ struct IPadAgentApp: View {
                     LiveSessionBar(
                         store: store,
                         recorder: AudioRecorder.shared,
-                        onOpen: {
-                            if AudioRecorder.shared.isRecording {
-                                selectTab(.record)
-                            } else {
-                                selectTab(.kiosk)
-                            }
-                        },
+                        onOpen: { openLiveContext() },
                         onStopRecording: { stopRecording() }
                     )
                     .padding(.horizontal, 12)
@@ -554,11 +557,11 @@ private struct CompactBottomTabBar: View {
     var onSelectTab: (IPadAgentApp.Tab) -> Void
     @State private var showMore: Bool = false
 
-    // Five primary tabs in the bar; remaining live behind the "More" sheet.
-    // Order matches the cognitive flow: Home → Record → Kiosk for hosting,
-    // Leads for follow-up, and a More sheet for housekeeping (Offers /
-    // Listings / Profile).
-    private let primary: [IPadAgentApp.Tab] = [.home, .record, .kiosk, .leads]
+    // Primary tabs in the bar; the rest live behind the "More" sheet.
+    // Order matches the cognitive flow: Home → Record for hosting, Leads
+    // for follow-up. Kiosk is iPad-first (rarely used on a phone) so it
+    // sits in More alongside Offers / Listings / Insights / Profile.
+    private let primary: [IPadAgentApp.Tab] = [.home, .record, .leads]
     private var moreTabs: [IPadAgentApp.Tab] {
         IPadAgentApp.Tab.allCases.filter { !primary.contains($0) }
     }

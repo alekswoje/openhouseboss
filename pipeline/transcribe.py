@@ -6,7 +6,7 @@ from pathlib import Path
 import assemblyai as aai
 
 from .identify import refine_diarization
-from .vad import trim_silence
+from .vad import remap_to_original_ms, trim_silence, TimelineMap
 
 
 def _vad_enabled() -> bool:
@@ -29,6 +29,7 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
     upload_path = audio_path
     tmp_fd: int | None = None
     tmp_wav: Path | None = None
+    timeline: list[TimelineMap] | None = None
     if _vad_enabled():
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="vad_", suffix=".wav")
         os.close(tmp_fd)
@@ -47,6 +48,7 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
             )
             if result.trimmed:
                 upload_path = tmp_wav
+                timeline = result.timeline
         except Exception as e:
             print(f"[vad] trim failed, using original audio: {e}", flush=True)
 
@@ -97,6 +99,15 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
                 print(f"[aai] deleted transcript {transcript_id} from AssemblyAI", flush=True)
         except Exception as e:
             print(f"[aai] post-transcription delete failed: {e}", flush=True)
+
+        # Remap utterance + word timestamps from trimmed-audio time back to
+        # original-audio time. Without this, the UI shows guest #2 arriving
+        # at minute 11 because that's where they landed after 30 minutes of
+        # silence got stripped — not at minute 47 where they actually came in.
+        # No-op when VAD wasn't applied (timeline is None) or when the
+        # transcript has no utterances.
+        if timeline:
+            _remap_transcript_timestamps(transcript, timeline)
         return transcript
     finally:
         if tmp_wav is not None:
@@ -104,3 +115,27 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
                 tmp_wav.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _remap_transcript_timestamps(transcript: aai.Transcript, timeline: list[TimelineMap]) -> None:
+    """Rewrite AAI utterance + word timestamps in-place from trimmed-time
+    to original-time using the VAD timeline. AAI's SDK exposes utterances
+    and words as plain mutable objects with `start`/`end` attributes (ms).
+    """
+    utterances = getattr(transcript, "utterances", None) or []
+    for u in utterances:
+        if hasattr(u, "start") and u.start is not None:
+            u.start = remap_to_original_ms(int(u.start), timeline)
+        if hasattr(u, "end") and u.end is not None:
+            u.end = remap_to_original_ms(int(u.end), timeline)
+        for w in getattr(u, "words", None) or []:
+            if hasattr(w, "start") and w.start is not None:
+                w.start = remap_to_original_ms(int(w.start), timeline)
+            if hasattr(w, "end") and w.end is not None:
+                w.end = remap_to_original_ms(int(w.end), timeline)
+    # Top-level words list (AAI exposes both)
+    for w in getattr(transcript, "words", None) or []:
+        if hasattr(w, "start") and w.start is not None:
+            w.start = remap_to_original_ms(int(w.start), timeline)
+        if hasattr(w, "end") and w.end is not None:
+            w.end = remap_to_original_ms(int(w.end), timeline)

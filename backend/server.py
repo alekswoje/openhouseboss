@@ -1,6 +1,7 @@
 import json
 import os
 import secrets
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -2764,29 +2765,63 @@ def abtest_session(
     if audio_path is None:
         raise HTTPException(400, "No audio file saved for this session")
 
-    keys = {
-        "assemblyai": os.environ.get("ASSEMBLYAI_API_KEY", ""),
-        # Refined lane reuses the AAI key — it's AAI + a Claude post-pass.
-        "assemblyai_refined": os.environ.get("ASSEMBLYAI_API_KEY", ""),
-        "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
-        "speechmatics": os.environ.get("SPEECHMATICS_API_KEY", ""),
-    }
-    runners = {
-        "assemblyai": run_assemblyai,
-        "assemblyai_refined": run_assemblyai_refined,
-        "deepgram": run_deepgram,
-        "speechmatics": run_speechmatics,
-    }
+    # Pre-trim with VAD so each of the four providers transcribes the same
+    # 15-min speech-only audio instead of the full 2-hour file. Without
+    # this, four parallel 2-hour transcriptions easily exceed Render's
+    # edge timeout (~100s) — the user sees a 504/timeout error and no
+    # backend log because the proxy bounces the response before the app
+    # returns. The trimmed file is also what production runs against, so
+    # the A/B test is apples-to-apples with what the agent actually got.
+    from pipeline.vad import trim_silence
+    upload_path = audio_path
+    abtest_tmp_fd: Optional[int] = None
+    abtest_tmp_wav: Optional[Path] = None
+    abtest_tmp_fd, _atp = tempfile.mkstemp(prefix="abtest_vad_", suffix=".wav")
+    os.close(abtest_tmp_fd)
+    abtest_tmp_wav = Path(_atp)
+    try:
+        vad_result = trim_silence(audio_path, abtest_tmp_wav)
+        if vad_result.trimmed:
+            upload_path = abtest_tmp_wav
+            print(
+                f"[abtest] using VAD-trimmed audio: "
+                f"{vad_result.original_seconds:.0f}s → "
+                f"{vad_result.trimmed_seconds:.0f}s",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[abtest] VAD trim failed, using original audio: {e}", flush=True)
 
-    results: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {
-            provider: ex.submit(runners[provider], audio_path, keys[provider])
-            for provider in runners
-            if keys[provider]
+    try:
+        keys = {
+            "assemblyai": os.environ.get("ASSEMBLYAI_API_KEY", ""),
+            # Refined lane reuses the AAI key — it's AAI + a Claude post-pass.
+            "assemblyai_refined": os.environ.get("ASSEMBLYAI_API_KEY", ""),
+            "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
+            "speechmatics": os.environ.get("SPEECHMATICS_API_KEY", ""),
         }
-        for provider, fut in futures.items():
-            results[provider] = asdict(fut.result())
+        runners = {
+            "assemblyai": run_assemblyai,
+            "assemblyai_refined": run_assemblyai_refined,
+            "deepgram": run_deepgram,
+            "speechmatics": run_speechmatics,
+        }
+
+        results: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futures = {
+                provider: ex.submit(runners[provider], upload_path, keys[provider])
+                for provider in runners
+                if keys[provider]
+            }
+            for provider, fut in futures.items():
+                results[provider] = asdict(fut.result())
+    finally:
+        if abtest_tmp_wav is not None:
+            try:
+                abtest_tmp_wav.unlink(missing_ok=True)
+            except OSError:
+                pass
     # Stable order: raw AAI baseline, then AAI+refine (production), then
     # Deepgram, then Speechmatics. Putting raw + refined adjacent makes
     # the value of the Claude post-pass visible at a glance.
