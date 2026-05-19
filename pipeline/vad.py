@@ -297,7 +297,7 @@ def trim_silence(
     min_speech_ms: int = 200,
     min_silence_ms: int = 400,
     speech_pad_ms: int = 150,
-    spacer_ms: int = 500,
+    spacer_ms: int = 1500,
 ) -> TrimResult:
     """Trim silence from `audio_path`, writing a mono 16 kHz wav to `out_path`.
 
@@ -306,6 +306,13 @@ def trim_silence(
     scores 0.7–0.95, so 0.5 keeps a safety margin against false negatives
     on speech while rejecting most music and ambient noise. Override via
     the VAD_THRESHOLD env var without a redeploy.
+
+    `spacer_ms` is the silent gap we insert between kept segments so
+    AssemblyAI's diarizer sees enough prosodic separation to keep two
+    visitors from collapsing into a single speaker label. Bumped from
+    500ms → 1500ms because the original setting was too tight on
+    open-house audio where guests often share acoustic characteristics
+    (mic distance, room reverb) and back-to-back turns got merged.
 
     On any failure (decode error, no speech detected, etc.) we copy the
     original file to `out_path` and return `trimmed=False` so the caller
