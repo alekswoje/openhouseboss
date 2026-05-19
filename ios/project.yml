@@ -47,11 +47,16 @@ targets:
         # folder structure (which would churn the .pbxproj). The target
         # stays "OpenHouseBoss" internally; users see "Open House Copilot".
         CFBundleDisplayName: "Open House Copilot"
+        # CFBundleName is what iOS surfaces in the native
+        # ASWebAuthenticationSession permission dialog ("X Wants to Use Y
+        # to Sign In"). Setting it explicitly so the OAuth flow shows the
+        # branded name; otherwise iOS falls back to the target name.
+        CFBundleName: "Open House Copilot"
         # App only uses HTTPS/TLS (Apple's standard encryption) — no custom
         # crypto, no proprietary algorithms. Declaring exempt here so App
         # Store Connect doesn't prompt for export-compliance docs per build.
         ITSAppUsesNonExemptEncryption: false
-        # All networking goes to https://openhouseboss-api.onrender.com — no
+        # All networking goes to https://api.openhousecopilot.com — no
         # cleartext exceptions needed. NSAllowsArbitraryLoads=true was a
         # leftover from local-dev (`http://<mac-lan-ip>:8000`); App Review
         # rejects apps with it set in production. Switch back via
