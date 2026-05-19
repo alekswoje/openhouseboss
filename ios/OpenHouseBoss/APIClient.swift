@@ -146,12 +146,19 @@ enum FUBCredential {
 actor APIClient {
     static let shared = APIClient()
 
-    // Snappy timeouts so a missing/unreachable backend surfaces as an error
-    // card in seconds, not a frozen UI for the URLSession default minute.
+    // Two-tier timeout policy:
+    //   - timeoutIntervalForRequest = 8s — fail FAST on any per-packet
+    //     stall so a missing backend surfaces as an error card in seconds
+    //     rather than freezing the UI on URLSession's 60s default.
+    //   - timeoutIntervalForResource = 1800s — accommodate long resource
+    //     transfers (Finalize from device on a 2-hour recording is a
+    //     ~44MB upload; on a slow upstream that can take many minutes).
+    //     Per-request req.timeoutInterval still bounds individual short
+    //     calls, so this is just the ceiling.
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 8
-        cfg.timeoutIntervalForResource = 120
+        cfg.timeoutIntervalForResource = 1800
         cfg.waitsForConnectivity = false
         return URLSession(configuration: cfg)
     }()
@@ -514,7 +521,22 @@ actor APIClient {
         var lastError: Error?
         for attempt in 0..<maxAttempts {
             do {
-                return try await self.session.upload(for: original, from: body)
+                let (data, response) = try await self.session.upload(for: original, from: body)
+                // Retry transient gateway errors too — Render returns 502/
+                // 503/504 during deploy swaps and brief restarts, and the
+                // request typically didn't reach the app so it's safe to
+                // re-send (especially for the snapshot endpoint, where
+                // re-uploading the same audio body just replaces the file
+                // on disk idempotently). Auth/4xx are NOT retried — those
+                // are the client's problem and won't get better.
+                if let http = response as? HTTPURLResponse,
+                   [502, 503, 504].contains(http.statusCode),
+                   attempt < maxAttempts - 1 {
+                    let delay = UInt64((attempt + 1) * 3_000_000_000)
+                    try? await Task.sleep(nanoseconds: delay)
+                    continue
+                }
+                return (data, response)
             } catch let urlErr as URLError {
                 switch urlErr.code {
                 case .networkConnectionLost,
@@ -561,7 +583,13 @@ actor APIClient {
         ))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 60
+        // The body can be 40+ MB on a 2-hour finalize and the agent's
+        // upstream may be slow. timeoutInterval here is per-request
+        // (overrides URLSessionConfiguration.timeoutIntervalForRequest's
+        // 8s default for short calls), so set a generous ceiling that
+        // covers worst-case home WiFi upload for the largest plausible
+        // recording.
+        req.timeoutInterval = 600
         authorize(&req)
 
         var body = Data()

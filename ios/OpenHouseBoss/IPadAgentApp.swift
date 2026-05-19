@@ -9656,7 +9656,15 @@ private struct IPadSessionDetail: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
+            // Explicit `.vertical` axis + horizontal bounce off + a hard
+            // width clamp on the inner VStack. Without this, an inner
+            // subview with intrinsic width larger than the viewport
+            // (header title, transcript bubble, etc.) makes the vertical
+            // ScrollView accept horizontal pans — the page visibly drifts
+            // sideways then rubber-bands back. Home and the other tabs
+            // don't hit this because their content stacks set
+            // .frame(maxWidth: .infinity) explicitly.
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 28) {
                     topBar
                         .id("top")
@@ -9715,6 +9723,8 @@ private struct IPadSessionDetail: View {
             .padding(.top, isCompact ? 14 : 28)
             .padding(.bottom, isCompact ? 32 : 120)
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .background(VerticalOnlyScrollLock())
         .refreshable { await load() }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
@@ -10770,6 +10780,59 @@ private struct IPadSessionDetail: View {
             await MainActor.run { self.session = s }
         } catch {
             await MainActor.run { self.loadError = error.localizedDescription }
+        }
+    }
+}
+
+// MARK: – Vertical-only scroll lock
+//
+// Drops into a `.background` of a SwiftUI vertical `ScrollView` and forces
+// the underlying `UIScrollView` to refuse horizontal motion. Without this,
+// the IPadSessionDetail ScrollView accepted small horizontal pans — the
+// whole page visibly drifted sideways and rubber-banded back. Setting
+// `isDirectionalLockEnabled` lets a touch only commit to one axis at a
+// time (so a vertical drag stays vertical), and clamping
+// `contentSize.width` + zeroing `contentOffset.x` on every layout pass
+// removes any residual horizontal scrollable range introduced by a
+// subview that briefly reports wider intrinsic size during layout.
+private struct VerticalOnlyScrollLock: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = ProbeView()
+        v.isUserInteractionEnabled = false
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    final class ProbeView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            DispatchQueue.main.async { [weak self] in self?.lockEnclosingScroll() }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            lockEnclosingScroll()
+        }
+
+        private func lockEnclosingScroll() {
+            guard window != nil else { return }
+            var v: UIView? = superview
+            while let cur = v {
+                if let scroll = cur as? UIScrollView {
+                    scroll.isDirectionalLockEnabled = true
+                    scroll.alwaysBounceHorizontal = false
+                    scroll.showsHorizontalScrollIndicator = false
+                    if scroll.contentSize.width > scroll.bounds.width {
+                        scroll.contentSize.width = scroll.bounds.width
+                    }
+                    if scroll.contentOffset.x != 0 {
+                        scroll.contentOffset.x = 0
+                    }
+                    return
+                }
+                v = cur.superview
+            }
         }
     }
 }
