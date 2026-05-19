@@ -19,3 +19,6 @@ sessions/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+
+# Claude Code harness session state (per-session locks, transcripts, etc.)
+.claude/
