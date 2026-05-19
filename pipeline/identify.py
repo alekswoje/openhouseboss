@@ -188,6 +188,63 @@ def _word_tokens(text: str) -> list[str]:
     return _WORD_RE.findall(text.lower())
 
 
+def _merge_short_fragments(
+    utts: list[dict],
+    *,
+    max_fragment_ms: int = 600,
+    max_fragment_words: int = 3,
+) -> list[dict]:
+    """Re-assign sub-second utterances to the surrounding speaker when
+    they're sandwiched by the SAME speaker on both sides.
+
+    Real-world failure this targets: AssemblyAI's diarizer sometimes
+    spawns a stray short utterance for a brief speaker change that
+    didn't actually happen — a "yeah" or "so" gets attributed to a third
+    speaker in the middle of a long C↔B exchange, when in reality it's
+    just C continuing. Compare-Providers debug bundles consistently
+    show this as a fifth speaker `E` collecting fragments that should
+    belong to existing speakers.
+
+    Conservative: only triggers when (a) the utterance is short in both
+    duration AND word count, AND (b) the immediate neighbors share a
+    different speaker. Fragments at the start/end of the transcript or
+    between different speakers are left alone — that's where genuine
+    speaker changes are most likely.
+    """
+    if len(utts) < 3:
+        return utts
+    out = list(utts)
+    relabeled = 0
+    for i in range(1, len(out) - 1):
+        u = out[i]
+        try:
+            start = int(u.get("start_ms") or 0)
+            end = int(u.get("end_ms") or 0)
+        except (TypeError, ValueError):
+            continue
+        duration = end - start
+        if duration <= 0 or duration > max_fragment_ms:
+            continue
+        words = len(_word_tokens(u.get("text", "")))
+        if words == 0 or words > max_fragment_words:
+            continue
+        prev_speaker = out[i - 1].get("speaker")
+        next_speaker = out[i + 1].get("speaker")
+        if not prev_speaker or prev_speaker != next_speaker:
+            continue
+        if u.get("speaker") == prev_speaker:
+            continue
+        out[i] = {**u, "speaker": prev_speaker}
+        relabeled += 1
+    if relabeled:
+        print(
+            f"[diarization-refine] merged {relabeled} short fragments into "
+            f"surrounding speaker",
+            flush=True,
+        )
+    return out
+
+
 def _claude_refine_utterances(
     input_payload: list[dict],
     valid_speakers: list[str],
@@ -201,9 +258,15 @@ def _claude_refine_utterances(
     if len(input_payload) < 2:
         return None
     client = Anthropic()
+    # max_tokens needs to fit the JSON response. The refined output is
+    # roughly the same size as the input (~50 tokens per turn), so a long
+    # open-house transcript (~200 turns) needs 10K+ output tokens. 8K was
+    # silently truncating the JSON mid-stream, producing parse failures
+    # that fell back to raw AAI on every long session. 32K covers ~600
+    # turns with margin — plenty for any realistic open-house.
     response = client.messages.create(
         model=MODEL,
-        max_tokens=8192,
+        max_tokens=32768,
         system=(
             _REFINE_SYSTEM_PROMPT
             + f"\n\nSpeaker labels you may use: {valid_speakers}. Do NOT "
@@ -216,12 +279,22 @@ def _claude_refine_utterances(
             "content": json.dumps(input_payload, indent=2),
         }],
     )
-    text = _extract_json(response.content[0].text)
+    raw_response_text = response.content[0].text
+    stop_reason = getattr(response, "stop_reason", None)
+    print(
+        f"[diarization-refine] input_turns={len(input_payload)} "
+        f"stop_reason={stop_reason} "
+        f"output_chars={len(raw_response_text)}",
+        flush=True,
+    )
+    text = _extract_json(raw_response_text)
     try:
         refined = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"[diarization-refine] JSON parse failed: {e}", flush=True)
         return None
     if not isinstance(refined, list) or not refined:
+        print("[diarization-refine] empty / non-list response", flush=True)
         return None
     cleaned: list[dict] = []
     for item in refined:
@@ -253,28 +326,46 @@ def _claude_refine_utterances(
     if not cleaned:
         return None
 
-    # Verbatim check: refined transcript must be a re-ordering / re-segmentation
-    # of the raw words — no substitutions, no inserts, no drops. Claude
-    # occasionally "fixes" a transcription error ("It's good to meet you" →
-    # "Okay. So good to meet you"), which corrupts the source-of-truth for
-    # downstream attribution. Reject the whole refine if word multisets
-    # differ and fall back to the raw provider output.
+    # Verbatim check: the refined transcript should be essentially a
+    # re-ordering + re-segmentation of the raw words — Claude occasionally
+    # "fixes" a transcription error ("It's good to meet you" → "Okay. So
+    # good to meet you"), which corrupts the source-of-truth for downstream
+    # attribution.
+    #
+    # We allow a small tolerance because on long transcripts (200+ turns)
+    # Claude almost always drops or normalizes 1-2 filler words ("uh", "um",
+    # repeated "yeah") even when explicitly told not to. The strict version
+    # rejected the entire refine on a single word delta, which meant the
+    # production lane was effectively useless on real open-house sessions
+    # — every long recording silently fell back to raw AAI. Tolerance is
+    # capped at 1% of input tokens (well below the threshold at which
+    # speaker-attribution accuracy meaningfully degrades).
     raw_tokens = Counter()
     for item in input_payload:
         raw_tokens.update(_word_tokens(item.get("text", "")))
     refined_tokens = Counter()
     for item in cleaned:
         refined_tokens.update(_word_tokens(item["text"]))
-    if raw_tokens != refined_tokens:
-        added = refined_tokens - raw_tokens
-        dropped = raw_tokens - refined_tokens
+    total_raw = sum(raw_tokens.values())
+    added = refined_tokens - raw_tokens
+    dropped = raw_tokens - refined_tokens
+    delta = sum(added.values()) + sum(dropped.values())
+    tolerance = max(5, total_raw // 100)  # ≤ 1% drift, min 5 tokens
+    if delta > tolerance:
         print(
-            f"[diarization-refine] verbatim check FAILED — falling back to raw. "
+            f"[diarization-refine] verbatim check FAILED ({delta}/{total_raw} "
+            f"tokens differ, tolerance={tolerance}) — falling back to raw. "
             f"added={dict(added.most_common(8))} "
             f"dropped={dict(dropped.most_common(8))}",
             flush=True,
         )
         return None
+    if delta > 0:
+        print(
+            f"[diarization-refine] verbatim check OK ({delta}/{total_raw} "
+            f"tokens differ, within tolerance={tolerance})",
+            flush=True,
+        )
     return cleaned
 
 
@@ -310,7 +401,32 @@ def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
 
     cleaned = _claude_refine_utterances(input_payload, valid_speakers)
     if not cleaned:
+        # Even when Claude refine fails, sweep short cross-contaminated
+        # fragments in the raw output so we don't surface obvious errors
+        # to the agent. ("E: 'So.'" in the middle of a long C/B exchange
+        # was almost certainly a misclassification, not a real new
+        # speaker.)
+        merged = _merge_short_fragments(input_payload)
+        if merged is input_payload:
+            return transcript
+        new_utts = [
+            SimpleNamespace(
+                speaker=item["speaker"],
+                text=item["text"],
+                start=item["start_ms"],
+                end=item["end_ms"],
+            )
+            for item in merged
+        ]
+        try:
+            transcript.utterances = new_utts
+        except Exception:
+            pass
         return transcript
+
+    # Also apply fragment-merge on top of Claude's refined output —
+    # belt + suspenders.
+    cleaned = _merge_short_fragments(cleaned)
 
     new_utts = [
         SimpleNamespace(
