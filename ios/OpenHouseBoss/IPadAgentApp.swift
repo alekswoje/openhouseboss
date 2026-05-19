@@ -10488,8 +10488,10 @@ private struct IPadSessionDetail: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(FoyerTheme.textMuted)
                     .padding(.top, 2)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(width: 90, alignment: .leading)
+            .frame(width: 100, alignment: .leading)
 
             Text(utt.text)
                 .font(.system(size: 14))
@@ -10544,11 +10546,36 @@ private struct IPadSessionDetail: View {
         return palette[(idx % palette.count + palette.count) % palette.count]
     }
 
+    // Display a transcript timestamp in wall-clock time when we know when
+    // the recording started (so the agent sees "2:47 PM" instead of
+    // "47:03" elapsed and can map it back to what they remember). Falls
+    // back to elapsed time for older sessions without a createdAt.
+    //
+    // Backend pipeline already remaps utterance ms back to the original
+    // audio timeline (see pipeline/transcribe._remap_transcript_timestamps),
+    // so adding ms to session-start gives true wall-clock — even though
+    // VAD trimmed silence in between.
     private func formatTimestamp(_ ms: Int) -> String {
+        if let start = sessionStartDate {
+            let when = start.addingTimeInterval(TimeInterval(ms) / 1000.0)
+            return Self.timeOfDayFormatter.string(from: when)
+        }
         let total = ms / 1000
         let m = total / 60, s = total % 60
         return String(format: "%d:%02d", m, s)
     }
+
+    private var sessionStartDate: Date? {
+        guard let iso = session?.createdAt else { return nil }
+        return ISO8601DateFormatter.fractionalSeconds.date(from: iso)
+            ?? ISO8601DateFormatter().date(from: iso)
+    }
+
+    private static let timeOfDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm:ss a"
+        return f
+    }()
 
     private var processingNote: some View {
         HStack(spacing: 12) {
