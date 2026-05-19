@@ -336,7 +336,31 @@
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root">
+    <!-- Static fallback content. The React app replaces this once
+         hero-devices.jsx + landing.jsx hydrate. We keep visible
+         Privacy + Terms links here so HTTP scrapers (including the
+         Google OAuth-verification crawler, which doesn't run JS)
+         see them on the home page. -->
+    <noscript>
+      <p style="padding: 40px; color: #f5efe1; background: #0a0a0a; font-family: -apple-system, sans-serif;">
+        Open House Copilot is an AI scribe for real-estate agents. Please enable JavaScript to view the full site.
+      </p>
+    </noscript>
+    <div style="padding: 48px 24px; max-width: 720px; margin: 0 auto; color: #f5efe1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <h1 style="font-size: 28px; font-weight: 600; letter-spacing: -0.5px; margin: 0 0 12px;">Open House Copilot</h1>
+      <p style="font-size: 15px; line-height: 1.6; color: #d8d0bf; margin: 0 0 24px;">
+        AI scribe for real-estate agents. Record an open house, get
+        per-visitor summaries and drafted follow-up emails — quietly, in
+        the background, on iPhone and iPad.
+      </p>
+      <footer style="font-size: 13px; color: #88817a; padding-top: 24px; border-top: 1px solid #2a2620;">
+        <a href="/privacy" style="color: #d4af6a; margin-right: 24px;">Privacy Policy</a>
+        <a href="/terms" style="color: #d4af6a; margin-right: 24px;">Terms of Service</a>
+        <a href="mailto:gfxefhe@gmail.com" style="color: #d4af6a;">Contact</a>
+      </footer>
+    </div>
+  </div>
 
   <!-- Cache-bust each .jsx with a version query string. Bumping `v` here
        on every meaningful change forces the browser to refetch the
