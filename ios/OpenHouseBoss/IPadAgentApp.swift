@@ -9753,6 +9753,11 @@ private struct IPadSessionDetail: View {
     // if they care to set it.
     @State private var reanalyzeSpeakers: Int = 0
     @State private var speakerHintExpanded: Bool = false
+    // Transcript collapses by default — a 200+ turn open-house transcript
+    // dominates the scroll otherwise and pushes the report card + leads
+    // list out of immediate reach. Agent taps to expand when they want
+    // to read through.
+    @State private var transcriptExpanded: Bool = false
 
     private var audioURL: URL {
         Config.backendURL
@@ -10371,18 +10376,52 @@ private struct IPadSessionDetail: View {
         }
     }
 
+    // Flat-text transcript fallback (no diarized utterances available).
+    // Same collapsed-by-default UX as speakerTranscript so behavior is
+    // consistent regardless of which lane produced the result.
+    @ViewBuilder
     private func transcriptSection(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Transcript")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(FoyerTheme.textDim)
-            Text(text)
-                .font(.system(size: 14))
-                .foregroundStyle(FoyerTheme.creamDim)
-                .lineSpacing(5)
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    transcriptExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text("Transcript")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    Spacer()
+                    Text("\(text.count) chars")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Image(systemName: transcriptExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if transcriptExpanded {
+                Text(text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(FoyerTheme.creamDim)
+                    .lineSpacing(5)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+            } else {
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+            }
         }
     }
 
@@ -10448,32 +10487,67 @@ private struct IPadSessionDetail: View {
     // matched `speaker` field, and the agent's label is in
     // result.agentSpeaker. We resolve each utterance's speaker to a name
     // and color so the agent can scan who said what.
+    //
+    // Collapsed by default — a long open-house transcript can be hundreds
+    // of turns and dominates the scroll. The header row is always tappable
+    // so the agent can pop it open when they want to read through, and
+    // turn count + chevron in the header tell them what's hidden.
+    @ViewBuilder
     private func speakerTranscript(_ utterances: [Utterance], result: SessionResult) -> some View {
         let nameByLabel = speakerNameMap(result: result)
         let agentLabel = result.agentSpeaker
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Transcript")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(FoyerTheme.textDim)
-                Spacer()
-                Text("\(utterances.count) turns · speaker-labeled")
-                    .font(.system(size: 11))
-                    .foregroundStyle(FoyerTheme.textMuted)
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    transcriptExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text("Transcript")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textDim)
+                    Spacer()
+                    Text("\(utterances.count) turns · speaker-labeled")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                    Image(systemName: transcriptExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                }
+                .contentShape(Rectangle())
             }
-            VStack(spacing: 1) {
-                ForEach(utterances) { utt in
-                    transcriptTurn(
-                        utt,
-                        displayName: nameByLabel[utt.speaker] ?? "Speaker \(utt.speaker)",
-                        isAgent: utt.speaker == agentLabel,
-                        color: speakerColor(utt.speaker, agentLabel: agentLabel, result: result)
-                    )
+            .buttonStyle(.plain)
+
+            if transcriptExpanded {
+                VStack(spacing: 1) {
+                    ForEach(utterances) { utt in
+                        transcriptTurn(
+                            utt,
+                            displayName: nameByLabel[utt.speaker] ?? "Speaker \(utt.speaker)",
+                            isAgent: utt.speaker == agentLabel,
+                            color: speakerColor(utt.speaker, agentLabel: agentLabel, result: result)
+                        )
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
+            } else {
+                // Quick preview when collapsed: first turn's name + a snippet,
+                // so the agent can tell at a glance what's inside.
+                if let first = utterances.first {
+                    let preview = (nameByLabel[first.speaker] ?? "Speaker \(first.speaker)") + ": " + first.text
+                    Text(preview)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.04), in: RoundedRectangle(cornerRadius: 16))
         }
     }
 
