@@ -9655,13 +9655,15 @@ private struct IPadSessionDetail: View {
     }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 28) {
-                topBar
-                if loading && session == nil {
-                    loadingState
-                } else if let session {
-                    header(session)
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 28) {
+                    topBar
+                        .id("top")
+                    if loading && session == nil {
+                        loadingState
+                    } else if let session {
+                        header(session)
                     if let deleteError {
                         errorCard(deleteError)
                     }
@@ -9795,6 +9797,19 @@ private struct IPadSessionDetail: View {
                 await load()
                 await MainActor.run { finalizing = false }
             }
+        }
+        // Auto-scroll the detail page to the Finalizing card the instant a
+        // finalize starts. Without this, the picker sheet dismisses while
+        // the agent is scrolled deep into the transcript and they can't
+        // tell whether the tap registered — the indicator card lives way
+        // up at the top of the scroll view.
+        .onChange(of: isFinalizingForThisSession) { _, newValue in
+            if newValue {
+                withAnimation(.easeOut(duration: 0.35)) {
+                    proxy.scrollTo("top", anchor: .top)
+                }
+            }
+        }
         }
     }
 
@@ -10587,13 +10602,18 @@ private struct IPadSessionDetail: View {
     // date + size.
     private func finalizeFromDeviceTapped() {
         recoverError = nil
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if let record = SessionStore.loadInFlightForRecovery(),
            record.backendSessionId == sessionId {
             let dir = AudioRecorder.recordingsDirectory
                 .appendingPathComponent(record.localChunksDirName, isDirectory: true)
             if FileManager.default.fileExists(atPath: dir.path) {
-                finalizing = true
-                store.recoverFromLocalChunks(sessionId: sessionId, dirURL: dir)
+                let ok = store.recoverFromLocalChunks(sessionId: sessionId, dirURL: dir)
+                if ok {
+                    finalizing = true
+                } else {
+                    recoverError = store.liveSnapshotError
+                }
                 return
             }
         }
@@ -10829,8 +10849,17 @@ private struct RecoverFromChunksSheet: View {
                             ForEach(entries) { entry in
                                 Button {
                                     selectedId = entry.id
-                                    store.recoverFromLocalChunks(sessionId: sessionId, dirURL: entry.url)
-                                    onRecovered()
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    let ok = store.recoverFromLocalChunks(sessionId: sessionId, dirURL: entry.url)
+                                    if ok {
+                                        onRecovered()
+                                    } else if let err = store.liveSnapshotError {
+                                        // Surface the guard's reason to the
+                                        // caller so it can render an error
+                                        // toast instead of silently dropping
+                                        // the tap.
+                                        onError(err)
+                                    }
                                 } label: {
                                     HStack(alignment: .top, spacing: 12) {
                                         Image(systemName: "waveform")

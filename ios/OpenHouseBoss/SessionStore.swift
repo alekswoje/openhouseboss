@@ -937,12 +937,21 @@ final class SessionStore {
     // final snapshot tick against the existing backend session. After the
     // tick returns the session re-renders with the real audio + analysis.
     // Idempotent against being called twice — guarded by liveSnapshotInFlight.
-    func recoverFromLocalChunks(sessionId: String, dirURL: URL) {
-        guard !liveSnapshotInFlight else { return }
+    @discardableResult
+    func recoverFromLocalChunks(sessionId: String, dirURL: URL) -> Bool {
+        // Refuse to overlap two finalize ticks on the same session — they'd
+        // race on the same chunks dir and either one could be the survivor.
+        // Surface a visible reason so the UI doesn't silently swallow the
+        // tap; callers can check the return value to keep "Finalizing…"
+        // state in sync.
+        guard !liveSnapshotInFlight else {
+            liveSnapshotError = "A finalize is already running on this session. Wait for it to finish (or fail), then try again."
+            return false
+        }
         let chunks = AudioRecorder.scanChunks(in: dirURL)
         guard !chunks.isEmpty else {
             liveSnapshotError = "No chunk files found in \(dirURL.lastPathComponent)."
-            return
+            return false
         }
         AudioRecorder.shared.adoptExistingChunks(dir: dirURL, urls: chunks)
 
@@ -966,6 +975,7 @@ final class SessionStore {
                 scriptId: nil, guests: [], depth: .full, isFinal: true
             )
         }
+        return true
     }
 
     // Tapping "Continue recording" on a past session. Resumes capture into
