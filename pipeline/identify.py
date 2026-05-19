@@ -264,23 +264,34 @@ def _claude_refine_utterances(
     # silently truncating the JSON mid-stream, producing parse failures
     # that fell back to raw AAI on every long session. 32K covers ~600
     # turns with margin — plenty for any realistic open-house.
-    response = client.messages.create(
+    #
+    # MUST use streaming for max_tokens above ~21K — the SDK's pre-flight
+    # check rejects non-streaming requests that could take more than
+    # Anthropic's 10-minute non-streaming ceiling with:
+    #
+    #   "Streaming is required for operations that may take longer than
+    #    10 minutes."
+    #
+    # The stream context manager collects the full message and exposes it
+    # via get_final_message(), so the code below treats the result the
+    # same as the old non-streaming call.
+    system_prompt = (
+        _REFINE_SYSTEM_PROMPT
+        + f"\n\nSpeaker labels you may use: {valid_speakers}. Do NOT "
+        "invent new labels — the ASR already detected the speaker "
+        "set. If you think there's a third speaker not in the list, "
+        "keep the label the provider gave you for that utterance."
+    )
+    user_content = json.dumps(input_payload, indent=2)
+    with client.messages.stream(
         model=MODEL,
         max_tokens=32768,
-        system=(
-            _REFINE_SYSTEM_PROMPT
-            + f"\n\nSpeaker labels you may use: {valid_speakers}. Do NOT "
-            "invent new labels — the ASR already detected the speaker "
-            "set. If you think there's a third speaker not in the list, "
-            "keep the label the provider gave you for that utterance."
-        ),
-        messages=[{
-            "role": "user",
-            "content": json.dumps(input_payload, indent=2),
-        }],
-    )
-    raw_response_text = response.content[0].text
-    stop_reason = getattr(response, "stop_reason", None)
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    ) as stream:
+        final = stream.get_final_message()
+    raw_response_text = final.content[0].text if final.content else ""
+    stop_reason = getattr(final, "stop_reason", None)
     print(
         f"[diarization-refine] input_turns={len(input_payload)} "
         f"stop_reason={stop_reason} "
