@@ -9747,6 +9747,12 @@ private struct IPadSessionDetail: View {
     // card so the agent gets continuous feedback during the multi-minute
     // upload + analysis pass.
     @State private var finalizing = false
+    // Optional "expected guests" hint for the diarizer. 0 = unset (let
+    // AssemblyAI auto-detect); >0 = pass as speakers_expected. Shown in
+    // a collapsible card next to Re-analyze so the agent only sees it
+    // if they care to set it.
+    @State private var reanalyzeSpeakers: Int = 0
+    @State private var speakerHintExpanded: Bool = false
 
     private var audioURL: URL {
         Config.backendURL
@@ -10823,8 +10829,13 @@ private struct IPadSessionDetail: View {
         reanalyzing = true
         reanalyzeError = nil
         defer { reanalyzing = false }
+        // 0 = "let AAI auto-detect"; >0 = pass as a hard hint so the
+        // diarizer is forced to find exactly that many speakers
+        // (including the agent — agents typically say "agent + N guests"
+        // but the model just sees N+1 voices, so we pass the total).
+        let hint: Int? = reanalyzeSpeakers > 0 ? reanalyzeSpeakers : nil
         do {
-            try await APIClient.shared.reprocessSession(id: id, speakersExpected: nil)
+            try await APIClient.shared.reprocessSession(id: id, speakersExpected: hint)
             let final = try await APIClient.shared.pollUntilDone(id: id)
             session = final
             await store.refreshSessions()
@@ -10834,6 +10845,131 @@ private struct IPadSessionDetail: View {
         } catch {
             reanalyzeError = error.localizedDescription
         }
+    }
+
+    // Re-analyze button label changes to reflect whether a hint is set
+    // — so the agent confirms what they're about to send before tapping.
+    private var reanalyzeButtonText: String {
+        if reanalyzing { return "Re-analyzing…" }
+        if reanalyzeSpeakers > 0 {
+            return "Re-analyze with \(reanalyzeSpeakers) voice\(reanalyzeSpeakers == 1 ? "" : "s")"
+        }
+        return "Re-analyze recording"
+    }
+
+    // Suggested default hint: detected visitors + 1 for the agent. Used
+    // when the user first expands the card so they don't start at 0.
+    private var suggestedSpeakerCount: Int {
+        let detected = session?.result?.visitors.count ?? 0
+        return max(2, detected + 1)
+    }
+
+    // Optional "I know how many voices were in the room" hint. Collapsed
+    // by default — when the agent expands it, they get a stepper that
+    // sets reanalyzeSpeakers; setting back to 0 (via the "auto" pill)
+    // reverts to AAI's auto-detect.
+    @ViewBuilder
+    private var speakerHintCard: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                speakerHintExpanded.toggle()
+            }
+            // First-open: seed with a sensible suggestion so the agent
+            // doesn't have to start at 0 and keep tapping +.
+            if speakerHintExpanded, reanalyzeSpeakers == 0 {
+                reanalyzeSpeakers = suggestedSpeakerCount
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "person.2.wave.2")
+                    .font(.system(size: 12, weight: .medium))
+                Text(speakerHintHeaderText)
+                    .font(.system(size: 12))
+                Spacer(minLength: 4)
+                Image(systemName: speakerHintExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(FoyerTheme.creamDim)
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.border, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+
+        if speakerHintExpanded {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("How many distinct voices were in the room (you + every guest, including kids if they spoke)? Setting this forces the diarizer to find exactly that many speakers — usually fixes merged turns and misclassified agent voices.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.textDim)
+                    .lineSpacing(2)
+
+                HStack(spacing: 12) {
+                    Button {
+                        if reanalyzeSpeakers > 1 { reanalyzeSpeakers -= 1 }
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .frame(width: 36, height: 36)
+                            .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(FoyerTheme.border, lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(reanalyzeSpeakers <= 1)
+
+                    VStack(spacing: 0) {
+                        Text("\(reanalyzeSpeakers)")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(FoyerTheme.gold)
+                        Text("VOICES")
+                            .font(.system(size: 8, weight: .medium, design: .monospaced))
+                            .tracking(1.4)
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                    .frame(minWidth: 56)
+
+                    Button {
+                        if reanalyzeSpeakers < 20 { reanalyzeSpeakers += 1 }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                            .frame(width: 36, height: 36)
+                            .background(FoyerTheme.bgElev, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(FoyerTheme.border, lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(reanalyzeSpeakers >= 20)
+
+                    Spacer()
+
+                    Button {
+                        // "auto" — clear the hint, let AAI decide.
+                        reanalyzeSpeakers = 0
+                    } label: {
+                        Text("Auto")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Color.white.opacity(0.06), in: Capsule())
+                            .overlay(Capsule().stroke(FoyerTheme.border, lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(FoyerTheme.border, lineWidth: 0.5))
+        }
+    }
+
+    // Header summarizes the current state — collapsed view shows whether
+    // a hint is active, so the agent doesn't have to expand just to check.
+    private var speakerHintHeaderText: String {
+        if reanalyzeSpeakers > 0 {
+            return "Diarizer hint · \(reanalyzeSpeakers) voice\(reanalyzeSpeakers == 1 ? "" : "s") (you + \(reanalyzeSpeakers - 1) guest\(reanalyzeSpeakers - 1 == 1 ? "" : "s"))"
+        }
+        return "Diarizer hint · auto-detect speakers"
     }
 
     // Subtle footer affordance on ready sessions — for testing pipeline
@@ -10853,6 +10989,11 @@ private struct IPadSessionDetail: View {
                     .font(.system(size: 12))
                     .foregroundStyle(FoyerTheme.terracotta)
             }
+            // Optional diarizer hint. Tucked behind a disclosure so it
+            // doesn't clutter the footer for the common "let AAI guess"
+            // path, but available when the agent knows exactly how many
+            // distinct voices were in the room.
+            speakerHintCard
             HStack(spacing: 10) {
                 Button { Task { await reanalyze() } } label: {
                     HStack(spacing: 8) {
@@ -10862,7 +11003,7 @@ private struct IPadSessionDetail: View {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 12, weight: .medium))
                         }
-                        Text(reanalyzing ? "Re-analyzing…" : "Re-analyze recording")
+                        Text(reanalyzeButtonText)
                             .font(.system(size: 13, weight: .medium))
                     }
                     .foregroundStyle(FoyerTheme.creamDim)
