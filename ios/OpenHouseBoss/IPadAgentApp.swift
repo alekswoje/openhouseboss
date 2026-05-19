@@ -10787,14 +10787,23 @@ private struct IPadSessionDetail: View {
 // MARK: – Vertical-only scroll lock
 //
 // Drops into a `.background` of a SwiftUI vertical `ScrollView` and forces
-// the underlying `UIScrollView` to refuse horizontal motion. Without this,
-// the IPadSessionDetail ScrollView accepted small horizontal pans — the
-// whole page visibly drifted sideways and rubber-banded back. Setting
-// `isDirectionalLockEnabled` lets a touch only commit to one axis at a
-// time (so a vertical drag stays vertical), and clamping
-// `contentSize.width` + zeroing `contentOffset.x` on every layout pass
-// removes any residual horizontal scrollable range introduced by a
-// subview that briefly reports wider intrinsic size during layout.
+// the underlying `UIScrollView` to refuse horizontal motion. The previous
+// version of this view set `isDirectionalLockEnabled` and clamped the
+// content size, but that wasn't enough — the page still drifted sideways
+// because the lock only enforces single-axis-at-a-time per gesture; a
+// purely horizontal pan was still accepted. This version layers three
+// defenses on top:
+//
+//   1. `isDirectionalLockEnabled` + `alwaysBounceHorizontal = false`
+//      remove the casual diagonal drift case.
+//   2. We wrap the scroll view's pan-gesture delegate so any pan whose
+//      initial motion is horizontal-dominant is rejected before it can
+//      claim the touch. The fallback (UIScrollView's own delegate)
+//      handles everything else, so refresh-control + vertical scroll
+//      keep working untouched.
+//   3. We hook the pan recognizer with our own action target that snaps
+//      `contentOffset.x` back to zero on every callback. Even if a
+//      gesture slips through, the content can't visibly move sideways.
 private struct VerticalOnlyScrollLock: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let v = ProbeView()
@@ -10805,6 +10814,10 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 
     final class ProbeView: UIView {
+        private let proxy = PanDelegateProxy()
+        private var actionHooked = false
+        private weak var attachedScroll: UIScrollView?
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
             DispatchQueue.main.async { [weak self] in self?.lockEnclosingScroll() }
@@ -10816,23 +10829,118 @@ private struct VerticalOnlyScrollLock: UIViewRepresentable {
         }
 
         private func lockEnclosingScroll() {
-            guard window != nil else { return }
+            guard window != nil, let scroll = findScroll() else { return }
+            scroll.isDirectionalLockEnabled = true
+            scroll.alwaysBounceHorizontal = false
+            scroll.showsHorizontalScrollIndicator = false
+            if scroll.contentSize.width > scroll.bounds.width {
+                scroll.contentSize.width = scroll.bounds.width
+            }
+            if scroll.contentOffset.x != 0 {
+                scroll.contentOffset.x = 0
+            }
+
+            let pan = scroll.panGestureRecognizer
+            if pan.delegate !== proxy {
+                proxy.fallback = pan.delegate
+                pan.delegate = proxy
+            }
+            if attachedScroll !== scroll || !actionHooked {
+                pan.addTarget(self, action: #selector(panChanged(_:)))
+                actionHooked = true
+                attachedScroll = scroll
+            }
+        }
+
+        private func findScroll() -> UIScrollView? {
             var v: UIView? = superview
             while let cur = v {
-                if let scroll = cur as? UIScrollView {
-                    scroll.isDirectionalLockEnabled = true
-                    scroll.alwaysBounceHorizontal = false
-                    scroll.showsHorizontalScrollIndicator = false
-                    if scroll.contentSize.width > scroll.bounds.width {
-                        scroll.contentSize.width = scroll.bounds.width
-                    }
-                    if scroll.contentOffset.x != 0 {
-                        scroll.contentOffset.x = 0
-                    }
-                    return
-                }
+                if let s = cur as? UIScrollView { return s }
                 v = cur.superview
             }
+            return nil
+        }
+
+        // Belt to the delegate's suspenders: even if a pan slipped past
+        // the proxy, we snap any horizontal offset back to zero. Cheap —
+        // just a CGFloat compare on every pan tick.
+        @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
+            guard let scroll = pan.view as? UIScrollView else { return }
+            if scroll.contentOffset.x != 0 {
+                scroll.contentOffset.x = 0
+            }
+        }
+    }
+
+    final class PanDelegateProxy: NSObject, UIGestureRecognizerDelegate {
+        weak var fallback: UIGestureRecognizerDelegate?
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            if let pan = g as? UIPanGestureRecognizer {
+                let v = pan.velocity(in: pan.view)
+                let t = pan.translation(in: pan.view)
+                // Mix velocity (decisive for fast flicks) with translation
+                // (more stable at the moment shouldBegin fires for slow
+                // drags). 6× scales translation roughly into the velocity
+                // range so the comparison is fair.
+                let dx = max(abs(v.x), abs(t.x) * 6)
+                let dy = max(abs(v.y), abs(t.y) * 6)
+                // Reject anything horizontal-dominant outright. This is a
+                // vertical-only scroll, so a horizontal pan should never
+                // begin a gesture.
+                if dx > dy {
+                    return false
+                }
+            }
+            return fallback?.gestureRecognizerShouldBegin?(g) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldRecognizeSimultaneouslyWith: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldRequireFailureOf other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldRequireFailureOf: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldBeRequiredToFailBy other: UIGestureRecognizer
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(
+                g, shouldBeRequiredToFailBy: other
+            ) ?? false
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: touch) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive press: UIPress
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: press) ?? true
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive event: UIEvent
+        ) -> Bool {
+            return fallback?.gestureRecognizer?(g, shouldReceive: event) ?? true
         }
     }
 }
