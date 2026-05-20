@@ -3788,6 +3788,22 @@ private struct IPadLeads: View {
     private func markSent(_ v: VisitorResult, session: Session) async {
         await MainActor.run { sendingId = v.id; sendError = nil }
         defer { Task { @MainActor in sendingId = nil } }
+        // Channel selection mirrors the `channel(_:)` label helper: email
+        // wins when present, SMS is the fallback for phone-only leads.
+        let hasEmail = !v.visitor.email.isEmpty
+        let hasPhone = !v.visitor.phone.isEmpty
+        guard hasEmail || hasPhone else {
+            await MainActor.run { sendError = "This lead has no email or phone on file." }
+            return
+        }
+        if hasEmail {
+            await sendEmail(v, session: session)
+        } else {
+            await sendSMS(v, session: session)
+        }
+    }
+
+    private func sendEmail(_ v: VisitorResult, session: Session) async {
         do {
             let result = try await APIClient.shared.sendVisitorEmail(
                 sessionId: session.id,
@@ -3812,17 +3828,7 @@ private struct IPadLeads: View {
                 }
             }
             await MainActor.run {
-                let newState = result.leadState
-                    ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
-                                 notes: nil, tasks: nil, sentEmails: nil, scheduledEmail: nil,
-                                 draftOverride: nil)
-                if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
-                    var row = allLeads[idx]
-                    var visitor = row.visitor
-                    visitor.leadState = newState
-                    row = LeadRow(visitor: visitor, session: row.session)
-                    allLeads[idx] = row
-                }
+                applySentState(result.leadState, for: v, in: session)
                 let first = v.visitor.name.split(separator: " ").first.map(String.init) ?? v.visitor.name
                 showToast("Email sent to \(first)")
                 if let warning = fubWarning {
@@ -3837,6 +3843,52 @@ private struct IPadLeads: View {
             await MainActor.run {
                 sendError = friendlyErrorMessage("Couldn't send", error: error)
             }
+        }
+    }
+
+    private func sendSMS(_ v: VisitorResult, session: Session) async {
+        do {
+            let result = try await APIClient.shared.sendVisitorSMS(
+                sessionId: session.id,
+                visitorName: v.visitor.name,
+                visitorSpeaker: v.visitor.speaker
+            )
+            await MainActor.run {
+                applySentState(result.leadState, for: v, in: session)
+                let first = v.visitor.name.split(separator: " ").first.map(String.init) ?? v.visitor.name
+                showToast("SMS sent to \(first)")
+            }
+        } catch APIClient.SendSMSError.notConfigured {
+            await MainActor.run { sendError = "SMS isn't set up on the server yet." }
+        } catch APIClient.SendSMSError.noRecipient {
+            await MainActor.run { sendError = "This lead has no phone on file." }
+        } catch APIClient.SendSMSError.trialUnverified {
+            await MainActor.run {
+                sendError = "Twilio trial account can only send to verified numbers. Verify this lead's phone in the Twilio console, or upgrade the account."
+            }
+        } catch APIClient.SendSMSError.unsubscribed {
+            await MainActor.run { sendError = "This lead has opted out of SMS." }
+        } catch APIClient.SendSMSError.invalidNumber(let msg) {
+            await MainActor.run { sendError = msg }
+        } catch {
+            await MainActor.run {
+                sendError = friendlyErrorMessage("Couldn't send", error: error)
+            }
+        }
+    }
+
+    @MainActor
+    private func applySentState(_ newState: LeadState?, for v: VisitorResult, in session: Session) {
+        let state = newState
+            ?? LeadState(status: .sent, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
+                         notes: nil, tasks: nil, sentEmails: nil, sentSms: nil,
+                         scheduledEmail: nil, draftOverride: nil)
+        if let idx = allLeads.firstIndex(where: { $0.visitor.id == v.id && $0.session.id == session.id }) {
+            var row = allLeads[idx]
+            var visitor = row.visitor
+            visitor.leadState = state
+            row = LeadRow(visitor: visitor, session: row.session)
+            allLeads[idx] = row
         }
     }
 

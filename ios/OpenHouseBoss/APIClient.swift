@@ -1128,6 +1128,94 @@ actor APIClient {
         return try JSONDecoder().decode(SendEmailResult.self, from: data)
     }
 
+    // MARK: – SMS (Twilio)
+
+    struct SendSMSResult: Codable {
+        let sent: Bool
+        let messageSid: String?
+        let leadState: LeadState?
+
+        enum CodingKeys: String, CodingKey {
+            case sent
+            case messageSid = "message_sid"
+            case leadState = "lead_state"
+        }
+    }
+
+    enum SendSMSError: Error, LocalizedError {
+        case notConfigured
+        case noRecipient
+        case invalidNumber(String)
+        case unsubscribed
+        case trialUnverified
+        case generic(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notConfigured:    return "SMS isn't set up on the server yet."
+            case .noRecipient:      return "No phone number on file for this lead."
+            case .invalidNumber(let s): return s
+            case .unsubscribed:     return "This lead has opted out of SMS."
+            case .trialUnverified:  return "Twilio trial: recipient must be a verified number."
+            case .generic(let s):   return s
+            }
+        }
+    }
+
+    func sendVisitorSMS(
+        sessionId: String,
+        visitorName: String,
+        visitorSpeaker: String?,
+        to: String? = nil,
+        body: String? = nil
+    ) async throws -> SendSMSResult {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent(
+            "sessions/\(sessionId)/visitors/send_sms"
+        ))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Mirrors the email send: Twilio's REST call is synchronous on the
+        // backend with its own 20s timeout, so 30s end-to-end is generous.
+        req.timeoutInterval = 30
+        authorize(&req)
+
+        var payload: [String: Any] = [
+            "name": visitorName,
+            "speaker": visitorSpeaker ?? "",
+        ]
+        if let to { payload["to"] = to }
+        if let body { payload["body"] = body }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await self.session.data(for: req)
+        if let http = response as? HTTPURLResponse {
+            let txt = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode == 503 {
+                throw SendSMSError.notConfigured
+            }
+            if http.statusCode == 400 {
+                if txt.contains("No recipient phone") {
+                    throw SendSMSError.noRecipient
+                }
+                if txt.contains("unsubscribed") {
+                    throw SendSMSError.unsubscribed
+                }
+                if txt.contains("trial account") {
+                    throw SendSMSError.trialUnverified
+                }
+                // Server returns _verify_phone's reason string (e.g.
+                // "Doesn't look like a phone number") for malformed input.
+                if txt.contains("phone") || txt.contains("number") {
+                    throw SendSMSError.invalidNumber(txt)
+                }
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw SendSMSError.generic(txt.isEmpty ? "Send failed" : txt)
+            }
+        }
+        return try JSONDecoder().decode(SendSMSResult.self, from: data)
+    }
+
     // MARK: – Open House Report
 
     struct ReportEnvelope: Codable {

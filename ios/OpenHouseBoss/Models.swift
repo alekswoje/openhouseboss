@@ -413,6 +413,7 @@ struct LeadState: Codable, Hashable {
     var notes: [LeadNote]?
     var tasks: [LeadTask]?
     var sentEmails: [SentEmail]?
+    var sentSms: [SentSMS]?
     var scheduledEmail: ScheduledEmail?
     // Agent-edited follow-up draft. nil = use AnalysisResult.followUpDraft as-is.
     var draftOverride: DraftOverride?
@@ -423,13 +424,14 @@ struct LeadState: Codable, Hashable {
         case snoozedUntil = "snoozed_until"
         case updatedAt = "updated_at"
         case sentEmails = "sent_emails"
+        case sentSms = "sent_sms"
         case scheduledEmail = "scheduled_email"
         case draftOverride = "draft_override"
     }
 
     static let defaultDrafted = LeadState(
         status: .drafted, sentAt: nil, snoozedUntil: nil, updatedAt: nil,
-        notes: [], tasks: [], sentEmails: [], scheduledEmail: nil,
+        notes: [], tasks: [], sentEmails: [], sentSms: [], scheduledEmail: nil,
         draftOverride: nil
     )
 }
@@ -588,6 +590,21 @@ struct SentEmail: Codable, Hashable, Identifiable {
         case id, to, subject, body, scheduled
         case sentAt = "sent_at"
         case messageId = "message_id"
+    }
+}
+
+struct SentSMS: Codable, Hashable, Identifiable {
+    let id: String
+    let to: String
+    let body: String
+    let sentAt: String?
+    let messageSid: String?
+    let provider: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, to, body, provider
+        case sentAt = "sent_at"
+        case messageSid = "message_sid"
     }
 }
 
