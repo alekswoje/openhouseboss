@@ -63,6 +63,20 @@ STATE_TTL = timedelta(minutes=15)
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
+# Sign in with Apple — native iOS flow. The app uses ASAuthorizationController
+# to get an Apple-signed identity token and POSTs it to /auth/apple/ios; the
+# backend verifies the JWT against Apple's public JWKS. No client secret is
+# needed for the native path (the app's bundle ID is the audience). Required
+# to satisfy App Store guideline 4.8 (the privacy-preserving login option
+# alongside Google).
+APPLE_ISSUER = "https://appleid.apple.com"
+APPLE_JWKS_URL = f"{APPLE_ISSUER}/auth/keys"
+APPLE_BUNDLE_ID = os.environ.get("APPLE_BUNDLE_ID", "com.openhouseboss.app")
+# JWKS cache — Apple rotates keys but slowly. 24h TTL keeps things simple
+# without hammering Apple on every sign-in attempt.
+_APPLE_JWKS_CACHE: dict = {"keys": None, "fetched_at": 0.0}
+_APPLE_JWKS_TTL_SECONDS = 24 * 60 * 60
+
 
 # --------------------------------------------------------------------------
 # Users — flat JSON file on the persistent disk
@@ -310,6 +324,115 @@ def decode_state(state: str) -> dict:
 # --------------------------------------------------------------------------
 # Google ID token verification + code exchange
 # --------------------------------------------------------------------------
+
+def _apple_jwks() -> list[dict]:
+    """Fetch Apple's signing keys with a 24h cache.
+
+    Apple publishes JWKS at https://appleid.apple.com/auth/keys. Each key
+    has a `kid` we match against the identity token's header. PyJWT's
+    PyJWKClient could do this for us, but it doesn't expose a cache TTL —
+    rolling our own keeps a single Render dyno from re-fetching JWKS on
+    every cold start.
+    """
+    import time as _time
+    now = _time.time()
+    cached = _APPLE_JWKS_CACHE.get("keys")
+    if cached and (now - float(_APPLE_JWKS_CACHE.get("fetched_at") or 0)) < _APPLE_JWKS_TTL_SECONDS:
+        return cached  # type: ignore[return-value]
+    resp = requests.get(APPLE_JWKS_URL, timeout=10)
+    if not resp.ok:
+        raise HTTPException(502, f"Apple JWKS fetch failed: {resp.status_code}")
+    keys = resp.json().get("keys") or []
+    _APPLE_JWKS_CACHE["keys"] = keys
+    _APPLE_JWKS_CACHE["fetched_at"] = now
+    return keys
+
+
+def verify_apple_identity_token(identity_token: str) -> dict:
+    """Verifies an Apple ID token from the native iOS Sign in with Apple flow.
+
+    Validates the JWT signature against Apple's JWKS, then checks the
+    standard claims — issuer = appleid.apple.com, audience = our bundle ID,
+    not expired. Returns the decoded payload (including `sub`, the stable
+    user identifier, and optionally `email`).
+    """
+    try:
+        unverified_header = jwt.get_unverified_header(identity_token)
+    except jwt.PyJWTError as e:
+        raise HTTPException(401, f"Malformed Apple identity token: {e}")
+
+    kid = unverified_header.get("kid")
+    if not kid:
+        raise HTTPException(401, "Apple identity token missing kid")
+
+    matching = next((k for k in _apple_jwks() if k.get("kid") == kid), None)
+    if matching is None:
+        # Key may have just rotated — bust the cache and try once more.
+        _APPLE_JWKS_CACHE["fetched_at"] = 0.0
+        matching = next((k for k in _apple_jwks() if k.get("kid") == kid), None)
+    if matching is None:
+        raise HTTPException(401, "Apple identity token signed with unknown key")
+
+    try:
+        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(matching))
+        payload = jwt.decode(
+            identity_token,
+            key=public_key,
+            algorithms=[matching.get("alg") or "RS256"],
+            audience=APPLE_BUNDLE_ID,
+            issuer=APPLE_ISSUER,
+        )
+        return payload
+    except jwt.PyJWTError as e:
+        raise HTTPException(401, f"Apple identity token failed verification: {e}")
+
+
+def upsert_user_from_apple(payload: dict, full_name: Optional[str] = None) -> dict:
+    """Given a verified Apple identity-token payload, find or create the user.
+
+    Apple's `sub` claim is the stable per-app user ID; we namespace it as
+    `apple:<sub>` in users_by_google_sub (the bucket's name is historical —
+    it now holds Google, demo, and Apple-backed users alike). `email` may
+    be a private relay address (xxx@privaterelay.appleid.com) and is only
+    present on the first sign-in unless the user revoked + re-granted —
+    we preserve whatever we have so a returning Apple user keeps their
+    name + email on subsequent signins.
+    """
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(401, "Apple identity token missing sub")
+    bucket_key = f"apple:{sub}"
+    email = payload.get("email") or ""
+    name = (full_name or "").strip() or email.split("@")[0] or "Open House Copilot agent"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    data = _load_users()
+    user = data["users_by_google_sub"].get(bucket_key)
+    if user is None:
+        import uuid as _uuid
+        user = {
+            "id": str(_uuid.uuid4()),
+            "google_sub": bucket_key,
+            "email": email,
+            "name": name,
+            "picture": None,
+            "created_at": now_iso,
+            "last_login_at": now_iso,
+        }
+        data["users_by_google_sub"][bucket_key] = user
+        if not data.get("first_user_id"):
+            data["first_user_id"] = user["id"]
+    else:
+        user["last_login_at"] = now_iso
+        # Apple only sends email + name on the very first sign-in. Don't
+        # overwrite a stored value with empty strings on subsequent logins.
+        if email and not user.get("email"):
+            user["email"] = email
+        if (full_name or "").strip() and (not user.get("name") or user["name"] == "Open House Copilot agent"):
+            user["name"] = full_name.strip()  # type: ignore[union-attr]
+    _save_users(data)
+    return user
+
 
 def verify_google_id_token(id_token_str: str) -> dict:
     """Validates the JWT signature + audience against either client ID

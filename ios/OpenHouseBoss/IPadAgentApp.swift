@@ -7769,6 +7769,7 @@ private struct IPadProfile: View {
     @State private var gmailError: String?
     @State private var showGmailConnect: Bool = false
     @State private var showSignOutConfirm: Bool = false
+    @State private var showDeleteAccountSheet: Bool = false
     // Local draft of the Send-as alias. Reset to the backend's value
     // on every refresh so a Cancel discards anything in flight.
     @State private var sendAsDraft: String = ""
@@ -7814,6 +7815,7 @@ private struct IPadProfile: View {
                 devModeCard
                 #endif
                 signOutCard
+                deleteAccountCard
                 Spacer().frame(height: 80)
             }
             .frame(maxWidth: 720, alignment: .leading)
@@ -7887,6 +7889,12 @@ private struct IPadProfile: View {
             Button("Sign out", role: .destructive) { auth.signOut() }
         } message: {
             Text("You'll need to sign back in with Google to access your sessions and leads.")
+        }
+        .sheet(isPresented: $showDeleteAccountSheet) {
+            DeleteAccountSheet(
+                onCancel: { showDeleteAccountSheet = false },
+                onConfirmed: { showDeleteAccountSheet = false }
+            )
         }
         .sheet(isPresented: $showBrandingEditor) {
             BrandingEditorSheet(onSaved: { _ in
@@ -8379,6 +8387,26 @@ private struct IPadProfile: View {
                 Text("Sign out")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
+            }
+            .foregroundStyle(FoyerTheme.terracotta)
+            .padding(20)
+            .background(FoyerTheme.terracotta.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var deleteAccountCard: some View {
+        Button { showDeleteAccountSheet = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Delete account")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text("Permanent")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .tracking(0.6)
+                    .foregroundStyle(FoyerTheme.terracotta.opacity(0.75))
             }
             .foregroundStyle(FoyerTheme.terracotta)
             .padding(20)

@@ -408,6 +408,37 @@ def google_ios(payload: dict):
     }
 
 
+# Sign in with Apple — native iOS flow. The app uses
+# ASAuthorizationController to obtain an Apple-signed identity token and
+# POSTs it here; the backend verifies the JWT against Apple's JWKS and
+# mints the same {token, user} envelope as the Google / demo paths so the
+# iOS client can reuse the post-auth code path verbatim. Required to
+# satisfy App Store guideline 4.8 alongside Google sign-in.
+@app.post("/auth/apple/ios")
+def apple_ios(payload: dict):
+    identity_token = (payload.get("identity_token") or "").strip()
+    if not identity_token:
+        raise HTTPException(400, "identity_token is required")
+    # full_name is only sent by the iOS client on the very first sign-in
+    # (Apple's credential exposes givenName + familyName once, then never
+    # again). The backend persists whatever we receive and won't blank it
+    # out on subsequent logins.
+    full_name = (payload.get("full_name") or "").strip() or None
+    apple_payload = auth_lib.verify_apple_identity_token(identity_token)
+    user = auth_lib.upsert_user_from_apple(apple_payload, full_name=full_name)
+    if auth_lib.first_user_id() == user["id"]:
+        auth_lib.migrate_orphan_sessions_to(user["id"], SESSIONS_DIR)
+    return {
+        "token": auth_lib.mint_session_jwt(user),
+        "user": {
+            "id": user["id"],
+            "email": user.get("email"),
+            "name": user.get("name"),
+            "picture": user.get("picture"),
+        },
+    }
+
+
 @app.post("/auth/demo")
 def auth_demo(payload: dict):
     """Email + password sign-in used by App Store reviewers and demo days.

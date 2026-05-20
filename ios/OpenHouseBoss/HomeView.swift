@@ -1182,6 +1182,7 @@ struct ProfileTabContent: View {
     @State private var fubSheet = false
     @State private var fubConnectedName: String? = nil
     @State private var showSignOutConfirm = false
+    @State private var showDeleteAccountSheet = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -1193,6 +1194,7 @@ struct ProfileTabContent: View {
                 kioskRow
                 fubRow
                 signOutRow
+                deleteAccountRow
                 versionLabel
                 Spacer().frame(height: 120)
             }
@@ -1209,6 +1211,12 @@ struct ProfileTabContent: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("You'll need to sign in with Google again to see your leads.")
+        }
+        .sheet(isPresented: $showDeleteAccountSheet) {
+            DeleteAccountSheet(
+                onCancel: { showDeleteAccountSheet = false },
+                onConfirmed: { showDeleteAccountSheet = false }
+            )
         }
         .task {
             await store.refreshScripts()
@@ -1268,6 +1276,28 @@ struct ProfileTabContent: View {
                 label: "Sign out",
                 value: "End this device's session"
             )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+    }
+
+    private var deleteAccountRow: some View {
+        Button { showDeleteAccountSheet = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Delete account")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text("Permanent")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .tracking(0.6)
+                    .foregroundStyle(FoyerTheme.terracotta.opacity(0.8))
+            }
+            .foregroundStyle(FoyerTheme.terracotta)
+            .padding(16)
+            .background(FoyerTheme.terracotta.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 20)

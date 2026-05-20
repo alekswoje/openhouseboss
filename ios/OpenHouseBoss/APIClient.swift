@@ -319,6 +319,29 @@ actor APIClient {
         return try JSONDecoder().decode(AuthUser.self, from: data)
     }
 
+    // POST /auth/apple/ios {identity_token, full_name?} → {token}. Native
+    // Sign in with Apple flow — the iOS app obtains the identity token from
+    // ASAuthorizationController and hands it to the backend, which verifies
+    // it against Apple's JWKS and mints our session JWT. full_name is only
+    // populated on the very first sign-in (Apple's credential only surfaces
+    // it once, after that givenName/familyName are nil). Same {token}
+    // response shape as the Google + demo paths.
+    func exchangeAppleIdentityToken(_ identityToken: String, fullName: String?) async throws -> String {
+        struct Body: Encodable {
+            let identity_token: String
+            let full_name: String?
+        }
+        struct Resp: Decodable { let token: String }
+
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("auth/apple/ios"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(Body(identity_token: identityToken, full_name: fullName))
+        let (data, response) = try await coldStartPOST(request: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(Resp.self, from: data).token
+    }
+
     // POST /auth/demo {email, password} → {token}. Returns the JWT only;
     // the caller is expected to follow up with fetchMe() to populate the
     // profile, matching the Google sign-in flow. Uses coldStartPOST so a
@@ -334,6 +357,21 @@ actor APIClient {
         let (data, response) = try await coldStartPOST(request: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Resp.self, from: data).token
+    }
+
+    // DELETE /me — permanent, server-side wipe of the user record + every
+    // session, headshot, follow-up draft, and stored token associated with
+    // them. After this returns, the caller MUST drop the local JWT (the
+    // server-side user is gone, so any further /auth/me will 401). The
+    // typed-confirmation UI gates this on the iOS side; the backend has no
+    // soft-delete or undo.
+    func deleteAccount() async throws {
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("me"))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 30
+        authorize(&req)
+        let (data, response) = try await self.session.data(for: req)
+        try validate(response: response, data: data)
     }
 
     // MARK: – Insights (cross-session stats dashboard)
@@ -2284,6 +2322,54 @@ final class AuthStore {
         Keychain.remove(Self.tokenKey)
         Self.cacheUser(nil)
         currentUser = nil
+    }
+
+    // Permanent account deletion — required by App Store Guideline 5.1.1(v)
+    // for any app that supports account creation. Hits DELETE /me on the
+    // backend (which removes the user record + every owned session, follow-
+    // up, headshot, Gmail token, etc.) and then drops the local JWT so the
+    // UI flips back to the login screen. Caller is expected to gate this
+    // behind a typed confirmation so a misclick can't trigger it.
+    func deleteAccount() async throws {
+        try await APIClient.shared.deleteAccount()
+        await MainActor.run { signOut() }
+    }
+
+    // Sign in with Apple — native iOS flow. The caller hands us the
+    // identity-token bytes from the ASAuthorizationAppleIDCredential plus
+    // (optionally, on first-sign-in only) the user's full name. We POST to
+    // the backend's /auth/apple/ios, which verifies the token's signature
+    // against Apple's JWKS and mints our session JWT. Post-auth flow is
+    // identical to Google: store the JWT in Keychain, fetch /auth/me,
+    // populate currentUser.
+    //
+    // Added to satisfy App Store guideline 4.8 (privacy-preserving login
+    // option) alongside the existing Google + email paths.
+    func signInWithApple(identityToken: String, fullName: String?) async {
+        await MainActor.run {
+            self.lastError = nil
+            self.loading = true
+        }
+        do {
+            let token = try await APIClient.shared.exchangeAppleIdentityToken(
+                identityToken, fullName: fullName
+            )
+            try Keychain.set(token, for: Self.tokenKey)
+            let user = try await APIClient.shared.fetchMe()
+            await MainActor.run {
+                self.currentUser = user
+                Self.cacheUser(user)
+                self.loading = false
+            }
+        } catch {
+            Keychain.remove(Self.tokenKey)
+            await MainActor.run {
+                self.currentUser = nil
+                Self.cacheUser(nil)
+                self.loading = false
+                self.lastError = error.localizedDescription
+            }
+        }
     }
 
     // Email + password sign-in — exists so App Store reviewers (and any

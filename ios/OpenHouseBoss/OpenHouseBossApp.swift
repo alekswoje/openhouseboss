@@ -414,6 +414,23 @@ struct LoginView: View {
             .disabled(isSigningIn || auth.loading)
             .opacity(isSigningIn || auth.loading ? 0.65 : 1)
 
+            // Sign in with Apple — required alongside Google to satisfy
+            // App Store guideline 4.8 (privacy-preserving login option).
+            // SignInWithAppleButton enforces Apple's HIG (height, corner
+            // radius, label, hairline) so we don't have to police it; the
+            // .whiteOutline style reads well over the dark bloom backdrop.
+            SignInWithAppleButton(.continue) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                handleAppleSignIn(result)
+            }
+            .signInWithAppleButtonStyle(.whiteOutline)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .cornerRadius(14)
+            .disabled(isSigningIn || auth.loading)
+            .opacity(isSigningIn || auth.loading ? 0.65 : 1)
+
             // Secondary email + password path. Visually subdued so the
             // primary call to action stays the Continue-with-Google
             // button, but always present so App Review and demo-day
@@ -451,6 +468,41 @@ struct LoginView: View {
         Task {
             await auth.signInWithGoogle(presentationAnchor: anchor)
             await MainActor.run { isSigningIn = false }
+        }
+    }
+
+    private func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let tokenData = credential.identityToken,
+                  let identityToken = String(data: tokenData, encoding: .utf8)
+            else {
+                auth.lastError = "Sign in with Apple didn't return an identity token."
+                return
+            }
+            // PersonNameComponents is only populated on the FIRST sign-in.
+            // After that Apple never sends it again, so we send whatever
+            // we have (could be empty) and let the backend persist the
+            // first non-empty name it sees.
+            let formatter = PersonNameComponentsFormatter()
+            formatter.style = .default
+            let fullName = credential.fullName.flatMap { components -> String? in
+                let s = formatter.string(from: components).trimmingCharacters(in: .whitespacesAndNewlines)
+                return s.isEmpty ? nil : s
+            }
+            isSigningIn = true
+            Task {
+                await auth.signInWithApple(identityToken: identityToken, fullName: fullName)
+                await MainActor.run { isSigningIn = false }
+            }
+        case .failure(let error):
+            // ASAuthorizationError.canceled is silent — the user backed out.
+            if let asError = error as? ASAuthorizationError, asError.code == .canceled {
+                auth.lastError = nil
+            } else {
+                auth.lastError = error.localizedDescription
+            }
         }
     }
 }

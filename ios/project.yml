@@ -78,14 +78,22 @@ targets:
         UILaunchScreen:
           UIColorName: ""
           UIImageName: ""
+        # Marketing/build version resolved from MARKETING_VERSION /
+        # CURRENT_PROJECT_VERSION below — bump in one place when shipping.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openhouseboss.app
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: YJ85MR8WLM
+        CODE_SIGN_ENTITLEMENTS: OpenHouseBoss/OpenHouseBoss.entitlements
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "3"
 
   OpenHouseBossWidgets:
     type: app-extension
@@ -99,6 +107,8 @@ targets:
       path: OpenHouseBossWidgets/Info.plist
       properties:
         CFBundleDisplayName: OpenHouseBossWidgets
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
@@ -107,5 +117,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: YJ85MR8WLM
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "3"
