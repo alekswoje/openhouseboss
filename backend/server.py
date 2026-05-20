@@ -1186,12 +1186,19 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
         # Speaker-attributed turn list — needed by the iOS Summary so the
         # agent can see what they said and who they were talking to. Raw
         # `transcript.text` is just a flat string with no turn boundaries.
+        # `confidence` + `unknown_speaker` are populated by the refine pass
+        # (high/medium/low + "?" speaker) so the UI can render uncertain
+        # turns differently and the agent isn't misled by a confident-
+        # looking wrong attribution. Default to high when absent so legacy
+        # transcripts render the same as before.
         utterances_out = [
             {
                 "speaker": u.speaker,
                 "text": u.text,
                 "start_ms": int(getattr(u, "start", 0) or 0),
                 "end_ms": int(getattr(u, "end", 0) or 0),
+                "confidence": getattr(u, "confidence", "high") or "high",
+                "unknown_speaker": bool(getattr(u, "unknown_speaker", False)),
             }
             for u in (transcript.utterances or [])
         ]

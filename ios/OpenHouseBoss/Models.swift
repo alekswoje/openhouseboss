@@ -260,13 +260,26 @@ struct Utterance: Codable, Hashable, Identifiable {
     let text: String
     let startMs: Int
     let endMs: Int
+    // "high" | "medium" | "low" — set by the Claude refine pass to flag
+    // turns where speaker attribution is uncertain (e.g. a short "Yeah"
+    // that could belong to any of several voices in the room). Nil on
+    // older sessions processed before the refine schema added this
+    // field — the UI treats nil as "high" so legacy transcripts render
+    // unchanged.
+    var confidence: String? = nil
+    // True when the refine pass marked this turn as belonging to a
+    // speaker we couldn't pin down — speaker label is "?" and the UI
+    // displays "Unknown speaker" so the agent isn't misled by a
+    // confident-looking wrong attribution. Same nil-default for legacy.
+    var unknownSpeaker: Bool? = nil
 
     var id: String { "\(speaker):\(startMs)" }
 
     enum CodingKeys: String, CodingKey {
-        case speaker, text
+        case speaker, text, confidence
         case startMs = "start_ms"
         case endMs = "end_ms"
+        case unknownSpeaker = "unknown_speaker"
     }
 }
 

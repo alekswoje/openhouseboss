@@ -163,18 +163,54 @@ _REFINE_SYSTEM_PROMPT = (
     "When in doubt about whether a chunk has multiple speakers in it, "
     "SPLIT. The downstream pipeline can recover from over-splitting; "
     "it cannot recover from a visitor's words attributed to the agent.\n\n"
-    "TWO CORRECTIONS YOU CAN MAKE:\n"
+    "TEMPORAL REASONING:\n"
+    "Open houses last 1-3 hours. Different visitor groups arrive at "
+    "different times — early arrivals leave before late arrivals show "
+    "up. If the same speaker label appears at minute 5 AND again at "
+    "minute 90 with a long stretch of OTHER speakers in between, "
+    "either (a) it's truly the same person who lingered, or (b) the "
+    "diarizer accidentally clustered two different visitors' voices "
+    "under one label. Use the conversational context to decide:\n"
+    "  - Same person: same accent / vocabulary / topic continuity.\n"
+    "  - Different people: re-introductions ('Hi, I'm Dylan'), "
+    "different conversational style, different concerns, agent asking "
+    "intro questions again ('You guys from around the area?').\n"
+    "When you spot pattern (b), DOWNGRADE confidence on the "
+    "ambiguous turns — don't blindly relabel without strong evidence.\n\n"
+    "CORRECTIONS YOU CAN MAKE:\n"
     "1. SPLIT a single utterance into multiple when its text contains "
     "multiple speakers' words. When splitting, distribute start_ms "
     "monotonically (later parts get later timestamps; if you can't "
     "tell, evenly space them between the original start_ms and end_ms).\n"
     "2. RE-LABEL an utterance's speaker when the linguistic content "
-    "doesn't match the provider's cluster.\n\n"
+    "doesn't match the provider's cluster.\n"
+    "3. MARK UNCERTAIN — set confidence to 'low' OR use the special "
+    "speaker label '?' (unknown) when you genuinely can't tell who "
+    "said it. Better to admit ambiguity than to pretend confidence.\n\n"
+    "PER-TURN CONFIDENCE:\n"
+    "Every output turn MUST include a `confidence` field with one of:\n"
+    "  - 'high' — linguistic content unambiguously identifies the "
+    "speaker (intro, distinctive vocabulary, clear role).\n"
+    "  - 'medium' — content is consistent with the assigned speaker "
+    "but a short interjection or generic phrase that could plausibly "
+    "be another voice.\n"
+    "  - 'low' — you're guessing. The agent will see this rendered as "
+    "uncertain so they know not to over-trust this turn.\n"
+    "Single-word filler ('Yeah.', 'Okay.', 'Mhm.', 'Right.') is "
+    "ALWAYS at most 'medium', often 'low'. A long, substantive turn "
+    "stating something specific to one speaker is usually 'high'.\n\n"
+    "UNKNOWN SPEAKER:\n"
+    "If a turn really can't be attributed — short interjection at a "
+    "noisy moment, voice you've never heard the role for, etc. — emit "
+    "speaker '?' with confidence 'low'. Don't overuse this; reserve it "
+    "for genuinely ambiguous cases. The agent prefers a labeled guess "
+    "with low confidence over a flood of '?'.\n\n"
     "Don't change the WORDS. Don't add new words. Don't drop words. "
-    "Only re-segment and re-label.\n\n"
-    "Return JSON only, no prose. Format: a list of objects with the "
-    "SAME shape as the input: "
-    '[{"speaker": "A", "start_ms": 0, "end_ms": 21000, "text": "..."}, ...]'
+    "Only re-segment, re-label, and annotate with confidence.\n\n"
+    "Return JSON only, no prose. Format: a list of objects with this "
+    "shape (extends the input with `confidence`): "
+    '[{"speaker": "A", "start_ms": 0, "end_ms": 21000, '
+    '"text": "...", "confidence": "high"}, ...]'
 )
 
 
@@ -257,6 +293,10 @@ def _claude_refine_utterances(
     serves."""
     if len(input_payload) < 2:
         return None
+    # Allow the special "?" speaker — Claude can use this when it
+    # genuinely can't pin down who said a turn. The agent's UI renders
+    # it as "Unknown speaker" so they know not to trust the attribution.
+    allowed_labels = list(valid_speakers) + ["?"]
     client = Anthropic()
     # max_tokens needs to fit the JSON response. The refined output is
     # roughly the same size as the input (~50 tokens per turn), so a long
@@ -315,10 +355,10 @@ def _claude_refine_utterances(
         utt_text = item.get("text")
         if not isinstance(speaker, str) or not isinstance(utt_text, str):
             continue
-        # Reject hallucinated speaker labels — Claude occasionally
-        # invents "C" when the ASR only found A and B. Drop those rather
-        # than silently mislabeling a turn.
-        if speaker not in valid_speakers:
+        # Reject hallucinated speaker labels. Claude can use any ASR
+        # cluster OR the special "?" (unknown) label — anything else
+        # gets dropped so we don't silently mislabel a turn.
+        if speaker not in allowed_labels:
             continue
         try:
             start = int(item.get("start_ms") or 0)
@@ -328,12 +368,22 @@ def _claude_refine_utterances(
             end = int(item.get("end_ms") or 0)
         except (TypeError, ValueError):
             end = 0
-        cleaned.append({
-            "speaker": speaker,
+        # Normalize confidence — accept the canonical three values and
+        # default missing/bogus entries to "high" so the field is
+        # always present downstream.
+        confidence = item.get("confidence")
+        if confidence not in ("high", "medium", "low"):
+            confidence = "high"
+        out_item: dict = {
+            "speaker": speaker if speaker != "?" else "?",
             "start_ms": start,
             "end_ms": end,
             "text": utt_text,
-        })
+            "confidence": confidence,
+        }
+        if speaker == "?":
+            out_item["unknown_speaker"] = True
+        cleaned.append(out_item)
     if not cleaned:
         return None
 
@@ -445,6 +495,8 @@ def refine_diarization(transcript: aai.Transcript) -> aai.Transcript:
             text=item["text"],
             start=item["start_ms"],
             end=item["end_ms"],
+            confidence=item.get("confidence", "high"),
+            unknown_speaker=item.get("unknown_speaker", False),
         )
         for item in cleaned
     ]
