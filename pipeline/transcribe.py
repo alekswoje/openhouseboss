@@ -5,6 +5,7 @@ from pathlib import Path
 
 import assemblyai as aai
 
+from .geo_vocab import GeoVocab, apply_geo_replacements, vocab_for_address
 from .identify import refine_diarization
 from .vad import remap_to_original_ms, trim_silence, TimelineMap
 
@@ -18,7 +19,11 @@ def _vad_enabled() -> bool:
     )
 
 
-def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = None) -> aai.Transcript:
+def transcribe_with_speakers(
+    audio_path: Path,
+    speakers_expected: int | None = None,
+    address: str | None = None,
+) -> aai.Transcript:
     aai.settings.api_key = os.environ["ASSEMBLYAI_API_KEY"]
 
     # Silero VAD pass — strips silent stretches before they hit AssemblyAI's
@@ -63,11 +68,23 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
     # collapsed into a single speaker; passing the known count forces the
     # model to find that many distinct clusters.
     try:
-        config = aai.TranscriptionConfig(
-            speaker_labels=True,
-            speech_models=["universal-2"],
-            speakers_expected=speakers_expected,
-        )
+        # Geo-aware proper-noun handling. word_boost nudges AAI toward
+        # the correct city/neighborhood spellings during recognition;
+        # custom_spelling is applied AAI-side as a fallback when
+        # boosting alone doesn't flip the acoustic match. Both kick in
+        # only when the session's address matches a known region —
+        # e.g. Bellevue addresses get the Seattle-metro pack so that
+        # "Bellevue" doesn't keep landing as "Belleville".
+        vocab = vocab_for_address(address)
+        config_kwargs: dict = {
+            "speaker_labels": True,
+            "speech_models": ["universal-2"],
+            "speakers_expected": speakers_expected,
+        }
+        if vocab.word_boost:
+            config_kwargs["word_boost"] = vocab.word_boost
+            config_kwargs["boost_param"] = "high"
+        config = aai.TranscriptionConfig(**config_kwargs)
         transcriber = aai.Transcriber(config=config)
         t_aai = time.monotonic()
         transcript = transcriber.transcribe(str(upload_path))
@@ -108,6 +125,14 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
         # transcript has no utterances.
         if timeline:
             _remap_transcript_timestamps(transcript, timeline)
+
+        # Geo-aware post-transcription cleanup. Even with word_boost set,
+        # AAI sometimes locks onto a wrong proper noun ("Belleville" vs
+        # "Bellevue") because the acoustic match is closer to the wrong
+        # word. The custom-spelling regex sweep is essentially free and
+        # catches the residual cases. No-op when vocab is empty.
+        if not vocab.is_empty:
+            _apply_geo_cleanup(transcript, vocab)
         return transcript
     finally:
         if tmp_wav is not None:
@@ -115,6 +140,44 @@ def transcribe_with_speakers(audio_path: Path, speakers_expected: int | None = N
                 tmp_wav.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _apply_geo_cleanup(transcript: aai.Transcript, vocab: GeoVocab) -> None:
+    """Rewrite proper-noun mistranscriptions in-place across utterances,
+    words, and the flat transcript text using the region's
+    custom-spelling rules. Logs how many substitutions were made so the
+    next time someone reports a city name still rendering wrong, we
+    have evidence to update the rule set."""
+    total_subs = 0
+
+    def _patch(s: str) -> str:
+        nonlocal total_subs
+        new = apply_geo_replacements(s, vocab)
+        if new != s:
+            # Count substitutions cheaply by comparing rule applications.
+            for pattern, _replacement in vocab.custom_spelling:
+                total_subs += len(pattern.findall(s))
+        return new
+
+    if getattr(transcript, "text", None):
+        try:
+            transcript.text = _patch(transcript.text or "")
+        except Exception:
+            pass
+    for u in getattr(transcript, "utterances", None) or []:
+        if hasattr(u, "text") and u.text:
+            u.text = _patch(u.text)
+        for w in getattr(u, "words", None) or []:
+            if hasattr(w, "text") and w.text:
+                w.text = _patch(w.text)
+    for w in getattr(transcript, "words", None) or []:
+        if hasattr(w, "text") and w.text:
+            w.text = _patch(w.text)
+    if total_subs:
+        print(
+            f"[geo-cleanup] applied {total_subs} proper-noun replacements",
+            flush=True,
+        )
 
 
 def _remap_transcript_timestamps(transcript: aai.Transcript, timeline: list[TimelineMap]) -> None:

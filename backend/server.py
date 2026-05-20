@@ -1047,12 +1047,29 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                  prior result keep their cached analysis; new visitors get
                  a placeholder analysis filled in on the next full pass.
                  Used by mid-session snapshot ticks to keep cost down."""
+    # The session's address (when set) drives geo-aware proper-noun
+    # handling in the transcription step: nearby city / neighborhood
+    # names get boosted in AAI recognition, and a custom-spelling regex
+    # sweep fixes common mistranscriptions ("Belleville" → "Bellevue")
+    # the boost alone doesn't catch. Looked up here once so both
+    # transcribe call sites (initial + auto-retry on speaker undercount)
+    # share the same vocab.
+    session_address: Optional[str] = None
+    with _sessions_lock:
+        sess = _sessions.get(session_id)
+        if sess:
+            session_address = sess.get("address")
+
     try:
         if mock_path:
             transcript = load_mock_transcript(mock_path)
         else:
             assert audio_path is not None
-            transcript = transcribe_with_speakers(audio_path, speakers_expected=speakers_expected)
+            transcript = transcribe_with_speakers(
+                audio_path,
+                speakers_expected=speakers_expected,
+                address=session_address,
+            )
 
         # Bail out before the Claude pipeline if AssemblyAI couldn't pick out
         # any speech — feeding an empty utterances list to identify/analyze
@@ -1089,7 +1106,11 @@ def _process(session_id: str, audio_path: Optional[Path], mock_path: Optional[Pa
                     f"re-transcribing with speakers_expected={hint}",
                     flush=True,
                 )
-                transcript = transcribe_with_speakers(audio_path, speakers_expected=hint)
+                transcript = transcribe_with_speakers(
+                    audio_path,
+                    speakers_expected=hint,
+                    address=session_address,
+                )
                 identification = identify_agent_and_visitors(transcript, visitors_path)
 
         # Lead state from a prior run (if this is a reanalyze) — keyed by
