@@ -1979,6 +1979,31 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    // Grade a saved session's transcript against a script the agent picks
+    // after the fact — for sessions that were recorded without a script
+    // attached. Backend skips diarization and just runs the grader against
+    // the saved utterances, then persists the result on the session, so
+    // the caller can immediately re-fetch the session to see the new
+    // `script_coverage` block.
+    func gradeSessionScript(sessionId: String, scriptId: String) async throws {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: Config.backendURL.appendingPathComponent("sessions/\(sessionId)/grade-script"))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // Grading calls Claude — give it room (a session with ~20 script
+        // steps and a long transcript usually returns in 15-25s, but the
+        // model can stall to ~60s under load).
+        req.timeoutInterval = 120
+        authorize(&req)
+
+        var body = Data()
+        body.appendField(boundary: boundary, name: "script_id", value: scriptId)
+        body.append("--\(boundary)--\r\n")
+
+        let (data, response) = try await self.session.upload(for: req, from: body)
+        try validate(response: response, data: data)
+    }
+
     func pollUntilDone(id: String) async throws -> Session {
         while true {
             let s = try await getSession(id: id)

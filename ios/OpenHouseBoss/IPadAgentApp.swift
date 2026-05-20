@@ -5759,6 +5759,100 @@ private struct EditContactSheet: View {
     }
 }
 
+// MARK: – Grade-against-script picker
+//
+// Shown from Session detail when the agent recorded without a script
+// attached and wants to backfill coverage after the fact. The list is
+// pulled from SessionStore.availableScripts (already loaded for the
+// Scripts tab) so we don't add a fresh network round-trip just to open
+// the picker. Tapping a row pings the parent's onPick → grade endpoint;
+// the parent owns the loading state and dismisses on response.
+
+private struct GradeScriptPickerSheet: View {
+    let scripts: [ScriptSummary]
+    let defaultScriptId: String?
+    var onCancel: () -> Void
+    var onPick: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if scripts.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 28))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                        Text("No scripts yet")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.cream)
+                        Text("Create a script in the Scripts tab, then come back here to grade this session against it.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(FoyerTheme.creamDim)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 10) {
+                            ForEach(scripts) { s in
+                                Button { onPick(s.id) } label: { row(s) }
+                                    .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Pick a script")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                        .foregroundStyle(FoyerTheme.creamDim)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func row(_ s: ScriptSummary) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(s.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(FoyerTheme.cream)
+                    if s.id == defaultScriptId {
+                        Text("Default")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(FoyerTheme.gold)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(FoyerTheme.gold.opacity(0.15), in: Capsule())
+                    }
+                }
+                if !s.description.isEmpty {
+                    Text(s.description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(FoyerTheme.creamDim)
+                        .lineLimit(2)
+                }
+                Text("\(s.stepCount) step\(s.stepCount == 1 ? "" : "s")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(FoyerTheme.textMuted)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FoyerTheme.textMuted)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 // MARK: – Leads AI agent sheet
 //
 // One-shot AI agent over the agent's leads inbox. The user types a
@@ -9890,6 +9984,13 @@ private struct IPadSessionDetail: View {
     // list out of immediate reach. Agent taps to expand when they want
     // to read through.
     @State private var transcriptExpanded: Bool = false
+    // "Grade against script" affordance — shown when the session has a
+    // transcript but no script coverage (i.e. the agent recorded without
+    // a script attached). Picker sheet is the agent's available scripts;
+    // tapping one POSTs /sessions/{id}/grade-script and refreshes.
+    @State private var showGradeScriptPicker: Bool = false
+    @State private var gradingAgainstScript: Bool = false
+    @State private var gradeScriptError: String?
 
     private var audioURL: URL {
         Config.backendURL
@@ -9942,6 +10043,14 @@ private struct IPadSessionDetail: View {
                         reportSection(session: session)
                         if let coverage = result.scriptCoverage {
                             coverageSection(coverage)
+                        } else if (result.utterances?.isEmpty == false) {
+                            // No coverage yet but the session HAS a diarized
+                            // transcript — offer the post-hoc grading card so
+                            // the agent can pick a script and backfill the
+                            // score. Hidden when the session is still
+                            // mid-processing (no utterances) because there's
+                            // nothing to grade against.
+                            gradeScriptPrompt
                         }
                         leadsList(result.visitors, session: session)
                         if let utts = result.utterances, !utts.isEmpty {
@@ -10029,6 +10138,17 @@ private struct IPadSessionDetail: View {
                 ReportView(sessionId: sessionId)
                     .environment(AppRouter())
             }
+        }
+        .sheet(isPresented: $showGradeScriptPicker) {
+            GradeScriptPickerSheet(
+                scripts: store.availableScripts,
+                defaultScriptId: store.defaultScriptId,
+                onCancel: { showGradeScriptPicker = false },
+                onPick: { picked in
+                    showGradeScriptPicker = false
+                    Task { await gradeAgainstScript(picked) }
+                }
+            )
         }
         .sheet(isPresented: $showRecoverSheet) {
             RecoverFromChunksSheet(
@@ -10618,6 +10738,84 @@ private struct IPadSessionDetail: View {
         case 75...:    return FoyerTheme.sage
         case 40..<75:  return FoyerTheme.gold
         default:       return FoyerTheme.terracotta
+        }
+    }
+
+    // Inline prompt shown in the slot where Script coverage would live,
+    // for sessions that were recorded without a script attached. Tapping
+    // opens the agent's library; picking one POSTs /grade-script and the
+    // session reloads with a real coverage card in this slot.
+    @ViewBuilder
+    private var gradeScriptPrompt: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FoyerTheme.gold)
+                Text("Script coverage")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(FoyerTheme.textDim)
+            }
+            Text("No script was attached when you recorded. Pick one now and we'll grade how well you followed it.")
+                .font(.system(size: 13))
+                .foregroundStyle(FoyerTheme.creamDim)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            if let err = gradeScriptError {
+                Text(err)
+                    .font(.system(size: 12))
+                    .foregroundStyle(FoyerTheme.terracotta)
+                    .padding(.top, 2)
+            }
+            Button {
+                gradeScriptError = nil
+                showGradeScriptPicker = true
+            } label: {
+                HStack(spacing: 8) {
+                    if gradingAgainstScript {
+                        ProgressView().scaleEffect(0.7).tint(FoyerTheme.inkOnGold)
+                        Text("Grading…")
+                    } else {
+                        Image(systemName: "checklist")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Grade against script")
+                    }
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FoyerTheme.inkOnGold)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(FoyerTheme.gold, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(gradingAgainstScript)
+            .padding(.top, 2)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(FoyerTheme.gold.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    // Posts to /sessions/{id}/grade-script and refreshes the session so
+    // the new script_coverage block replaces this prompt with a real card.
+    @MainActor
+    private func gradeAgainstScript(_ scriptId: String) async {
+        guard let id = session?.id else { return }
+        gradingAgainstScript = true
+        gradeScriptError = nil
+        defer { gradingAgainstScript = false }
+        do {
+            try await APIClient.shared.gradeSessionScript(sessionId: id, scriptId: scriptId)
+            // Re-fetch the session so result.scriptCoverage is populated
+            // and the next render swaps prompt → coverage card.
+            let refreshed = try await APIClient.shared.getSession(id: id)
+            session = refreshed
+            await store.refreshSessions()
+        } catch {
+            gradeScriptError = "Couldn't grade: \(error.localizedDescription)"
         }
     }
 

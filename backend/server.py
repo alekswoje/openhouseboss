@@ -6,6 +6,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -1796,6 +1797,91 @@ async def reprocess_session(
         daemon=True,
     ).start()
     return {"id": session_id, "status": "processing"}
+
+
+@app.post("/sessions/{session_id}/grade-script")
+def grade_session_against_script(
+    session_id: str,
+    script_id: str = Form(...),
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Re-grade a saved session's transcript against a script the agent
+    picks after the fact.
+
+    Sessions recorded without a script attached come back with no script
+    coverage, and reprocess() intentionally reuses the original script_id
+    (you can't swap mid-flight). This endpoint is the post-hoc escape
+    hatch: it doesn't re-run diarization — it just runs
+    `grade_against_script()` against the saved utterances + agent
+    speaker, persists the result on the session, and returns the fresh
+    coverage so the iOS detail view can render it inline.
+    """
+    session = _load_session(session_id)
+    _require_owner(session, current_user, session_id)
+
+    result = (session.get("result") or {}) if session else {}
+    utterances = result.get("utterances") or []
+    agent_speaker = result.get("agent_speaker")
+    if not utterances or not agent_speaker:
+        # Nothing to grade — the session never produced a diarized
+        # transcript (probably still processing, errored, or a legacy
+        # row from before utterances were stored).
+        raise HTTPException(
+            400,
+            "Session has no diarized transcript to grade. Try re-analyzing first.",
+        )
+
+    script = get_script(script_id)
+    if script is None:
+        raise HTTPException(404, f"Script {script_id} not found")
+
+    # grade_against_script() only reads .utterances[].text and
+    # .utterances[].speaker off the transcript. Build the smallest stub
+    # that satisfies that surface so we don't have to instantiate an AAI
+    # Transcript (which would need network state / config we don't have
+    # here). SimpleNamespace gives us attribute access for free.
+    stub = SimpleNamespace(
+        utterances=[
+            SimpleNamespace(speaker=u.get("speaker", ""), text=u.get("text", ""))
+            for u in utterances
+        ]
+    )
+
+    try:
+        coverage = grade_against_script(stub, script, agent_speaker)
+        coverage_out = coverage.model_dump()
+    except Exception as ce:
+        # Mirror the in-pipeline fallback so the UI can surface the
+        # error inline rather than 500-ing.
+        coverage_out = {
+            "script_id": script.id,
+            "script_name": script.name,
+            "error": str(ce),
+        }
+
+    # Persist the new coverage AND remember which script we graded
+    # against so a future reprocess() reuses it (consistent with the
+    # at-record-time flow).
+    with _sessions_lock:
+        sess = _sessions.get(session_id)
+        if sess is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                sess = json.loads(path.read_text())
+                _sessions[session_id] = sess
+        if sess is None:
+            raise HTTPException(404, f"Session {session_id} not found")
+        sess_result = sess.get("result") or {}
+        sess_result["script_coverage"] = coverage_out
+        sess["result"] = sess_result
+        sess["script_id"] = script_id
+        _persist(session_id)
+
+    # NOTE: deliberately not writing this score to stats_lib. Stats track
+    # in-the-moment performance — a post-hoc grade weeks later would
+    # skew the trendline. If we later decide to surface "graded after
+    # the fact" as a separate metric, hook it here.
+    return {"script_coverage": coverage_out}
 
 
 _VALID_LEAD_STATUSES = {"drafted", "sent", "replied", "archived"}
