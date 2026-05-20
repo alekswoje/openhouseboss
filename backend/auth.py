@@ -1229,3 +1229,64 @@ def send_gmail_email(
         # underlying reason rather than bare 502.
         raise HTTPException(400, f"Gmail send failed: {message}")
     return resp.json()
+
+
+# --------------------------------------------------------------------------
+# Twilio SMS — centralized app-owned account. One TWILIO_FROM_NUMBER is
+# shared across all agents in v1; per-agent/per-brokerage numbers are a
+# later upgrade. Sendblue (iMessage) will plug in here as an alternate
+# provider behind the same send_sms call site.
+# --------------------------------------------------------------------------
+
+TWILIO_API_BASE = "https://api.twilio.com/2010-04-01"
+
+
+def send_twilio_sms(to: str, body: str) -> dict:
+    """Send an SMS via the app's Twilio account.
+
+    Reads creds from env (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+    TWILIO_FROM_NUMBER). `to` must be E.164 (+15551234567) — callers are
+    expected to normalize via phonenumbers before calling.
+
+    Returns Twilio's message resource ({sid, status, ...}). Raises
+    HTTPException(503) when Twilio isn't configured — the iOS client
+    treats that as "SMS isn't set up yet, fall back to email".
+    """
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+    from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
+    if not (account_sid and auth_token and from_number):
+        raise HTTPException(503, "SMS sending not configured on this server")
+
+    resp = requests.post(
+        f"{TWILIO_API_BASE}/Accounts/{account_sid}/Messages.json",
+        auth=(account_sid, auth_token),
+        data={"From": from_number, "To": to, "Body": body},
+        timeout=20,
+    )
+    if not resp.ok:
+        # Twilio returns a structured error: {code, message, more_info,
+        # status}. Surface `message` so the agent sees something actionable
+        # (e.g. "The 'To' number is not a valid phone number") instead of
+        # a bare 502.
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        message = (payload.get("message") if isinstance(payload, dict) else None) or resp.text
+        code = payload.get("code") if isinstance(payload, dict) else None
+        # 21610 = recipient unsubscribed (STOP). Worth surfacing distinctly
+        # so the UI can lock the SMS button for that lead instead of
+        # letting the agent keep retrying.
+        if code == 21610:
+            raise HTTPException(400, "Recipient has unsubscribed from SMS from this number")
+        # 21608 = unverified number on a trial account — common during
+        # local dev before A2P 10DLC is registered.
+        if code == 21608:
+            raise HTTPException(
+                400,
+                "Twilio trial account can only send to verified numbers. "
+                "Verify the recipient in the Twilio console, or upgrade the account."
+            )
+        raise HTTPException(400, f"SMS send failed: {message}")
+    return resp.json()

@@ -1784,6 +1784,7 @@ def _ensure_lead_state(entry: dict) -> dict:
     state.setdefault("notes", [])
     state.setdefault("tasks", [])
     state.setdefault("sent_emails", [])
+    state.setdefault("sent_sms", [])
     state.setdefault("scheduled_email", None)
     # `draft_override` carries the agent's edited version of the AI draft —
     # nil = "use the AI's follow_up_draft as-is", otherwise it's the
@@ -2291,6 +2292,109 @@ def send_visitor_email(
                 return {"sent": True, "message_id": message_id, "lead_state": state}
 
     return {"sent": True, "message_id": message_id, "lead_state": None}
+
+
+@app.post("/sessions/{session_id}/visitors/send_sms")
+def send_visitor_sms(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(auth_lib.get_current_user),
+):
+    """Send a follow-up SMS via the app's centralized Twilio number, then
+    flip the visitor's lead_state to `sent`.
+
+    Body: {name, speaker?, to?, body?}
+        name      — visitor display name, matches iOS VisitorResult.id
+        speaker   — diarization label, disambiguates same-named visitors
+        to        — recipient phone; defaults to the visitor's captured phone
+        body      — defaults to the AI-drafted follow-up
+
+    Returns {sent, message_sid, lead_state}. 503 means Twilio isn't
+    configured on the server; 400 means the recipient/body is unusable
+    (no phone on file, invalid number, empty body, carrier rejection).
+    """
+    name = (payload.get("name") or "").strip()
+    speaker = payload.get("speaker")
+    speaker = (speaker or "").strip() if isinstance(speaker, str) else ""
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            path = SESSIONS_DIR / session_id / "session.json"
+            if path.exists():
+                session = json.loads(path.read_text())
+                _sessions[session_id] = session
+        _require_owner(session, current_user, session_id)
+
+        result = session.get("result")
+        if not result:
+            raise HTTPException(409, "Session has no result yet")
+
+        visitors = result.get("visitors") or []
+        target = None
+        for entry in visitors:
+            v = entry.get("visitor") or {}
+            if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                target = entry
+                break
+        if target is None:
+            raise HTTPException(404, f"Visitor {name!r} (speaker={speaker!r}) not found")
+
+        visitor_info = target.get("visitor") or {}
+        analysis = target.get("analysis") or {}
+        override = (target.get("lead_state") or {}).get("draft_override") or {}
+        raw_to = (payload.get("to") or visitor_info.get("phone") or "").strip()
+        if not raw_to:
+            raise HTTPException(400, "No recipient phone — visitor has no phone on file")
+
+        # Normalize to E.164 — Twilio rejects ambiguous formats. Reuses the
+        # same parser the kiosk uses at sign-in so we don't drift.
+        phone_check = _verify_phone(raw_to)
+        if not phone_check.get("valid") or not phone_check.get("e164"):
+            raise HTTPException(400, phone_check.get("reason") or "Invalid phone number")
+        to_e164 = phone_check["e164"]
+
+        body = (
+            payload.get("body")
+            or override.get("body")
+            or analysis.get("follow_up_draft")
+            or ""
+        ).strip()
+        if not body:
+            raise HTTPException(400, "SMS body is empty")
+
+    # Twilio send runs outside the session lock so the HTTP call doesn't
+    # block other writes against this session.
+    twilio_result = auth_lib.send_twilio_sms(to=to_e164, body=body)
+    message_sid = twilio_result.get("sid")
+
+    with _sessions_lock:
+        session = _sessions.get(session_id) or session
+        result = session.get("result") or {}
+        for entry in result.get("visitors") or []:
+            v = entry.get("visitor") or {}
+            if (v.get("name") or "") == name and (v.get("speaker") or "") == speaker:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                state = _ensure_lead_state(entry)
+                state["status"] = "sent"
+                state["updated_at"] = now_iso
+                if not state.get("sent_at"):
+                    state["sent_at"] = now_iso
+                state["sent_sms"].append({
+                    "id": str(uuid.uuid4()),
+                    "to": to_e164,
+                    "body": body,
+                    "sent_at": now_iso,
+                    "message_sid": message_sid,
+                    "provider": "twilio",
+                })
+                entry["lead_state"] = state
+                _persist(session_id)
+                return {"sent": True, "message_sid": message_sid, "lead_state": state}
+
+    return {"sent": True, "message_sid": message_sid, "lead_state": None}
 
 
 # --------------------------------------------------------------------------
