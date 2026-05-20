@@ -69,6 +69,11 @@ struct IPadAgentApp: View {
     @State private var auth = AuthStore.shared
     @State private var activeListing: Listing?
     @State private var activeSessionId: String?
+    // When the agent drills from Session detail into a specific lead, we
+    // remember the composite LeadRow.id here and pass it down so the Leads
+    // tab focuses that exact row. Mirror of activeSessionId scoping but
+    // for the lead-level deep link.
+    @State private var activeLeadId: String?
     // True on iPhone (and iPad Slide Over). Drives the top-level shell choice
     // — bottom tab bar + pushed detail vs side rail + split panes — and is
     // forwarded down to panes that need to restack (Leads, Kiosk).
@@ -404,8 +409,9 @@ struct IPadAgentApp: View {
                 sessionId: id,
                 store: store,
                 onBack: { viewingPastSession = nil },
-                onOpenLeads: { sid in
+                onOpenLeads: { sid, lid in
                     activeSessionId = sid
+                    activeLeadId = lid
                     viewingPastSession = nil
                     tab = .leads
                 },
@@ -498,8 +504,9 @@ struct IPadAgentApp: View {
                 store: store,
                 listing: activeListing,
                 onSelectListing: { activeListing = $0 },
-                onOpenLeads: { sessionId in
+                onOpenLeads: { sessionId, leadId in
                     activeSessionId = sessionId
+                    activeLeadId = leadId
                     tab = .leads
                 },
                 onOpenSession: { sessionId in
@@ -522,7 +529,11 @@ struct IPadAgentApp: View {
                 onRequestExit: {}
             )
         case .leads:
-            IPadLeads(store: store, initialFilter: activeSessionId)
+            IPadLeads(
+                store: store,
+                initialFilter: activeSessionId,
+                initialActiveLeadId: activeLeadId
+            )
         case .scripts:
             IPadScripts(store: store)
         case .offers:
@@ -2584,6 +2595,11 @@ private struct IPadLeads: View {
     // Optional pre-filter: when the agent taps a recent session in the
     // side rail, we land here with that session selected. nil = "All".
     var initialFilter: String? = nil
+    // Optional deep-link: when the agent taps a specific lead inside
+    // Session detail, we land here with that lead focused. Value is the
+    // full LeadRow.id ("<sessionId>:<visitorId>"). nil = no specific
+    // focus → fall back to the first lead in the filtered list.
+    var initialActiveLeadId: String? = nil
 
     @Environment(\.horizontalSizeClass) private var hSize
     private var isCompact: Bool { hSize == .compact }
@@ -2604,6 +2620,11 @@ private struct IPadLeads: View {
     @State private var filterSessionId: String?
     @State private var showAddLead: Bool = false
     @State private var didApplyInitialFilter: Bool = false
+    @State private var didApplyInitialLeadId: Bool = false
+    // Deferred focus: a LeadRow.id captured before allLeads has loaded.
+    // `load()` consumes it after assigning rows so a deep-link tap from
+    // Session detail doesn't lose to the "select first lead" fallback.
+    @State private var pendingActiveLeadId: String?
 
     // Send-via-Gmail state.
     @State private var sendingId: String?
@@ -2719,10 +2740,25 @@ private struct IPadLeads: View {
                 filterSessionId = id
                 didApplyInitialFilter = true
             }
+            if !didApplyInitialLeadId, let lid = initialActiveLeadId {
+                pendingActiveLeadId = lid
+                didApplyInitialLeadId = true
+            }
         }
         .onChange(of: initialFilter) { _, newValue in
             // Re-apply when the side rail picks a different recent session.
             if let id = newValue { filterSessionId = id; activeId = nil }
+        }
+        .onChange(of: initialActiveLeadId) { _, newValue in
+            // Re-apply when the parent points at a different specific lead
+            // (e.g. user opens Session detail, taps a different lead).
+            guard let lid = newValue else { return }
+            if allLeads.contains(where: { $0.id == lid }) {
+                activeId = lid
+                pendingActiveLeadId = nil
+            } else {
+                pendingActiveLeadId = lid
+            }
         }
         .sheet(isPresented: $showGmailConnect) {
             GmailConnectSheet(
@@ -3711,7 +3747,16 @@ private struct IPadLeads: View {
             self.allLeads = collected.sorted { lhs, rhs in
                 (lhs.session.createdAt ?? "") > (rhs.session.createdAt ?? "")
             }
-            if activeId == nil { activeId = self.filteredLeads.first?.id }
+            // Honor a pending deep-link focus first (Session detail → lead),
+            // otherwise fall back to the first row in the filtered list so
+            // the iPad reading column always has something to render.
+            if let lid = pendingActiveLeadId,
+               self.allLeads.contains(where: { $0.id == lid }) {
+                activeId = lid
+                pendingActiveLeadId = nil
+            } else if activeId == nil {
+                activeId = self.filteredLeads.first?.id
+            }
         }
     }
 
@@ -8977,7 +9022,10 @@ private struct IPadRecord: View {
     let store: SessionStore
     let listing: Listing?
     var onSelectListing: (Listing) -> Void
-    var onOpenLeads: (String) -> Void
+    // (sessionId, focusLeadId?) — focusLeadId is a LeadRow composite id
+    // ("<sessionId>:<visitorId>") when the agent drilled into a specific
+    // lead; nil from generic "Open leads" CTAs.
+    var onOpenLeads: (String, String?) -> Void
     // Called when the final-pass snapshot finishes and the session is ready.
     // The parent uses this to navigate the user directly to Session detail
     // instead of stopping at a "Session ready / Open leads" prompt — which
@@ -9595,7 +9643,7 @@ private struct IPadRecord: View {
 
                 Button {
                     if let id = store.session?.id {
-                        onOpenLeads(id)
+                        onOpenLeads(id, nil)
                         store.reset()
                     }
                 } label: {
@@ -9711,7 +9759,11 @@ private struct IPadSessionDetail: View {
     let sessionId: String
     let store: SessionStore
     var onBack: () -> Void
-    var onOpenLeads: (String) -> Void
+    // (sessionId, focusLeadId?) — focusLeadId is the LeadRow composite id
+    // for the specific lead the agent tapped in this session's leads list.
+    // Passing it through prevents the Leads tab from auto-selecting the
+    // first row instead of the one the agent actually wanted.
+    var onOpenLeads: (String, String?) -> Void
     var onContinueRecording: () -> Void
 
     @Environment(\.horizontalSizeClass) private var hSize
@@ -10316,7 +10368,12 @@ private struct IPadSessionDetail: View {
 
             VStack(spacing: 10) {
                 ForEach(visitors) { v in
-                    Button { onOpenLeads(session.id) } label: {
+                    Button {
+                        // LeadRow.id is "<sessionId>:<visitorId>"; compose
+                        // it here so Leads can focus this exact row instead
+                        // of falling back to "first lead in the session".
+                        onOpenLeads(session.id, "\(session.id):\(v.id)")
+                    } label: {
                         leadRow(v)
                     }
                     .buttonStyle(.plain)
@@ -10523,9 +10580,9 @@ private struct IPadSessionDetail: View {
                     ForEach(utterances) { utt in
                         transcriptTurn(
                             utt,
-                            displayName: nameByLabel[utt.speaker] ?? "Speaker \(utt.speaker)",
-                            isAgent: utt.speaker == agentLabel,
-                            color: speakerColor(utt.speaker, agentLabel: agentLabel, result: result)
+                            displayName: displayName(for: utt, nameByLabel: nameByLabel),
+                            isAgent: utt.speaker == agentLabel && !isUnknown(utt),
+                            color: speakerDisplayColor(utt, agentLabel: agentLabel, result: result)
                         )
                     }
                 }
@@ -10536,7 +10593,7 @@ private struct IPadSessionDetail: View {
                 // Quick preview when collapsed: first turn's name + a snippet,
                 // so the agent can tell at a glance what's inside.
                 if let first = utterances.first {
-                    let preview = (nameByLabel[first.speaker] ?? "Speaker \(first.speaker)") + ": " + first.text
+                    let preview = displayName(for: first, nameByLabel: nameByLabel) + ": " + first.text
                     Text(preview)
                         .font(.system(size: 12))
                         .foregroundStyle(FoyerTheme.textMuted)
@@ -10551,16 +10608,55 @@ private struct IPadSessionDetail: View {
         }
     }
 
+    // Speaker label resolution. "?" or unknown_speaker=true → "Unknown
+    // speaker" so the agent isn't tricked into trusting a misattributed
+    // turn. Otherwise fall back to the per-visitor name map (which maps
+    // the agent's label to "You" and visitor labels to first names).
+    private func displayName(for utt: Utterance, nameByLabel: [String: String]) -> String {
+        if isUnknown(utt) { return "Unknown speaker" }
+        return nameByLabel[utt.speaker] ?? "Speaker \(utt.speaker)"
+    }
+
+    private func isUnknown(_ utt: Utterance) -> Bool {
+        utt.unknownSpeaker == true || utt.speaker == "?"
+    }
+
+    // Wraps speakerColor with a dim treatment for "?" speakers so they
+    // visually read as uncertain at a glance, distinct from real labeled
+    // turns.
+    private func speakerDisplayColor(_ utt: Utterance, agentLabel: String, result: SessionResult) -> Color {
+        if isUnknown(utt) { return FoyerTheme.textMuted }
+        return speakerColor(utt.speaker, agentLabel: agentLabel, result: result)
+    }
+
     private func transcriptTurn(_ utt: Utterance, displayName: String, isAgent: Bool, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        let isUnknown = isUnknown(utt)
+        let isLow = (utt.confidence == "low") || isUnknown
+        let isMedium = utt.confidence == "medium"
+        return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 0) {
-                Text(displayName)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(color)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                    if isLow {
+                        // Question-mark badge so a low-confidence turn
+                        // visibly admits "we're not sure who said this".
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(FoyerTheme.textMuted)
+                    }
+                }
                 if isAgent {
                     Text("agent")
                         .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(FoyerTheme.textMuted)
+                        .padding(.top, 1)
+                } else if isLow {
+                    Text(isUnknown ? "unknown" : "low confidence")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(0.8)
                         .foregroundStyle(FoyerTheme.textMuted)
                         .padding(.top, 1)
                 }
@@ -10575,7 +10671,15 @@ private struct IPadSessionDetail: View {
 
             Text(utt.text)
                 .font(.system(size: 14))
-                .foregroundStyle(FoyerTheme.cream)
+                // Low-confidence turns get italic + dimmed so they're
+                // obviously uncertain at a glance. Medium nudges down
+                // slightly. High renders normally.
+                .italic(isLow)
+                .foregroundStyle(
+                    isLow ? FoyerTheme.creamDim :
+                    isMedium ? FoyerTheme.cream.opacity(0.85) :
+                    FoyerTheme.cream
+                )
                 .lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
